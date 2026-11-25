@@ -321,6 +321,10 @@ agents:
         max_term_evidence: 3,
         max_report_ids: 50,
         max_successor_hops: 8,
+        // Bounds on the domain and range check: the classes one end may name, and
+        // the steps up the class tree from an end's class.
+        max_end_classes: 32,
+        max_class_depth: 16,
         // The relate layer's per-kind switches. relate_propose_kinds are the
         // built-in kinds a propose pass may file from a verdict; a kind the tenant
         // ontology declares itself, offered to the verdict on top of the built-ins,
@@ -1329,7 +1333,7 @@ agents:
       function loadOntology(st) {
         var o = { read: false, exists: false, confirmed: false, partial: false, version: null,
                   usable: false, check_kind: false, reason: "", kinds: {}, writable: {}, renamed_to: {}, schemes: {},
-                  tenant_relations: [], class_parent: {}, norm_classes: null };
+                  tenant_relations: [], class_parent: {}, class_tree: {}, concept_ids: {}, norm_classes: null };
         var r;
         try {
           r = call(st, { op: "describe_ontology" });
@@ -1355,7 +1359,9 @@ agents:
           if (!isPlainObject(rel) || !isKindName(rel.name) || hasOwn(o.kinds, rel.name)) { continue; }
           o.kinds[rel.name] = {
             source: typeof rel.source === "string" ? rel.source : "",
-            discriminator: typeof rel.discriminator === "string" ? rel.discriminator : ""
+            discriminator: typeof rel.discriminator === "string" ? rel.discriminator : "",
+            domain: classNames(rel.domain),
+            range: classNames(rel.range)
           };
           nKinds++;
           // A reserved kind is the runtime's own; the linker never writes one.
@@ -1375,6 +1381,10 @@ agents:
           var cl = classes[ci];
           if (isPlainObject(cl) && isName(cl.name, 128) && !hasOwn(o.class_parent, cl.name)) {
             o.class_parent[cl.name] = isName(cl.parent, 128) ? cl.parent : "";
+            // The same tree in lower case, as the runtime compares class names
+            // when it checks a relation's ends.
+            var lower = classKey(cl.name);
+            if (!hasOwn(o.class_tree, lower)) { o.class_tree[lower] = isName(cl.parent, 128) ? classKey(cl.parent) : ""; }
           }
         }
         // The norm classes the ontology marks (@norm), when the runtime reports
@@ -1391,6 +1401,11 @@ agents:
           var sc = schemes[s];
           if (isPlainObject(sc) && isName(sc.name, 128) && !hasOwn(o.schemes, sc.name)) {
             o.schemes[sc.name] = isArray(sc.concepts) ? sc.concepts : [];
+            // What a `concept` domain or range accepts: a concept's own chunk.
+            for (var cc = 0; cc < o.schemes[sc.name].length; cc++) {
+              var con = o.schemes[sc.name][cc];
+              if (isPlainObject(con) && isID(con.chunk_id)) { o.concept_ids[con.chunk_id] = true; }
+            }
           }
         }
         if (!o.exists) {
@@ -1406,6 +1421,19 @@ agents:
           o.check_kind = !o.partial;
         }
         return o;
+      }
+
+      function classKey(name) { return String(name).trim().toLowerCase(); }
+
+      // classNames is a kind's @domain or @range as lower-case class names; [] when
+      // the kind declares none.
+      function classNames(list) {
+        var out = [];
+        if (!isArray(list)) { return out; }
+        for (var i = 0; i < list.length && out.length < CONFIG.max_end_classes; i++) {
+          if (isName(list[i], 128) && classKey(list[i]) !== "") { out.push(classKey(list[i])); }
+        }
+        return out;
       }
 
       // ----------------------------------------------------------- L0 classify
@@ -2860,7 +2888,9 @@ agents:
       // evidence citing it. Per statement the first failing check decides:
       //   1 endpoints  — an end chunk that no longer exists: expire.
       //   2 kind       — a renamed kind is re-proposed under its new name and the old
-      //                  statement expired; a kind no longer declared is demoted.
+      //                  statement expired; a kind no longer declared is demoted, and
+      //                  so is a statement with an end of a class outside the kind's
+      //                  @domain or @range.
       //   3 validity   — an end superseded by a newer edition: expire, and re-propose
       //                  on the successor when every quote is still there.
       //   4 evidence   — a quote no longer in its chunk is re-pointed to the moved
@@ -2874,13 +2904,14 @@ agents:
         var L = layerRec(st, "L6", proposalCounts({
           statements: 0, statements_over_cap: 0, unreadable: 0, unchecked: 0,
           skipped_runtime: 0, skipped_reserved_kind: 0, auto_rule_a_candidates: 0,
-          endpoints_cross_scope_unchecked: 0, kind_unchecked: 0, domain_range_unchecked: 0,
+          endpoints_cross_scope_unchecked: 0, kind_unchecked: 0,
           successor_missing: 0, successor_quotes_gone: 0, successor_quotes_loose: 0, successor_citation_gone: 0,
           successor_copies_expired: 0, rename_refused: 0, all_stale_already_proposed: 0,
           rejudged_same: 0, rejudged_different: 0, rejudged_none: 0, rejudge_unchanged: 0,
           rejudge_kind_unknown: 0, rejudge_failed: 0, rejudge_budget: 0,
           merge_touched: 0, merge_repointed: 0, merge_refused: 0, skipped_flagged: 0,
-          checks: { endpoints: 0, kind: 0, validity: 0, evidence: 0, redundancy: 0, semantics: 0, passed: 0 },
+          checks: { endpoints: 0, kind: 0, validity: 0, evidence: 0, redundancy: 0, semantics: 0, passed: 0,
+                    domain_range: { checked: 0, mismatched: 0, flagged: 0, demoted: 0, unchecked: 0 } },
           actions: {}
         }));
         L.ran++;
@@ -2905,6 +2936,7 @@ agents:
           if (isAuto || s.auto === true) { autos.push(s); } else { todo.push(s); }
         }
         loadMeta(st, statementChunkIDs(todo.concat(autos)));
+        loadEndClasses(st, constrainedEnds(st, todo));
         for (var a = 0; a < autos.length; a++) { countRuleA(st, C, autos[a]); }
         // A statement with a superseded end goes first: it may settle what the
         // re-import copied from it (expire it, or flag a ruled one) before that copy
@@ -3169,8 +3201,23 @@ agents:
             }
             return "acted";
           }
-          // Domain and range need each end's class, which this version does not read.
-          C.domain_range_unchecked++;
+          // Domain and range: an end whose class left what the kind allows.
+          var DR = C.checks.domain_range;
+          var ends = endsInClasses(st, s, st.onto.kinds[s.kind]);
+          if (ends === "unchecked") {
+            DR.unchecked++;
+          } else {
+            DR.checked++;
+            if (ends === "mismatch") {
+              DR.mismatched++;
+              if (person || s.status !== "asserted") {
+                if (act(st, L, s, "flag", { reason: "an end is outside the kind's domain or range" }).ok) { DR.flagged++; }
+              } else {
+                if (act(st, L, s, "demote", { reason: "an end is outside the kind's domain or range" }).ok) { DR.demoted++; }
+              }
+              return "acted";
+            }
+          }
         } else {
           C.kind_unchecked++;
         }
@@ -3192,6 +3239,83 @@ agents:
           return "acted";
         }
         return "pass";
+      }
+
+      // constrainedEnds is the end chunks whose class the domain and range check
+      // needs: the source of a statement whose kind declares @domain, the target of
+      // one whose kind declares @range. A kind with neither costs no read.
+      function constrainedEnds(st, list) {
+        var ids = [];
+        if (!st.onto || !st.onto.check_kind) { return ids; }
+        for (var i = 0; i < list.length; i++) {
+          var k = hasOwn(st.onto.kinds, list[i].kind) ? st.onto.kinds[list[i].kind] : null;
+          if (k === null) { continue; }
+          if (k.domain.length > 0) { ids.push(list[i].from_id); }
+          if (k.range.length > 0) { ids.push(list[i].to_id); }
+        }
+        return ids;
+      }
+
+      // loadEndClasses reads each end's class — the chunk's type, which for a
+      // document is its root's — and whether it is a subject, in batches. It is
+      // read again for each document of a drain: L0 may have classified one since.
+      // A chunk the answer leaves out stays unknown.
+      function loadEndClasses(st, ids) {
+        st.cls = {};
+        var want = [], seen = {};
+        for (var i = 0; i < ids.length; i++) {
+          var id = ids[i];
+          if (isID(id) && seen[id] !== true) { seen[id] = true; want.push(id); }
+        }
+        for (var b = 0; b < want.length; b += CONFIG.sql_batch) {
+          var rows = sqlRows(call(st, { op: "query_chunks", sql: sqlChunkClass(want.slice(b, b + CONFIG.sql_batch)) }));
+          for (var r = 0; r < rows.length; r++) {
+            var row = rows[r];
+            if (!isArray(row) || !isID(row[0])) { continue; }
+            st.cls[row[0]] = { type: typeof row[1] === "string" ? classKey(row[1]) : "", entity: row[2] === 1 };
+          }
+        }
+      }
+
+      // endsInClasses compares a statement's ends with its kind's @domain and
+      // @range: "mismatch" when an end is of a declared class outside them, "ok"
+      // when every constrained end is inside, "unchecked" when the kind declares
+      // neither or an end's class cannot be decided.
+      function endsInClasses(st, s, k) {
+        if (k.domain.length === 0 && k.range.length === 0) { return "unchecked"; }
+        var from = k.domain.length > 0 ? endInClasses(st, s.from_id, k.domain) : "ok";
+        var to = k.range.length > 0 ? endInClasses(st, s.to_id, k.range) : "ok";
+        if (from === "mismatch" || to === "mismatch") { return "mismatch"; }
+        return (from === "ok" && to === "ok") ? "ok" : "unchecked";
+      }
+
+      // endInClasses is the runtime's own rule for one end: its class is one of the
+      // allowed classes or under one, `entity` accepts a subject, `concept` a
+      // concept of the ontology's schemes. It is slower than the runtime to call a
+      // mismatch: an end with no type, or of a type the class tree does not hold
+      // (a class renamed or removed since), is unknown, so the pass leaves the
+      // statement alone rather than demote on a class it cannot place.
+      function endInClasses(st, id, allowed) {
+        var c = (st.cls && hasOwn(st.cls, id)) ? st.cls[id] : null;
+        if (c === null) { return "unknown"; }
+        var want = {};
+        for (var i = 0; i < allowed.length; i++) {
+          if (allowed[i] === "concept") {
+            if (st.onto.concept_ids[id] === true) { return "ok"; }
+          } else if (allowed[i] === "entity") {
+            if (c.entity) { return "ok"; }
+          } else {
+            want[allowed[i]] = true;
+          }
+        }
+        var tree = st.onto.class_tree, cur = c.type;
+        for (var d = 0; d <= CONFIG.max_class_depth; d++) {
+          if (cur === "" || !hasOwn(tree, cur)) { return "unknown"; }
+          if (hasOwn(want, cur)) { return "ok"; }
+          if (tree[cur] === "") { return "mismatch"; }
+          cur = tree[cur];
+        }
+        return "unknown";
       }
 
       // repointMerged is subject mode's merge: the subject (the root of the document
@@ -3709,6 +3833,13 @@ agents:
         for (var i = 0; i < ids.length; i++) { lits.push(sqlStr(ids[i])); }
         return "SELECT id, document_id, COALESCE(anchor, ''), COALESCE(stable_id, ''), COALESCE(invalid_at, 0) " +
                "FROM chunks WHERE id IN (" + lits.join(", ") + ")";
+      }
+
+      function sqlChunkClass(ids) {
+        var lits = [];
+        for (var i = 0; i < ids.length; i++) { lits.push(sqlStr(ids[i])); }
+        return "SELECT c.id, COALESCE(c.type, ''), CASE WHEN COALESCE(m.subject, '') <> '' THEN 1 ELSE 0 END " +
+               "FROM chunks c LEFT JOIN chunk_memory_meta m ON m.chunk_id = c.id WHERE c.id IN (" + lits.join(", ") + ")";
       }
 
       function sqlRevisedAt(ids) {

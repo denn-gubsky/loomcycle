@@ -242,6 +242,14 @@ longer holds), `demote` (back to review), `merge` (fold a duplicate),
 person). A relation a person wrote takes only `verify` and `flag`, and so,
 from inside a run, does one an operator ruled on.
 
+A relation's ends are checked against its kind's `domain` and `range` when it
+is written, and not again when a document is re-classified later. The bundled
+`kb/linker` re-checks them in its maintain pass: a rule-made relation whose
+end left the allowed classes goes back to review (`demote`), and a person's is
+flagged. A subclass of an allowed class is inside it. An end with no type, or
+of a type the ontology no longer declares, is left alone and counted
+(`checks.domain_range.unchecked` in the linker's report).
+
 ## Subject changes
 
 When a subject changes identity, an event goes to the scope's
