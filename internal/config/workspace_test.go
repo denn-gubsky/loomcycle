@@ -21,7 +21,8 @@ func TestWorkspaceConfig_AbsentIsOffAtTheDefaults(t *testing.T) {
 		Template: WorkspaceTemplateConfig{MaxMB: 1024, MaxPerTenant: 20},
 		Egress:   WorkspaceEgressConfig{Limits: WorkspaceEgressLimits{RatePerMinute: 600, MaxBytes: 4 << 30}},
 		MCP:      WorkspaceMCPConfig{Ops: []string{"read", "write"}, IdleReleaseS: 3600, MaxLifetimeS: 86400},
-		Expose:   WorkspaceExposeConfig{MaxPerWorkspace: 2, MaxConnections: 32, IdleTimeoutS: 900, RequestsPerSecond: 20, BytesPerSecond: 8 << 20}}
+		Expose: WorkspaceExposeConfig{MaxPerWorkspace: 2, MaxConnections: 32, IdleTimeoutS: 900, RequestsPerSecond: 20, BytesPerSecond: 8 << 20,
+			MaxMessageBytes: 16 << 20, SocketLifetimeS: 14400}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("resolved = %+v, want %+v", got, want)
 	}
@@ -35,7 +36,8 @@ func TestWorkspaceConfig_RemoteKeepsWhatIsWritten(t *testing.T) {
 		"workspace:\n  mode: remote\n  max_per_run: 2\n  max_per_tenant: 10\n  exec:\n    default_timeout_s: 30\n    max_timeout_s: 60\n  lost_after_s: 90\n"+
 		"  disk_quota_mb: 16777216\n  copy:\n    max_files: 50\n    max_bytes: 4096\n  checkout:\n    max_documents: 20\n    max_bytes: 9000\n  convert:\n    memory_limit_mb: 512\n"+
 		"  kernel:\n    interrupt_grace_seconds: 12\n  checkpoint:\n    max_per_workspace: 3\n  template:\n    max_mb: 512\n    max_per_tenant: 5\n  mcp:\n    enabled: true\n    ops: [read, exec]\n    idle_release_s: 600\n    max_lifetime_s: 7200\n"+
-		"  expose:\n    enabled: true\n    max_per_workspace: 4\n    max_connections: 8\n    idle_timeout_s: 60\n    requests_per_second: 5\n    bytes_per_second: 1024\n")
+		"  expose:\n    enabled: true\n    max_per_workspace: 4\n    max_connections: 8\n    idle_timeout_s: 60\n    requests_per_second: 5\n    bytes_per_second: 1024\n"+
+		"    max_message_bytes: 4096\n    socket_lifetime_s: 600\n")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,7 +48,8 @@ func TestWorkspaceConfig_RemoteKeepsWhatIsWritten(t *testing.T) {
 		Template: WorkspaceTemplateConfig{MaxMB: 512, MaxPerTenant: 5},
 		Egress:   WorkspaceEgressConfig{Limits: WorkspaceEgressLimits{RatePerMinute: 600, MaxBytes: 4 << 30}},
 		MCP:      WorkspaceMCPConfig{Enabled: true, Ops: []string{"read", "exec"}, IdleReleaseS: 600, MaxLifetimeS: 7200},
-		Expose:   WorkspaceExposeConfig{Enabled: true, MaxPerWorkspace: 4, MaxConnections: 8, IdleTimeoutS: 60, RequestsPerSecond: 5, BytesPerSecond: 1024}}
+		Expose: WorkspaceExposeConfig{Enabled: true, MaxPerWorkspace: 4, MaxConnections: 8, IdleTimeoutS: 60, RequestsPerSecond: 5, BytesPerSecond: 1024,
+			MaxMessageBytes: 4096, SocketLifetimeS: 600}}
 	if got := cfg.Workspace.Resolved(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("resolved = %+v, want %+v", got, want)
 	}
@@ -82,6 +85,8 @@ func TestWorkspaceConfig_RefusesWhatItCannotServe(t *testing.T) {
 		{"workspace:\n  disk_quota_mb: -1\n", "workspace.disk_quota_mb: -1 is out of range"},
 		{"workspace:\n  expose:\n    max_per_workspace: 17\n", "workspace.expose.max_per_workspace: 17 is out of range"},
 		{"workspace:\n  expose:\n    bytes_per_second: -1\n", "workspace.expose.bytes_per_second: -1 is out of range"},
+		{"workspace:\n  expose:\n    max_message_bytes: 67108865\n", "workspace.expose.max_message_bytes: 67108865 is out of range"},
+		{"workspace:\n  expose:\n    socket_lifetime_s: 86401\n", "workspace.expose.socket_lifetime_s: 86401 is out of range"},
 		{"workspace:\n  expose:\n    open: true\n", "workspace.expose"},
 		{"workspace:\n  copy:\n    max_files: -1\n", "workspace.copy.max_files: -1 is out of range"},
 		{"workspace:\n  copy:\n    max_bytes: 17592186044417\n", "workspace.copy.max_bytes: 17592186044417 is out of range"},

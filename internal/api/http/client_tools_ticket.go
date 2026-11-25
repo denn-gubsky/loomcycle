@@ -83,6 +83,9 @@ type ticketClaims struct {
 	// Client is the app (RFC FL) an app token belongs to.
 	Client  string `json:"c,omitempty"`
 	CredMAC string `json:"cm"`
+	// Exposure is the page a page socket's ticket opens (RFC GW P9,
+	// D-P9-42 as ruled); empty on a client-tools ticket.
+	Exposure string `json:"x,omitempty"`
 	// Authority is a digest of the minting credential's scopes, restrictions
 	// and authority mode; the handshake's principal must match it.
 	Authority string `json:"a"`
@@ -106,10 +109,12 @@ func (s *Server) clientToolsTicketKey() ([]byte, error) {
 	return key, nil
 }
 
-// ticketMAC signs a ticket's encoded payload.
-func ticketMAC(key []byte, payload string) []byte {
+// ticketMAC signs a ticket's encoded payload under its format, the MAC's
+// domain: a ticket of one kind (a client-tools socket's, a page socket's)
+// never verifies as another.
+func ticketMAC(key []byte, format, payload string) []byte {
 	m := hmac.New(sha256.New, key)
-	m.Write([]byte(ticketFormat))
+	m.Write([]byte(format))
 	m.Write([]byte{0})
 	m.Write([]byte(payload))
 	return m.Sum(nil)
@@ -136,31 +141,31 @@ func ticketAuthority(p auth.Principal) (string, error) {
 	return base64.RawURLEncoding.EncodeToString(sum[:]), nil
 }
 
-// signTicket encodes and signs claims.
-func signTicket(key []byte, c ticketClaims) (string, error) {
+// signTicket encodes and signs claims as a ticket of format.
+func signTicket(key []byte, format string, c ticketClaims) (string, error) {
 	b, err := json.Marshal(c)
 	if err != nil {
 		return "", err
 	}
 	payload := base64.RawURLEncoding.EncodeToString(b)
-	return ticketFormat + "." + payload + "." + base64.RawURLEncoding.EncodeToString(ticketMAC(key, payload)), nil
+	return format + "." + payload + "." + base64.RawURLEncoding.EncodeToString(ticketMAC(key, format, payload)), nil
 }
 
-// verifyTicket checks a ticket's MAC (constant time) and decodes it. It says
-// nothing of expiry or use; the reason is for the server log.
-func verifyTicket(key []byte, t string) (ticketClaims, string) {
+// verifyTicket checks a ticket of format's MAC (constant time) and decodes
+// it. It says nothing of expiry or use; the reason is for the server log.
+func verifyTicket(key []byte, format, t string) (ticketClaims, string) {
 	if len(t) > ticketMaxLen {
 		return ticketClaims{}, "malformed"
 	}
 	parts := strings.Split(t, ".")
-	if len(parts) != 3 || parts[0] != ticketFormat {
+	if len(parts) != 3 || parts[0] != format {
 		return ticketClaims{}, "malformed"
 	}
 	mac, err := base64.RawURLEncoding.DecodeString(parts[2])
 	if err != nil {
 		return ticketClaims{}, "malformed"
 	}
-	if !hmac.Equal(mac, ticketMAC(key, parts[1])) {
+	if !hmac.Equal(mac, ticketMAC(key, format, parts[1])) {
 		return ticketClaims{}, "bad_signature"
 	}
 	b, err := base64.RawURLEncoding.DecodeString(parts[1])
@@ -227,7 +232,7 @@ func (s *Server) handleClientToolsTicket(w http.ResponseWriter, r *http.Request)
 	}
 	exp := time.Now().Add(clientToolsTicketTTL)
 	c.Exp = exp.UnixMilli()
-	t, err := signTicket(key, c)
+	t, err := signTicket(key, ticketFormat, c)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal_error", "the ticket could not be issued")
 		return
@@ -331,14 +336,25 @@ func (s *Server) redeemClientToolsTicket(r *http.Request, t string) (auth.Princi
 }
 
 func (s *Server) ticketPrincipal(r *http.Request, t string) (auth.Principal, string) {
+	return s.spendTicket(r, t, ticketFormat, clientToolsTicketReplayGate, "")
+}
+
+// spendTicket redeems a ticket of format whose Exposure claim is exposure
+// ("" for a client-tools ticket): signature, expiry, one spend across
+// replicas in replayGate's namespace, then the minting credential
+// re-resolved as it is now.
+func (s *Server) spendTicket(r *http.Request, t, format, replayGate, exposure string) (auth.Principal, string) {
 	ctx := r.Context()
 	key, err := s.clientToolsTicketKey()
 	if err != nil {
 		return auth.Principal{}, "no_ticket_key"
 	}
-	c, reason := verifyTicket(key, t)
+	c, reason := verifyTicket(key, format, t)
 	if reason != "" {
 		return auth.Principal{}, reason
+	}
+	if c.Exposure != exposure {
+		return auth.Principal{}, "another_page"
 	}
 	now := time.Now()
 	exp := time.UnixMilli(c.Exp)
@@ -353,7 +369,7 @@ func (s *Server) ticketPrincipal(r *http.Request, t string) (auth.Principal, str
 	if s.store == nil {
 		return auth.Principal{}, "no_store"
 	}
-	fresh, err := s.store.AuthAssertionUseOnce(ctx, clientToolsTicketReplayGate, c.JTI, exp, now)
+	fresh, err := s.store.AuthAssertionUseOnce(ctx, replayGate, c.JTI, exp, now)
 	if err != nil {
 		if ctx.Err() == nil {
 			slog.Error("auth: spending a client-tools ticket failed (refusing)", "err", err)
@@ -363,6 +379,23 @@ func (s *Server) ticketPrincipal(r *http.Request, t string) (auth.Principal, str
 	if !fresh {
 		return auth.Principal{}, "spent"
 	}
+	p, reason := s.ticketHolder(r, c)
+	if reason != "" {
+		return auth.Principal{}, reason
+	}
+	if format == exposureTicketFormat {
+		slog.Info("auth: page socket ticket accepted", "jti", c.JTI, "tenant", p.TenantID, "subject", p.Subject, "kind", c.Kind)
+	} else {
+		slog.Info("auth: client-tools ticket accepted", "jti", c.JTI, "tenant", p.TenantID, "subject", p.Subject, "kind", c.Kind)
+	}
+	return p, ""
+}
+
+// ticketHolder re-resolves the credential a verified ticket names, and
+// checks it still is who and what minted the ticket. It neither checks the
+// ticket's expiry nor spends it: an open socket a ticket opened re-checks
+// its holder this way for its whole life.
+func (s *Server) ticketHolder(r *http.Request, c ticketClaims) (auth.Principal, string) {
 	h, err := s.hasher()
 	if err != nil {
 		return auth.Principal{}, "no_hasher"
@@ -379,7 +412,6 @@ func (s *Server) ticketPrincipal(r *http.Request, t string) (auth.Principal, str
 	if p.TenantID != c.Tenant || p.Subject != c.Subject || p.OAuthClient != c.Client || !macEqual(authority, c.Authority) {
 		return auth.Principal{}, "authority_changed"
 	}
-	slog.Info("auth: client-tools ticket accepted", "jti", c.JTI, "tenant", p.TenantID, "subject", p.Subject, "kind", c.Kind)
 	return p, ""
 }
 

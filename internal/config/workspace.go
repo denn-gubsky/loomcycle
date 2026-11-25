@@ -139,6 +139,12 @@ type WorkspaceExposeConfig struct {
 	// requests started, and response bytes sent.
 	RequestsPerSecond int   `yaml:"requests_per_second,omitempty"`
 	BytesPerSecond    int64 `yaml:"bytes_per_second,omitempty"`
+	// MaxMessageBytes bounds one WebSocket message through a page, each
+	// way (RFC GW §5.3: "operator setting").
+	MaxMessageBytes int64 `yaml:"max_message_bytes,omitempty"`
+	// SocketLifetimeS closes a page's WebSocket this long after it opened,
+	// however busy. A quiet one closes at IdleTimeoutS.
+	SocketLifetimeS int `yaml:"socket_lifetime_s,omitempty"`
 }
 
 // The workspace.expose defaults and bounds.
@@ -148,6 +154,10 @@ const (
 	DefaultWorkspaceExposeIdleTimeoutS    = 900
 	DefaultWorkspaceExposeRequestsPerS    = 20
 	DefaultWorkspaceExposeBytesPerS       = 8 << 20
+	DefaultWorkspaceExposeMessageBytes    = 16 << 20
+	DefaultWorkspaceExposeSocketLifetimeS = 14400
+	maxWorkspaceExposeMessageBytes        = 64 << 20
+	maxWorkspaceExposeSocketLifetimeS     = 86400
 	maxWorkspaceExposePerWorkspace        = 16
 	maxWorkspaceExposeConnections         = 1024
 	maxWorkspaceExposeIdleTimeoutS        = 86400
@@ -310,6 +320,12 @@ func (w WorkspaceConfig) Resolved() WorkspaceConfig {
 	}
 	if w.Expose.BytesPerSecond == 0 {
 		w.Expose.BytesPerSecond = DefaultWorkspaceExposeBytesPerS
+	}
+	if w.Expose.MaxMessageBytes == 0 {
+		w.Expose.MaxMessageBytes = DefaultWorkspaceExposeMessageBytes
+	}
+	if w.Expose.SocketLifetimeS == 0 {
+		w.Expose.SocketLifetimeS = DefaultWorkspaceExposeSocketLifetimeS
 	}
 	if len(w.MCP.Ops) == 0 {
 		w.MCP.Ops = []string{WorkspaceOpRead, WorkspaceOpWrite}
@@ -544,6 +560,8 @@ func validateWorkspaceExpose(e WorkspaceExposeConfig) error {
 		{"idle_timeout_s", int64(e.IdleTimeoutS), maxWorkspaceExposeIdleTimeoutS},
 		{"requests_per_second", int64(e.RequestsPerSecond), maxWorkspaceExposeRequestsPerS},
 		{"bytes_per_second", e.BytesPerSecond, maxWorkspaceExposeBytesPerS},
+		{"max_message_bytes", e.MaxMessageBytes, maxWorkspaceExposeMessageBytes},
+		{"socket_lifetime_s", int64(e.SocketLifetimeS), maxWorkspaceExposeSocketLifetimeS},
 	} {
 		if b.v < 0 || b.v > b.max {
 			return fmt.Errorf("workspace.expose.%s: %d is out of range (1 to %d)", b.name, b.v, b.max)

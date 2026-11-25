@@ -72,10 +72,20 @@ func (s *Server) defaultDocumentFeedPolling() documentFeedPolling {
 // closed here, unlike enrichPrincipal's per-request fallback: a stream that
 // cannot re-check its reader stops rather than keep sending.
 func (s *Server) reauthenticateFeed(r *http.Request) (auth.Principal, error) {
+	p, ui, ok := s.authenticateRequest(r)
+	if !ok || (ui != nil && ui.pending) {
+		return auth.Principal{}, errFeedCredentialRevoked
+	}
+	return s.readmit(r, p)
+}
+
+// readmit is authMiddleware's admission of an authenticated principal, asked
+// again: the route still admits it, and its route question still passes
+// under its current rules (an ACL set that cannot be read fails closed).
+func (s *Server) readmit(r *http.Request, p auth.Principal) (auth.Principal, error) {
 	ctx := r.Context()
 	rt := requestRoute(r)
-	p, ui, ok := s.authenticateRequest(r)
-	if !ok || (ui != nil && ui.pending) || !routeAdmits(p, rt, r.Method, r.URL.Path) {
+	if !routeAdmits(p, rt, r.Method, r.URL.Path) {
 		return auth.Principal{}, errFeedCredentialRevoked
 	}
 	if s.aclResolver != nil {
