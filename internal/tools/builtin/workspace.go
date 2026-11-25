@@ -86,6 +86,8 @@ func (w *Workspace) InputSchema() json.RawMessage {
 			"checkpoint":       {"type": "string", "description": "restore, delete_checkpoint: the checkpoint's id (checkpoints lists them); fork: the checkpoint to start from (default the present files); save_template: the checkpoint to save."},
 			"as":               {"type": "string", "description": "fork: the new workspace's name; save_template: the template's name."},
 			"template":         {"type": "string", "description": "open: a template to start the workspace from, by name (templates lists them; your own first, then your tenant's); delete_template: the template to delete."},
+			"all_users":        {"type": "boolean", "description": "templates: every user's templates of your tenant too (a tenant operator's session only)."},
+			"owner":            {"type": "string", "description": "delete_template with scope user: the user whose template to delete (a tenant operator's session only; default yourself)."},
 			"scope":            {"type": "string", "enum": ["user","tenant"], "description": "save_template, delete_template: user (your runs only) or tenant (every user of your tenant; needs the tenant value in memory_scopes)."},
 			"path":             {"type": "string", "description": "read/write/edit: the file; glob/grep: the directory to search. Relative to the workspace. request: the request target, starting with / (e.g. /api/items?page=2)."},
 			"content":          {"type": "string", "description": "write: the whole new file, up to 1 MiB."},
@@ -134,8 +136,8 @@ var workspaceOpArgs = map[string][]string{
 	// RFC GW §5.5: a checkpoint of the run's own workspace saved as a
 	// template, a template deleted, and the templates the run may open.
 	"save_template":   {"name", "checkpoint", "as", "scope"},
-	"delete_template": {"template", "scope"},
-	"templates":       {},
+	"delete_template": {"template", "scope", "owner"},
+	"templates":       {"all_users"},
 	"view":            {"name", "path"},
 	"start":           {"name", "command", "cwd", "port"},
 	"stop":            {"name", "server"},
@@ -243,6 +245,8 @@ type workspaceInput struct {
 	Checkpoint string            `json:"checkpoint"`
 	As         string            `json:"as"`
 	Template   string            `json:"template"`
+	AllUsers   bool              `json:"all_users"`
+	Owner      string            `json:"owner"`
 	Scope      string            `json:"scope"`
 	Port       int               `json:"port"`
 	Server     string            `json:"server"`
@@ -333,7 +337,7 @@ func (w *Workspace) Execute(ctx context.Context, input json.RawMessage) (tools.R
 	case "list":
 		return w.list(ctx, owner), nil
 	case "templates":
-		return w.templates(ctx, owner), nil
+		return w.templates(ctx, owner, in), nil
 	case "delete_template":
 		return w.deleteTemplate(ctx, owner, in), nil
 	}
