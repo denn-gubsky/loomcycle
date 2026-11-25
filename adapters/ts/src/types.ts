@@ -6680,6 +6680,9 @@ export interface AgentWorkspaceGrant {
   /** Whether the agent may share a workspace it owns with another run of
    *  the same user (RFC GW P8). It hands over only operations it holds. */
   share?: boolean;
+  /** Whether the agent may save and delete workspace templates (RFC GW P6);
+   *  a tenant template also needs the tenant value in memory_scopes. */
+  templates?: boolean;
   /** The egress routes a workspace the agent opens may reach the network
    *  through, by name (RFC GW P4), e.g. `["pypi", "pypi-files"]`. Unset =
    *  none. A sub-agent holds only the names its parent also holds. */

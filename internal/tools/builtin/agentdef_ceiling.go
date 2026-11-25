@@ -535,6 +535,10 @@ func ceilWorkspace(ctx context.Context, def mergedDef, base *mergedDef, held str
 		return fmt.Errorf("workspace.share: true is not within %s workspace grant, which may not share workspaces. "+
 			"A new agent can only be granted authority its author holds: remove it, or ask an operator to author this agent", held)
 	}
+	if def.Workspace.Templates && !ceiling.Templates {
+		return fmt.Errorf("workspace.templates: true is not within %s workspace grant, which may not save or delete templates. "+
+			"A new agent can only be granted authority its author holds: remove it, or ask an operator to author this agent", held)
+	}
 	if !ceiling.Grants() || !ceiling.AcceptsEngineRequirement(def.Workspace.Engine) {
 		return fmt.Errorf("workspace.engine: %q accepts a less isolating engine than %s workspace.engine %q. "+
 			"A new agent can only be granted authority its author holds: require that engine or a stricter one, or ask an operator to author this agent",
@@ -544,7 +548,7 @@ func ceilWorkspace(ctx context.Context, def mergedDef, base *mergedDef, held str
 }
 
 // unionWorkspace is the wider of two grants, for a ceiling: the operations,
-// open, share and routes either holds, and the weaker engine requirement — of
+// open, share, templates and routes either holds, and the weaker engine requirement — of
 // the sides that grant anything, since a side granting nothing names no
 // requirement.
 func unionWorkspace(a, b tools.WorkspacePolicyValue) tools.WorkspacePolicyValue {
@@ -556,7 +560,7 @@ func unionWorkspace(a, b tools.WorkspacePolicyValue) tools.WorkspacePolicyValue 
 	}
 	out := tools.WorkspacePolicyValue{
 		Read: a.Read || b.Read, Write: a.Write || b.Write, Exec: a.Exec || b.Exec,
-		Open: a.Open || b.Open, Share: a.Share || b.Share, Engine: b.Engine,
+		Open: a.Open || b.Open, Share: a.Share || b.Share, Templates: a.Templates || b.Templates, Engine: b.Engine,
 		Egress: slices.Clone(a.Egress),
 	}
 	for _, r := range b.Egress {

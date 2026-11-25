@@ -142,6 +142,9 @@ func TestAgentDefCreate_WorkspaceCeiling(t *testing.T) {
 	// RFC GW P8: share is held to the author's own, as open is.
 	wantRefused(t, agentDefOp(t, tool, reader, "create", "sdlc/s1", `{"history_scope":["user"],"workspace":{"ops":["read"],"share":true,"engine":"container"}}`),
 		"share by an author that cannot share", "workspace.share")
+	// RFC GW P6: templates is held to the author's own, as share is.
+	wantRefused(t, agentDefOp(t, tool, reader, "create", "sdlc/t1", `{"history_scope":["user"],"workspace":{"ops":["read"],"templates":true,"engine":"container"}}`),
+		"templates by an author that may not save templates", "workspace.templates")
 	sharer := tools.UpdateRunPolicy(reader, func(rp *tools.RunPolicy) { rp.Workspace.Share = true })
 	if res := agentDefOp(t, tool, sharer, "create", "sdlc/s2", `{"history_scope":["user"],"workspace":{"ops":["read"],"share":true,"engine":"container"}}`); res.IsError {
 		t.Fatalf("share within the author's own grant refused: %s", res.Text)
