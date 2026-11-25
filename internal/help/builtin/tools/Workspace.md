@@ -18,7 +18,10 @@ open workspaces; `exec`, `run_cell`, `reset_kernel`, `start`, `stop`,
 and `edit` need `write`; `read`, `view`, `glob`, `grep`, `list` and `status` need
 `read`; `share` and `unshare` need the grant to share; `checkpoint`,
 `restore` and `delete_checkpoint` need `write`, `checkpoints` needs `read`,
-and `fork` needs the grant to open workspaces. Anything else is
+and `fork` needs the grant to open workspaces; `save_template` and
+`delete_template` need the grant to keep templates (a tenant template also
+the tenant value in your memory_scopes), and `templates` needs either that
+grant or the one to open workspaces. Anything else is
 refused with `not_granted`. Context op=self shows your grant.
 
 ## Lifetime
@@ -51,7 +54,7 @@ reason.
 
 | op | What it does | Main arguments |
 |---|---|---|
-| `open` | open (or return) a workspace of this run | `name`, `toolchain`, `egress` |
+| `open` | open (or return) a workspace of this run, empty or from a template | `name`, `toolchain`, `egress`, `template` |
 | `list` | this run's workspaces | — |
 | `status` | its state, and whether its directory is on the worker | `name` |
 | `release` | delete it now | `name` |
@@ -75,6 +78,9 @@ reason.
 | `restore` | put its files back to a checkpoint; stops its interpreters and commands | `name`, `checkpoint` |
 | `delete_checkpoint` | remove a checkpoint and free its room | `name`, `checkpoint` |
 | `fork` | open a second workspace as a copy of it, or of a checkpoint | `name`, `as`, `checkpoint` |
+| `save_template` | keep a checkpoint as a template to open workspaces from | `name`, `checkpoint`, `as`, `scope` |
+| `templates` | the templates you may open | — |
+| `delete_template` | delete a template | `template`, `scope` |
 
 The file operations take the same arguments as the Read, Write, Edit, Glob
 and Grep tools, without `volume`, and paths are relative to the workspace.
@@ -92,6 +98,14 @@ delete the ones you no longer need. `fork` opens a second workspace of your
 run from the present files or a checkpoint; it is yours like any other, has
 its own quota, and starts with no checkpoints and no shares. See
 Workspace/checkpoint and Workspace/fork.
+
+## Templates
+
+A template is a starting state kept by the runtime: a checkpoint's files,
+installed packages included. `save_template` keeps one, for your own runs
+(`scope: user`) or every user of your tenant (`scope: tenant`); `open` with
+`template` starts a new workspace as a copy of it, on any worker that has
+its toolchains. See Workspace/save_template.
 
 ## A workspace shared with you
 
@@ -121,3 +135,5 @@ Every refusal is `{"error": <class>, "detail": ...}`:
 - `workspace_over_quota` — the write, checkpoint, restore or fork would pass
   a disk quota (checkpoints count against their workspace's).
 - `checkpoint_limit`, `checkpoint_not_found` — see Workspace/checkpoint.
+- `template_not_found`, `template_limit`, `template_too_large` — see
+  Workspace/save_template.
