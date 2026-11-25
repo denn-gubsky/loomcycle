@@ -37,6 +37,16 @@ func newTemplateFixture(t *testing.T, l Limits) *templateFixture {
 	if err := os.WriteFile(filepath.Join(f.h.Dir(src.ID), "notes.txt"), []byte("prepared"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.MkdirAll(filepath.Join(f.h.Dir(src.ID), "venv"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	real, err := filepath.EvalSymlinks(f.h.Dir(src.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(f.h.Dir(src.ID), "venv", "pyvenv.cfg"), []byte("home = "+real+"/venv/bin\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	ck, err := f.m.Checkpoint(context.Background(), src, "ready")
 	if err != nil {
 		t.Fatal(err)
@@ -103,6 +113,12 @@ func TestTemplate_OpensOnAWorkerThatNeverHeldIt(t *testing.T) {
 	}
 	if got := f.read(t, later, "copy", "notes.txt"); got != "prepared" {
 		t.Errorf("the opened workspace's file = %q", got)
+	}
+	// The host engine moves a Python environment's paths to the new
+	// workspace's folder (RFC GW §4.3), from whichever worker made it.
+	cfg := f.read(t, later, "copy", "venv/pyvenv.cfg")
+	if strings.Contains(cfg, f.src.ID) || strings.Contains(cfg, ".loomcycle-template-root") || !strings.Contains(cfg, ws.ID+"/venv") {
+		t.Errorf("the opened workspace's pyvenv.cfg = %q", cfg)
 	}
 	// A second open is served from the worker's cache.
 	if _, err := f.m.Open(ctx, later, OpenRequest{Name: "again", Template: &found}); err != nil {
@@ -188,8 +204,8 @@ func TestTemplate_SaveRefusals(t *testing.T) {
 	if _, err := f.m.SaveTemplate(ctx, f.alice, f.src, f.ck, "one", store.WorkspaceTemplateTenant); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.m.SaveTemplate(ctx, f.alice, f.src, f.ck, "one", store.WorkspaceTemplateTenant); !errors.Is(err, ErrNameTaken) {
-		t.Errorf("a held name = %v, want ErrNameTaken", err)
+	if _, err := f.m.SaveTemplate(ctx, f.alice, f.src, f.ck, "one", store.WorkspaceTemplateTenant); !errors.Is(err, ErrTemplateExists) {
+		t.Errorf("a held name = %v, want ErrTemplateExists", err)
 	}
 	if _, err := f.m.SaveTemplate(ctx, f.alice, f.src, f.ck, "two", store.WorkspaceTemplateUser); !errors.Is(err, ErrTemplateLimit) {
 		t.Errorf("past the tenant's bound = %v, want ErrTemplateLimit", err)

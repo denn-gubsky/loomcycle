@@ -36,6 +36,8 @@ var (
 	ErrTemplateLimit = errors.New("template limit reached")
 	// ErrTemplateTooLarge: the archive passes workspace.template.max_mb.
 	ErrTemplateTooLarge = errors.New("the template is larger than allowed")
+	// ErrTemplateExists: a template of that name is held in that scope.
+	ErrTemplateExists = errors.New("a template of that name exists")
 	// ErrTemplateScope: a scope the caller may not save in or name.
 	ErrTemplateScope = errors.New("invalid template scope")
 )
@@ -115,7 +117,7 @@ func templateScopeID(o Owner, scope string) (string, error) {
 // template named as, in scope. The caller's grant (workspace.templates,
 // and the tenant value for a tenant template) is the tool's to check; this
 // checks the source is the caller's, the scope, the name and the bounds.
-// A name already held in that scope is ErrNameTaken: a template is never
+// A name already held in that scope is ErrTemplateExists: a template is never
 // overwritten.
 func (m *Manager) SaveTemplate(ctx context.Context, o Owner, src store.WorkspaceRow, checkpoint, as, scope string) (store.WorkspaceTemplateRow, error) {
 	if o.IsPrincipal() || o.RunID == "" || src.OwnerRunID != o.RunID || src.TenantID != o.TenantID || src.OwnerKind != o.kind() {
@@ -132,7 +134,7 @@ func (m *Manager) SaveTemplate(ctx context.Context, o Owner, src store.Workspace
 		return store.WorkspaceTemplateRow{}, fmt.Errorf("%w: %q is %s", ErrNotReady, src.Name, src.State)
 	}
 	if _, err := m.store.WorkspaceTemplateGet(ctx, o.TenantID, scope, scopeID, as); err == nil {
-		return store.WorkspaceTemplateRow{}, fmt.Errorf("%w: a %s template %q", ErrNameTaken, scope, as)
+		return store.WorkspaceTemplateRow{}, fmt.Errorf("%w: a %s template %q", ErrTemplateExists, scope, as)
 	} else if !isNotFound(err) {
 		return store.WorkspaceTemplateRow{}, err
 	}
@@ -161,7 +163,7 @@ func (m *Manager) SaveTemplate(ctx context.Context, o Owner, src store.Workspace
 		_ = os.Remove(path)
 		var conflict *store.ErrConflict
 		if errors.As(err, &conflict) {
-			return store.WorkspaceTemplateRow{}, fmt.Errorf("%w: a %s template %q", ErrNameTaken, scope, as)
+			return store.WorkspaceTemplateRow{}, fmt.Errorf("%w: a %s template %q", ErrTemplateExists, scope, as)
 		}
 		return store.WorkspaceTemplateRow{}, err
 	}
