@@ -77,6 +77,26 @@ func newExposureFixture(t *testing.T) *exposureFixture {
 			w.Header().Set("Location", "/there?x=1")
 			w.WriteHeader(http.StatusFound)
 			return
+		case "/hostile":
+			// Headers that act on the whole origin, which the core's own
+			// origin would apply, beside the few a page needs.
+			h := w.Header()
+			for k, v := range map[string]string{
+				"Clear-Site-Data": `"*"`, "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
+				"Access-Control-Allow-Origin": "*", "Access-Control-Allow-Credentials": "true", "Refresh": "0; url=https://evil.example/",
+				"Link": "<https://evil.example/x.js>; rel=preload", "Service-Worker-Allowed": "/",
+				"Origin-Agent-Cluster": "?0", "Permissions-Policy": "camera=*", "Alt-Svc": `h3=":443"`,
+				"Nel": `{"report_to":"x","max_age":1}`, "Report-To": `{"group":"x"}`, "Reporting-Endpoints": `x="https://evil.example/"`,
+				"X-Frame-Options": "ALLOWALL", "Content-Security-Policy-Report-Only": "default-src *",
+				"Content-Type": "text/html; charset=utf-8", "Etag": `"v1"`, "Last-Modified": "Wed, 25 Nov 2026 10:00:00 GMT",
+				"Content-Disposition": "inline", "Cache-Control": "public, max-age=86400", "Trailer": "X-Late",
+			} {
+				h.Set(k, v)
+			}
+			http.SetCookie(w, &http.Cookie{Name: "sid", Value: "s3cret"})
+			_, _ = io.WriteString(w, "<p>page</p>")
+			h.Set("X-Late", "trailer")
+			return
 		case "/away":
 			w.Header().Set("Location", "https://example.com/elsewhere")
 			w.WriteHeader(http.StatusFound)
@@ -313,4 +333,37 @@ func TestExposureRoute_RefusesPastTheRequestRate(t *testing.T) {
 	if codes[http.StatusTooManyRequests] == 0 || codes[http.StatusOK] == 0 {
 		t.Errorf("5 quick requests at 1/s gave %v, want some 200 and some 429", codes)
 	}
+}
+
+// Only the headers a page needs reach the client (the security review of
+// #2931): an exposed server's answer is forwarded by allowlist, so a header
+// that acts on the whole origin the core serves from — clearing its
+// storage, pinning HSTS, opening CORS, a preload or a refresh, a service
+// worker's scope, reporting — never applies there. Cache-Control is the
+// runtime's, private and never stored; trailers are dropped too.
+func TestExposureRoute_ForwardsOnlyTheHeadersAPageNeeds(t *testing.T) {
+	f := newExposureFixture(t)
+	w := f.as(alice, "GET", exposurePrefix+testExposureID+"/hostile", nil)
+	if w.Code != http.StatusOK || w.Body.String() != "<p>page</p>" {
+		t.Fatalf("= %d %q", w.Code, w.Body.String())
+	}
+	res := w.Result()
+	for _, h := range []string{"Clear-Site-Data", "Set-Cookie", "Strict-Transport-Security", "Access-Control-Allow-Origin",
+		"Access-Control-Allow-Credentials", "Refresh", "Link", "Service-Worker-Allowed", "Origin-Agent-Cluster",
+		"Permissions-Policy", "Alt-Svc", "Nel", "Report-To", "Reporting-Endpoints", "X-Frame-Options",
+		"Content-Security-Policy-Report-Only", "Trailer", "X-Late"} {
+		if v := res.Header.Values(h); len(v) != 0 {
+			t.Errorf("%s reached the client: %v", h, v)
+		}
+		if v := res.Trailer.Values(h); len(v) != 0 {
+			t.Errorf("trailer %s reached the client: %v", h, v)
+		}
+	}
+	for h, want := range map[string]string{"Content-Type": "text/html; charset=utf-8", "Etag": `"v1"`,
+		"Last-Modified": "Wed, 25 Nov 2026 10:00:00 GMT", "Content-Disposition": "inline", "Cache-Control": "private, no-store"} {
+		if got := res.Header.Get(h); got != want {
+			t.Errorf("%s = %q, want %q", h, got, want)
+		}
+	}
+	wantSandboxed(t, "a hostile answer", w)
 }
