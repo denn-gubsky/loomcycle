@@ -40,16 +40,27 @@ func (h *Host) Start(ctx context.Context, req StartRequest) (Process, error) {
 	if err != nil {
 		return nil, err
 	}
-	stdout, err := cmd.StdoutPipe()
+	// An os.Pipe, not cmd.StdoutPipe: Wait closes a StdoutPipe as soon as
+	// the program exits, which below runs at once, so a program that wrote
+	// and exited quickly lost its output under the reader ("file already
+	// closed"). The read end is the caller's; it ends at EOF, once the
+	// program and what it left in its group (killed after Wait) are gone.
+	stdout, w, err := os.Pipe()
 	if err != nil {
 		return nil, err
 	}
+	cmd.Stdout = w
 	tail := &tailBuffer{max: stderrTail}
 	cmd.Stderr = tail
-	if err := procgroup.StartInOwnGroup(cmd); err != nil {
+	err = procgroup.StartInOwnGroup(cmd)
+	// The child holds its own copy of the write end; ours must close, or
+	// the reader never sees EOF.
+	_ = w.Close()
+	if err != nil {
+		_ = stdout.Close()
 		return nil, fmt.Errorf("starting %s: %w", argv[0], err)
 	}
-	p := &hostProcess{cmd: cmd, stdin: stdin, stdout: stdout, tail: tail, done: make(chan struct{})}
+	p := &hostProcess{cmd: cmd, stdin: stdin, stdout: &closeAtEnd{f: stdout}, tail: tail, done: make(chan struct{})}
 	safego.Go(context.WithoutCancel(ctx), "workspace.engine.host-wait", func() {
 		defer close(p.done)
 		_ = cmd.Wait()
@@ -83,6 +94,22 @@ func (p *hostProcess) Interrupt() error {
 }
 
 func (p *hostProcess) Kill() error { return procgroup.KillGroup(p.cmd) }
+
+// closeAtEnd is the read end of a started program's output, closed once a
+// read ends it (EOF, or an error): every reader of a Process reads to the
+// end (a server's log, a kernel's frames), so the file is not left open.
+type closeAtEnd struct {
+	f    *os.File
+	once sync.Once
+}
+
+func (c *closeAtEnd) Read(b []byte) (int, error) {
+	n, err := c.f.Read(b)
+	if err != nil {
+		c.once.Do(func() { _ = c.f.Close() })
+	}
+	return n, err
+}
 
 // tailBuffer keeps the last max bytes written to it.
 type tailBuffer struct {

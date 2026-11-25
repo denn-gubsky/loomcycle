@@ -141,6 +141,7 @@ Every edge is a statement: an id, a status (`proposed`, `asserted`,
 | op | What it does | Required besides `op` |
 |---|---|---|
 | `describe_ontology` | the tenant ontology in force: classes, relation kinds, concept schemes, instances | — |
+| `ontology_signals` | what the corpus uses and the ontology does not declare: undeclared types and relation kinds, and statements marked `ontology_valid:false` by kind and ends (an operator's read; ids and counts only) | — |
 | `node_stats` | report or recompute the statistics and series of the taxonomy's nodes (an operator's or a granted pass) | — |
 | `measure` | the taxonomy's series per node and period: count, share, shift, unplaced; as stored at a past moment; concepts ordered by share change | `measure` |
 | `extract_citations` | find and resolve the citations in a document's or a chunk's text; read-only | `document_id` or `id` |

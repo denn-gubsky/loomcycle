@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/denn-gubsky/loomcycle/internal/audit"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/workspace"
 	"github.com/denn-gubsky/loomcycle/internal/workspace/worker"
@@ -147,5 +148,74 @@ func TestForkForChild_HoldsTheChildsEngineFloorAndLimit(t *testing.T) {
 	}
 	if _, err := f.m.ForkForChild(ctx, parent, ChildFork{Child: child, Name: "work", As: "two"}); !errors.Is(err, ErrLimit) {
 		t.Errorf("a fork past the child's max_per_run = %v, want ErrLimit", err)
+	}
+}
+
+// forkLines is the workspace_fork lines log holds.
+func forkLines(log *auditLog) []audit.Event {
+	log.mu.Lock()
+	defer log.mu.Unlock()
+	var out []audit.Event
+	for _, ev := range log.evs {
+		if ev.Action == "workspace_fork" {
+			out = append(out, ev)
+		}
+	}
+	return out
+}
+
+// D-P6-22 (ruled 2026-11-25): every fork made writes one workspace_fork
+// audit line naming the source workspace, the copy, the source run and the
+// receiving run, on both paths; a refused fork writes none.
+func TestFork_EachForkMadeWritesOneAuditLineNamingBothRuns(t *testing.T) {
+	f := newFixture(t, Limits{MaxPerRun: 2}, worker.Options{})
+	log := &auditLog{}
+	f.m.SetAudit(log)
+	ctx := context.Background()
+	parent, bob := f.run(t, "alice"), f.run(t, "bob")
+	src := f.open(t, parent, "work")
+	child := f.child(t, parent)
+
+	// Refused: another run's row, a child of another user, a name taken.
+	_, _, _ = f.m.Fork(ctx, bob, src, "stolen", "")
+	otherUser := f.child(t, parent)
+	otherUser.UserID = "bob"
+	_, _ = f.m.ForkForChild(ctx, parent, ChildFork{Child: otherUser, Name: "work"})
+	_, _, _ = f.m.Fork(ctx, parent, src, "work", "")
+	if got := forkLines(log); len(got) != 0 {
+		t.Fatalf("refused forks wrote %d audit lines: %+v", len(got), got)
+	}
+
+	own, _, err := f.m.Fork(ctx, parent, src, "mine", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	theirs, err := f.m.ForkForChild(ctx, parent, ChildFork{Child: child, Name: "work"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Refused past the limit, after the copies: still no line.
+	_, _, _ = f.m.Fork(ctx, parent, src, "third", "")
+
+	got := forkLines(log)
+	if len(got) != 2 {
+		t.Fatalf("audit lines = %+v, want one per fork made", got)
+	}
+	for i, want := range []struct {
+		fork          store.WorkspaceRow
+		peerRun, peer string
+		op            string
+	}{
+		{own, parent.RunID, parent.AgentID, "fork"},
+		{theirs, child.RunID, child.AgentID, "fork at spawn"},
+	} {
+		ev := got[i]
+		if ev.WorkspaceID != src.ID || ev.TargetName != "workspace:work" || ev.TargetTenant != "acme" ||
+			ev.WorkspaceOwnerRunID != parent.RunID || ev.WorkspaceOwnerAgentID != parent.AgentID ||
+			ev.WorkspacePeerRunID != want.peerRun || ev.WorkspacePeerAgentID != want.peer ||
+			ev.WorkspaceForkID != want.fork.ID || ev.WorkspaceForkName != want.fork.Name || ev.WorkspaceOp != want.op ||
+			ev.ActorTenant != "acme" || ev.ActorSubject != "alice" {
+			t.Errorf("line %d = %+v", i, ev)
+		}
 	}
 }
