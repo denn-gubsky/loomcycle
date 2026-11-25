@@ -711,3 +711,66 @@ func TestProxy_ARelativeBaseGrantGetsLinksAndRedirectsRelativeToThePage(t *testi
 		}
 	}
 }
+
+// When the operator declares a route to PyPI's file host, PyPI's links are
+// rewritten to it whether the workspace holds it or not (P4 plan O34, ruled
+// 2026-11-25), so a workspace without it is refused with the route's name
+// rather than pointed at a host it cannot resolve. A tenant's pypi route is
+// still never rewritten.
+func TestProxy_RewritesPyPILinksToTheOperatorsFilesRouteWhenNotHeld(t *testing.T) {
+	up := newUpstream(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = io.WriteString(w, pypiPage)
+	})
+	addr := up.Listener.Addr().String()
+	p, _ := newTestProxy(t, nil, func(o *Options) {
+		o.TLSConfig.ServerName = "example.com"
+		o.dial = func(ctx context.Context, network, _ string) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, network, addr)
+		}
+		o.PyPIFilesRoute = "pypi-files"
+	})
+	g := grantOf(Route{Name: "pypi", URL: "https://pypi.org/"})
+	resp, err := do(t, p, g, Request{Route: "pypi", Path: "simple/pkg/"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body, want := readAll(t, resp), `<a href="http://egress/pypi-files/packages/ab/cd/pkg-1.0.tar.gz#sha256=0123">pkg-1.0.tar.gz</a>`; body != want {
+		t.Fatalf("body = %q, want %q", body, want)
+	}
+	hits := up.hits.Load()
+	_, err = do(t, p, g, Request{Route: "pypi-files", Path: "packages/ab/cd/pkg-1.0.tar.gz"})
+	ref := wantRefusal(t, err, http.StatusForbidden)
+	if !strings.Contains(ref.Reason, `route "pypi-files" is not one this workspace holds`) {
+		t.Fatalf("reason %q does not name the route", ref.Reason)
+	}
+	if up.hits.Load() != hits {
+		t.Fatal("the refused download reached the network")
+	}
+	tenant := grantOf(Route{Name: "pypi", URL: "https://pypi.org/", Tenant: true})
+	resp, err = do(t, p, tenant, Request{Route: "pypi", Path: "simple/pkg/"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body := readAll(t, resp); body != pypiPage {
+		t.Fatalf("a tenant's route was rewritten: %q", body)
+	}
+}
+
+func TestPyPIFilesRoute_IsTheOperatorsRouteToTheFileHost(t *testing.T) {
+	for _, c := range []struct {
+		routes []Route
+		want   string
+	}{
+		{nil, ""},
+		{[]Route{{Name: "pypi", URL: "https://pypi.org/"}}, ""},
+		{[]Route{{Name: "pypi-files", URL: "https://files.pythonhosted.org/"}}, "pypi-files"},
+		{[]Route{{Name: "pf", URL: "https://files.pythonhosted.org/", Tenant: true}}, ""},
+		{[]Route{{Name: "zz", URL: "https://files.pythonhosted.org/"}, {Name: "files", URL: "https://files.pythonhosted.org/"}}, "files"},
+	} {
+		if got := PyPIFilesRoute(c.routes); got != c.want {
+			t.Errorf("%+v: %q, want %q", c.routes, got, c.want)
+		}
+	}
+}

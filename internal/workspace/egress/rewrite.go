@@ -24,9 +24,13 @@ type pypiRewrite struct {
 }
 
 // rewriteFor is the rewrite an answer through rt gets, or nil. Only an
-// operator's route on pypi.org, and only when the workspace also holds an
-// operator's route on the file host: a tenant's route is never rewritten,
-// whatever its URL, and a link is never pointed at a route a tenant wrote.
+// operator's route on pypi.org is rewritten, never a tenant's, and a link is
+// never pointed at a route a tenant wrote. The target is the operator's
+// route on the file host that the workspace holds, else the one the operator
+// declares (PyPIFilesRoute) even though the workspace does not hold it: the
+// download is then refused naming that route, where an unrewritten link
+// would send the session to a host it cannot resolve (P4 plan O34, which
+// widens D28's "when the workspace also holds the paired route").
 func (p *Proxy) rewriteFor(g Grant, rt Route, base string) *pypiRewrite {
 	if rt.Tenant {
 		return nil
@@ -35,16 +39,32 @@ func (p *Proxy) rewriteFor(g Grant, rt Route, base string) *pypiRewrite {
 	if err != nil || !strings.EqualFold(u.Host, pypiHost) {
 		return nil
 	}
-	for _, f := range g.Routes {
+	name := PyPIFilesRoute(g.Routes)
+	if name == "" {
+		name = p.filesRoute
+	}
+	if name == "" {
+		return nil
+	}
+	return &pypiRewrite{from: []byte(pypiFilesURL), to: []byte(base + name + "/")}
+}
+
+// PyPIFilesRoute is the name of the operator's route to PyPI's file host
+// among routes, the first by name when there are several; "" for none.
+func PyPIFilesRoute(routes []Route) string {
+	name := ""
+	for _, f := range routes {
 		if f.Tenant || f.URL != pypiFilesURL {
 			continue
 		}
 		if _, err := checkRoute(f); err != nil {
 			continue
 		}
-		return &pypiRewrite{from: []byte(pypiFilesURL), to: []byte(base + f.Name + "/")}
+		if name == "" || f.Name < name {
+			name = f.Name
+		}
 	}
-	return nil
+	return name
 }
 
 // rewritable reports whether an answer is an index page the rewrite reads:
