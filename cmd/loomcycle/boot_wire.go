@@ -287,6 +287,8 @@ func (b *boot) bindStoreToTools() {
 	// document id first, so the rename cannot lose track of it (RFC FY Part C).
 	pathTool.Identities = documentTool
 	pathTool.Annotations = documentTool
+	// ls with_counts and the listing filters read the documents' metadata (RFC HA).
+	pathTool.Documents = documentTool
 	documentTool.Store = storeIface
 	// Document op=search runs the SAME backend instance as the Memory tool, so a
 	// document search and a memory search over the same chunks rank them alike.
