@@ -1254,7 +1254,13 @@ class LoomcycleClient:
         resolve / ls / stat / mkdir / mv / rm. Address resources by
         human-readable paths (e.g. ``/docs/launch``). Scope (agent/user/
         tenant) + tenant are resolved server-side from the authenticated
-        principal, never the wire. Mirror of :meth:`agent_def`."""
+        principal, never the wire. Mirror of :meth:`agent_def`.
+
+        A one-level ``ls`` takes ``with_counts`` (each folder entry gains
+        ``documents``: the documents the caller may read under it, exact to
+        10,000, then ``documents_capped``) and the filters ``name_contains`` /
+        ``type`` (with subtypes) / ``status``, echoed back as ``filters``
+        (RFC HA)."""
         return await self._dispatch_substrate("Path", input)
 
     async def document(self, input: Mapping[str, Any]) -> Mapping[str, Any]:

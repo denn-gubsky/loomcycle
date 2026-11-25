@@ -57,6 +57,47 @@ async def test_path_happy_path():
 
 
 @pytest.mark.asyncio
+async def test_path_ls_carries_counts_and_filters():
+    """RFC HA: with_counts and the filters ride the input as given; the
+    answer's documents / documents_capped / matched / filters come back."""
+    client = _make_client()
+    answer = {
+        "path": "/kb",
+        "entries": [
+            {"name": "a", "kind": "directory", "full_path": "/kb/a", "documents": 10000, "documents_capped": True},
+            {"name": "b", "kind": "document", "full_path": "/kb/b", "matched": True},
+        ],
+        "filters": {"name_contains": "arch", "type": "Guide", "status": "done"},
+    }
+    fake, captured = _async_returning(pb.SubstrateResponse(output_json=json.dumps(answer).encode(), is_error=False))
+    client._stub.Path = fake  # type: ignore[attr-defined]
+
+    sent = {
+        "op": "ls",
+        "scope": "tenant",
+        "path": "/kb",
+        "with_counts": True,
+        "name_contains": "arch",
+        "type": "Guide",
+        "status": "done",
+    }
+    assert await client.path(sent) == answer
+    assert json.loads(captured["req"].input_json) == sent
+
+
+@pytest.mark.asyncio
+async def test_query_chunks_with_summary_returns_each_chunks_brief():
+    client = _make_client()
+    answer = {"chunks": [{"id": "c1", "title": "Setup", "summary": {"level": "branch", "brief": "Setting up"}}]}
+    fake, captured = _async_returning(pb.SubstrateResponse(output_json=json.dumps(answer).encode(), is_error=False))
+    client._stub.Document = fake  # type: ignore[attr-defined]
+
+    sent = {"op": "query_chunks", "scope": "tenant", "document_id": "d1", "with_summary": True}
+    assert await client.document(sent) == answer
+    assert json.loads(captured["req"].input_json) == sent
+
+
+@pytest.mark.asyncio
 async def test_path_refusal_raises_with_tool():
     client = _make_client()
     fake, _ = _async_returning(
