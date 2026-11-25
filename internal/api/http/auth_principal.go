@@ -504,11 +504,12 @@ func extractBearer(r *http.Request, strict bool) (string, bool) {
 	// WebSocket) carry the bearer as a Sec-WebSocket-Protocol entry of the form
 	// "bearer.<token>" (RFC BC). The app subprotocol is negotiated separately in
 	// the /v1/client-tools handler; this entry is never echoed back. Read only on
-	// a WebSocket upgrade to that route (RFC ES #5): elsewhere the header would be
-	// a second credential channel that proxies and logs do not treat as one.
-	// Strict mode does not read it (RFC FA §4): a browser there authenticates
-	// by its session.
-	if strict || !isClientToolsUpgrade(r) {
+	// a WebSocket upgrade to that route, or to a workspace's exposed page (RFC
+	// GW §5.3, which names this same channel) (RFC ES #5): elsewhere the header
+	// would be a second credential channel that proxies and logs do not treat
+	// as one. Strict mode does not read it (RFC FA §4): a browser there
+	// authenticates by its session.
+	if strict || !(isClientToolsUpgrade(r) || isExposureSocketUpgrade(r)) {
 		return "", false
 	}
 	if protos := r.Header.Get("Sec-WebSocket-Protocol"); protos != "" {

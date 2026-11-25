@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
+
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	storesqlite "github.com/denn-gubsky/loomcycle/internal/store/sqlite"
@@ -169,6 +171,21 @@ while True:
 	}
 	if n := strings.Count(out.String(), "accepted"); n != probed {
 		t.Errorf("the host service accepted %d connections through the route", n-probed)
+	}
+	// A socket to the same port is refused the same way (P9 PR 5): the
+	// upgrade dials through the same tunnel and its listener check.
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mux.ServeHTTP(w, r.WithContext(auth.WithPrincipal(r.Context(), *alice)))
+	}))
+	defer ts.Close()
+	wctx, wcancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer wcancel()
+	if _, resp, err := websocket.Dial(wctx, "ws"+strings.TrimPrefix(ts.URL, "http")+foreign+"ws", &websocket.DialOptions{
+		Subprotocols: []string{exposureSocketMarker, "bearer.lc_test"}}); err == nil || resp == nil || resp.StatusCode != http.StatusBadGateway {
+		t.Errorf("a socket to a port only declared by a dummy server: %v %v, want 502", err, resp)
+	}
+	if n := strings.Count(out.String(), "accepted"); n != probed {
+		t.Errorf("the host service accepted %d connections through a socket", n-probed)
 	}
 
 	// The run's release closes both pages.

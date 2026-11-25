@@ -44,6 +44,11 @@ type exposureFixture struct {
 	dialErr error
 	mux     *http.ServeMux
 	lim     exposeRouteLimits
+	// wsApp, when set, answers the application's /ws… paths (P9 PR 5).
+	wsApp http.HandlerFunc
+	// recheck, when set, is how often an open socket asks whether its
+	// exposure is still open.
+	recheck time.Duration
 }
 
 // testExposures is the real bookkeeping with the dial sent to the fixture's
@@ -74,6 +79,10 @@ func newExposureFixture(t *testing.T) *exposureFixture {
 		f.seen = append(f.seen, seenRequest{Path: r.URL.RequestURI(), Host: r.Host, Origin: r.Header.Get("Origin"),
 			Auth: r.Header.Get("Authorization"), Cookie: r.Header.Get("Cookie"), Header: r.Header.Clone()})
 		f.mu.Unlock()
+		if f.wsApp != nil && strings.HasPrefix(r.URL.Path, "/ws") {
+			f.wsApp(w, r)
+			return
+		}
 		switch r.URL.Path {
 		case "/redirect":
 			w.Header().Set("Location", "/there?x=1")
@@ -144,7 +153,11 @@ func newExposureFixture(t *testing.T) *exposureFixture {
 // rebuild makes the route's mux again with the fixture's limits.
 func (f *exposureFixture) rebuild() {
 	f.mux = http.NewServeMux()
-	f.mux.Handle(exposureRoutePattern, newExposureHandler(testExposures{Manager: f.m, f: f}, f.lim))
+	h := newExposureHandler(testExposures{Manager: f.m, f: f}, f.lim)
+	if f.recheck > 0 {
+		h.socketRecheck = f.recheck
+	}
+	f.mux.Handle(exposureRoutePattern, h)
 }
 
 // as is a request with a bearer header, authenticated as p (nil p: no
@@ -328,12 +341,13 @@ func TestExposureRoute_APortNotServedIsABadGateway(t *testing.T) {
 	wantSandboxed(t, "502", w)
 }
 
-// A WebSocket upgrade is refused until WebSocket arrives (P9 PR 5).
-func TestExposureRoute_RefusesAWebSocketUpgrade(t *testing.T) {
+// An upgrade to anything but WebSocket (h2c) is refused, and reaches no
+// application.
+func TestExposureRoute_RefusesAnUpgradeThatIsNotWebSocket(t *testing.T) {
 	f := newExposureFixture(t)
-	w := f.as(alice, "GET", pagePath, map[string]string{"Connection": "Upgrade", "Upgrade": "websocket"})
+	w := f.as(alice, "GET", pagePath, map[string]string{"Connection": "Upgrade", "Upgrade": "h2c"})
 	if w.Code != http.StatusNotImplemented {
-		t.Errorf("an upgrade = %d, want 501", w.Code)
+		t.Errorf("an h2c upgrade = %d, want 501", w.Code)
 	}
 	if n := f.seenCount(); n != 0 {
 		t.Errorf("the application received %d requests", n)

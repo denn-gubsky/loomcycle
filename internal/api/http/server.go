@@ -1256,10 +1256,11 @@ type workspaceReleaser interface {
 }
 
 // SetWorkspaceExposures serves the workspaces' exposed ports (RFC GW §5.3)
-// with workspace.expose's bounds. Boot wiring only.
-func (s *Server) SetWorkspaceExposures(x workspaceExposures, maxConnections, requestsPerSecond int, bytesPerSecond int64) {
-	s.exposures = newExposureHandler(x, exposeRouteLimits{MaxConnections: maxConnections,
-		RequestsPerSecond: requestsPerSecond, BytesPerSecond: bytesPerSecond})
+// with workspace.expose's bounds (resolved). Boot wiring only.
+func (s *Server) SetWorkspaceExposures(x workspaceExposures, c config.WorkspaceExposeConfig) {
+	s.exposures = newExposureHandler(x, exposeRouteLimits{MaxConnections: c.MaxConnections,
+		RequestsPerSecond: c.RequestsPerSecond, BytesPerSecond: c.BytesPerSecond, MaxMessageBytes: c.MaxMessageBytes,
+		SocketIdle: time.Duration(c.IdleTimeoutS) * time.Second, SocketLifetime: time.Duration(c.SocketLifetimeS) * time.Second})
 }
 
 // handleWorkspaceExposure serves the route, or 404 with no bookkeeping.

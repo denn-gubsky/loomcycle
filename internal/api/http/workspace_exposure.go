@@ -33,6 +33,11 @@ type exposeRouteLimits struct {
 	MaxConnections    int
 	RequestsPerSecond int
 	BytesPerSecond    int64
+	// MaxMessageBytes bounds one WebSocket message, each way.
+	MaxMessageBytes int64
+	// SocketIdle closes a socket no message crossed for this long;
+	// SocketLifetime closes any socket this long after it opened.
+	SocketIdle, SocketLifetime time.Duration
 }
 
 const (
@@ -51,6 +56,10 @@ const (
 	exposurePolicy = "sandbox allow-scripts allow-forms; connect-src 'self'"
 	// exposureHeaderBytes bounds an application's answer's headers.
 	exposureHeaderBytes = 64 << 10
+	// exposureSocketMarker is the subprotocol a client offers beside its
+	// bearer and the application's own (RFC GW §5.3): the answer when the
+	// application chooses none, so a browser's socket connects.
+	exposureSocketMarker = "loomcycle.surface.v1"
 )
 
 // exposureHandler serves /v1/workspaces/exposures/{id}/… (RFC GW §5.3, P9
@@ -58,10 +67,14 @@ const (
 type exposureHandler struct {
 	x    workspaceExposures
 	gate *exposureGate
+	lim  exposeRouteLimits
+	// socketRecheck is how often an open socket asks whether its exposure
+	// is still open (unexposed, released, the switch turned off).
+	socketRecheck time.Duration
 }
 
 func newExposureHandler(x workspaceExposures, lim exposeRouteLimits) *exposureHandler {
-	return &exposureHandler{x: x, gate: newExposureGate(lim)}
+	return &exposureHandler{x: x, gate: newExposureGate(lim), lim: lim}
 }
 
 // exposureNotFound is the one answer for every caller the route will not
@@ -75,7 +88,15 @@ func (h *exposureHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// The bearer in the Authorization header, and nothing else: no cookie
 	// (a browser sent to this address must run nothing), no token in the
 	// address, no subprotocol (WebSocket is P9 PR 5).
-	if _, viaCookie := uiAuthFrom(r.Context()); viaCookie || !strings.HasPrefix(strings.ToLower(r.Header.Get("Authorization")), "bearer ") {
+	// A socket's bearer may come as a subprotocol instead (a browser's
+	// socket cannot set the header), which the middleware reads on an
+	// upgrade to this route alone. A cookie never authenticates here, which
+	// is what keeps a page of another site from opening a socket in the
+	// user's name (cross-site WebSocket hijacking).
+	_, viaCookie := uiAuthFrom(r.Context())
+	headerBearer := strings.HasPrefix(strings.ToLower(r.Header.Get("Authorization")), "bearer ")
+	socketBearer := isWebSocketUpgrade(r) && socketBearerOffered(r)
+	if viaCookie || !(headerBearer || socketBearer) {
 		http.Error(w, "this route takes the bearer in the Authorization header", http.StatusUnauthorized)
 		return
 	}
@@ -98,10 +119,11 @@ func (h *exposureHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "the page cannot be served now", http.StatusServiceUnavailable)
 		return
 	}
-	if isUpgrade(r) {
-		http.Error(w, "WebSocket is not served on this route yet", http.StatusNotImplemented)
+	if isUpgrade(r) && !isWebSocketUpgrade(r) {
+		http.Error(w, "only a WebSocket upgrade is served on this route", http.StatusNotImplemented)
 		return
 	}
+	// A socket counts as one open request for its whole life.
 	release, why := h.gate.admit(row.ID)
 	if why != "" {
 		http.Error(w, why, http.StatusTooManyRequests)
@@ -112,6 +134,10 @@ func (h *exposureHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	rest := strings.TrimPrefix(r.URL.EscapedPath(), prefix)
 	if rest == "" || rest[0] != '/' {
 		rest = "/" + rest
+	}
+	if isWebSocketUpgrade(r) {
+		h.serveSocket(w, r, e, row, p.TenantID, p.Subject, rest)
+		return
 	}
 	rp := &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
