@@ -608,7 +608,9 @@ A header depends on the titles above a chunk, so the index follows the tree.
 | `limit` | chunks to **change** per call (default 200). Chunks already up to date are stepped over and do not count, so a mostly-current store still makes progress. A call also stops after examining 5,000 chunks. |
 | `after` | resume cursor: pass back `next_cursor` while `more` is true |
 
-The response is `{scope, dry_run, examined, up_to_date, reindexed, unindexed, failed, failed_keys, next_cursor, more}`.
+The response is `{scope, dry_run, examined, up_to_date, reindexed, unindexed, failed, failed_keys, annotations_examined, annotations_up_to_date, annotations_reindexed, annotations_unindexed, annotations_failed, next_cursor, more}`.
+
+- **Annotations too.** With `scope=tenant` (the only scope annotations live in), the pass then walks the annotation records and re-embeds each index row whose vector is missing, was made by another embed model, or sits under text other than what the record derives now; the `annotations_*` counts report it. A declared taxonomy node record has no row, and a leftover one is removed (`annotations_unindexed`). `limit` counts changed chunks and annotation rows together, and `next_cursor` resumes in whichever phase a call stopped. A dry run with no embedder configured judges the text alone.
 
 - The pass is **idempotent**: a chunk already indexed under its current text costs one read and no embedding call.
 - It needs SQL Memory (503 `sqlmem_unavailable`), and for a real run an embedder (503 `embedder_unavailable`).
