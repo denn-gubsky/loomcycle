@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"path"
 	"path/filepath"
@@ -70,16 +71,23 @@ func (c *Container) Start(ctx context.Context, req StartRequest) (Process, error
 	if err != nil {
 		return nil, err
 	}
-	stdout, err := cmd.StdoutPipe()
+	// An os.Pipe, not cmd.StdoutPipe, for the reason Host.Start gives: the
+	// reap below would close the pipe under a reader of a client that
+	// exited quickly, losing the end of its output (a relay's last bytes).
+	stdout, w, err := os.Pipe()
 	if err != nil {
 		return nil, err
 	}
+	cmd.Stdout = w
 	tail := &tailBuffer{max: stderrTail}
 	cmd.Stderr = tail
-	if err := cmd.Start(); err != nil {
+	err = cmd.Start()
+	_ = w.Close()
+	if err != nil {
+		_ = stdout.Close()
 		return nil, fmt.Errorf("start: %w", err)
 	}
-	p := &containerProcess{c: c, name: name, token: token, cmd: cmd, stdin: stdin, stdout: stdout, tail: tail, done: make(chan struct{})}
+	p := &containerProcess{c: c, name: name, token: token, cmd: cmd, stdin: stdin, stdout: &closeAtEnd{f: stdout}, tail: tail, done: make(chan struct{})}
 	safego.Go(context.WithoutCancel(ctx), "workspace.engine.container.start-wait", func() {
 		defer close(p.done)
 		_ = cmd.Wait()
