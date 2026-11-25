@@ -48,7 +48,7 @@ func (w *Workspace) Description() string {
 		"read, write, edit, glob, grep with the same arguments as the Read, Write, Edit, Glob and Grep tools (no `volume`); " +
 		"run_cell (`code`, optional `kernel` python|node, `timeout_s`) runs code in an interpreter that keeps its variables between cells, reset_kernel starts it clean. " +
 		"view (`path`) shows you a PNG, JPEG, GIF or WebP from the workspace as a picture, e.g. a chart you drew. " +
-		"start (`command`, optional `cwd`, `port`) runs a command that keeps running after the call, a server, and returns its id; stop (`server`) ends it; logs (`server`) reads its latest output, or without server lists the servers; request (`port`, `method`, `path`, optional `headers`, `body`) sends one HTTP request to a port a running server of the workspace declared and returns its status, headers and body (cut at 1 MiB); expose (`port`, optional `title`, `kind` page|panel) publishes that port to your user as a page in their chat and returns its base_path, unexpose (`port`) withdraws it. " +
+		"start (`command`, optional `cwd`, `port`) runs a command that keeps running after the call, a server, and returns its id; stop (`server`) ends it; logs (`server`) reads its latest output, or without server lists the servers; request (`port`, `method`, `path`, optional `headers`, `body`) sends one HTTP request to a port a running server of the workspace declared and returns its status, headers and body (cut at 1 MiB); expose (`port`, optional `title`, `kind` page|panel) publishes that port to your user as a page in their chat and returns its base_path, unexpose (`port`) withdraws it; await (optional `timeout_s`) returns the next update your application posted to the address its servers find in LOOMCYCLE_UPDATE_URL (what the person did in the page), or timed_out. " +
 		"share (`name`, `with`: another run of your user by its agent id, `access`: read or read_write) and unshare (`name`, `with`). " +
 		"checkpoint (`name`, optional `label`) records the workspace's files and answers an id; checkpoints lists them; restore (`name`, `checkpoint`) puts the files back and stops its interpreters and commands; delete_checkpoint frees one; fork (`name`, `as`, optional `checkpoint`) opens a second workspace of yours as a copy. Checkpoints count against the workspace's disk quota. " +
 		"A workspace another agent shared with you is named `<name>@<its agent id>` (list shows them): read, view, glob and grep on it, and write and edit with read_write; never exec or run_cell. " +
@@ -62,7 +62,7 @@ func (w *Workspace) InputSchema() json.RawMessage {
 	return json.RawMessage(`{
 		"type": "object",
 		"properties": {
-			"op":               {"type": "string", "enum": ["open","release","list","status","exec","read","write","edit","glob","grep","share","unshare","run_cell","reset_kernel","view","start","stop","logs","request","expose","unexpose","checkpoint","checkpoints","restore","delete_checkpoint","fork","save_template","delete_template","templates"]},
+			"op":               {"type": "string", "enum": ["open","release","list","status","exec","read","write","edit","glob","grep","share","unshare","run_cell","reset_kernel","view","start","stop","logs","request","await","expose","unexpose","checkpoint","checkpoints","restore","delete_checkpoint","fork","save_template","delete_template","templates"]},
 			"name":             {"type": "string", "description": "The workspace's name, your label for it within this run: 1-64 letters, digits, '.', '-', '_'. Every op but list takes it. A workspace shared with you: <name>@<owner agent id> (read, write, edit, glob, grep only)."},
 			"with":             {"type": "string", "description": "share/unshare: the agent id of the run to share with: your parent, a child, a sibling or another run of your user."},
 			"access":           {"type": "string", "enum": ["read","read_write"], "description": "share: read (read, glob, grep and copying files out) or read_write (also writing files in). Never commands."},
@@ -78,7 +78,7 @@ func (w *Workspace) InputSchema() json.RawMessage {
 			"kind":             {"type": "string", "enum": ["page","panel"], "description": "expose: how the chat shows it (default page)."},
 			"server":           {"type": "string", "description": "stop, logs: the server's id, as start returned it (srv-1, ...)."},
 			"tail_bytes":       {"type": "integer", "minimum": 1, "description": "logs with server: how much of its latest output to return (default 65536, at most 262144)."},
-			"timeout_s":        {"type": "integer", "minimum": 1, "description": "exec: seconds before the command and everything it started are killed; run_cell: seconds before the cell is interrupted. Default and ceiling are the operator's."},
+			"timeout_s":        {"type": "integer", "minimum": 1, "description": "exec: seconds before the command and everything it started are killed; run_cell: seconds before the cell is interrupted; await: seconds to wait for an update. Default and ceiling are the operator's."},
 			"code":             {"type": "string", "description": "run_cell: the code to run, up to 1 MiB. The last expression's value is returned."},
 			"kernel":           {"type": "string", "enum": ["python","node"], "description": "run_cell, reset_kernel: the interpreter (default python)."},
 			"label":            {"type": "string", "description": "checkpoint: a note to tell it by, up to 200 characters."},
@@ -142,6 +142,8 @@ var workspaceOpArgs = map[string][]string{
 	// RFC GW §5.3, D26: one HTTP request to a port of a server of the
 	// run's own workspace (P9 plan §3.2).
 	"request": {"name", "port", "method", "path", "headers", "body"},
+	// RFC GW §5.3: the next update the workspace's application posted.
+	"await": {"name", "timeout_s"},
 	// RFC GW §5.3: publish a port to the run's user, and withdraw it.
 	"expose":   {"name", "port", "title", "kind"},
 	"unexpose": {"name", "port"},
@@ -186,6 +188,8 @@ var workspaceOpGrant = map[string]string{
 	// A server is a command that keeps running (RFC GW §7: exec covers
 	// servers); its output is a command's, so reading it is exec's too.
 	"start": config.WorkspaceOpExec, "stop": config.WorkspaceOpExec, "logs": config.WorkspaceOpExec,
+	// What a server's application posted is a server's output (exec).
+	"await": config.WorkspaceOpExec,
 	// A request reaches what a command in the workspace could reach (curl to
 	// the same port), so it is exec's too until connect arrives (P9 PR 7).
 	"request": config.WorkspaceOpExec,
@@ -378,6 +382,8 @@ func (w *Workspace) Execute(ctx context.Context, input json.RawMessage) (tools.R
 		return w.serverOp(ctx, row, in), nil
 	case "request":
 		return w.request(ctx, row, in), nil
+	case "await":
+		return w.await(ctx, row, in), nil
 	case "expose", "unexpose":
 		return w.exposeOp(ctx, owner, in), nil
 	}
