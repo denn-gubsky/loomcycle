@@ -1846,6 +1846,7 @@ type Store interface {
 	DirentStore
 	EphemeralVolumeStore
 	WorkspaceStore
+	WorkspaceTemplateStore
 	ScheduleDefStore
 	ScheduleRunStateStore
 	A2ADefStore
