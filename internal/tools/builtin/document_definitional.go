@@ -174,6 +174,7 @@ func (d *Document) classPatterns(ctx context.Context, name string) map[string]st
 		return nil
 	}
 	var out map[string]string
+	aliases := memrank.TenantClassAliases(read.Terms, true)
 	for _, c := range memrank.EffectiveClasses(read.Terms, true) {
 		if !c.IsDocumentClass {
 			continue
@@ -183,6 +184,10 @@ func (d *Document) classPatterns(ctx context.Context, name string) map[string]st
 				out = map[string]string{}
 			}
 			out[strings.ToLower(c.Name)] = p
+			// A document still typed with the class's former name is of the class.
+			if former := aliases.Former(c.Name); former != "" {
+				out[strings.ToLower(former)] = p
+			}
 		}
 	}
 	return out

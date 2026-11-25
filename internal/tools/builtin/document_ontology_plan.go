@@ -63,6 +63,7 @@ type planEntry struct {
 	tag         string // concept: its mirror tag; scheme: its own tag segment
 	registryKey string // instance: the key its subject was adopted under
 	locked      bool   // its body carries @locked (document_ontology_locked.go)
+	former      string // class: the former name it reads rows under (@renamed_from), "" for none
 }
 
 // plannedChange is one change resolved against the ontology as read.
@@ -361,6 +362,9 @@ func planEntries(r OntologyRead) map[string]planEntry {
 		out[id] = e
 		return &e
 	}
+	// Honoured as the confirmed ontology honours them, whatever the status now: a plan
+	// is of what the change does once in force.
+	aliases := memrank.TenantClassAliases(r.Terms, true)
 	for _, t := range r.Terms {
 		// By the class's own chunk: a second in-force class of the same name is an entry
 		// too (its lock counts). classChunks is the fallback for a term built elsewhere.
@@ -368,7 +372,11 @@ func planEntries(r OntologyRead) map[string]planEntry {
 		if id == "" {
 			id = r.classChunks[strings.ToLower(t.Name)]
 		}
-		put(id, t.Name, memrank.SectionClasses, planKindClass, t.Locked)
+		if e := put(id, t.Name, memrank.SectionClasses, planKindClass, t.Locked); e != nil {
+			if e.former = aliases.Former(t.Name); e.former != "" {
+				out[id] = *e
+			}
+		}
 	}
 	for _, rel := range r.Relations {
 		put(rel.ChunkID, rel.Name, memrank.SectionRelations, planKindRelation, rel.Locked)
@@ -465,6 +473,10 @@ func (p *plannedChange) collectNames() {
 		case planKindClass:
 			if !renamedOnly {
 				p.classes = appendUnique(p.classes, e.Name)
+				// Rows still under the class's former name rest on the class too.
+				if e.former != "" {
+					p.classes = appendUnique(p.classes, e.former)
+				}
 			}
 		case planKindRelation:
 			if !renamedOnly {

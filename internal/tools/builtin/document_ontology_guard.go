@@ -642,6 +642,9 @@ func (d *Document) undeclaredEntityType(ctx context.Context, typ string) (declar
 	if len(effective) == 0 {
 		return nil, false
 	}
+	// A class's former name is the class (RFC GQ P5.1): a subject typed with it before
+	// the rename, or by a writer that has not caught up, is not of an undeclared kind.
+	typ = memrank.TenantClassAliases(tenantTerms, confirmed).Resolve(typ)
 	declared = make([]string, 0, len(effective))
 	for _, t := range effective {
 		if strings.EqualFold(t.Name, typ) {

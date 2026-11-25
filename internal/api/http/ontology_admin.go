@@ -433,8 +433,11 @@ func (s *Server) ontologyState(ctx context.Context, tenant string) (ontologyResp
 			if hasRelations {
 				resp.StatementVersions = usage.StatementVersions
 			}
+			// A type that is a class's former name (@renamed_from) is declared: that is
+			// the mapping this list tells the operator to write.
+			aliases := meminject.TenantClassAliases(terms, confirmed)
 			for _, tc := range usage.Types {
-				if !declaredClass[strings.ToLower(tc.Type)] && !meminject.IsReservedStructuralType(tc.Type) {
+				if !declaredClass[strings.ToLower(aliases.Resolve(tc.Type))] && !meminject.IsReservedStructuralType(tc.Type) {
 					resp.UndeclaredTypes = append(resp.UndeclaredTypes, tc)
 				}
 			}

@@ -175,6 +175,8 @@ func retiredClassNamed(read OntologyRead, typ string) (memrank.OntologyTerm, boo
 	if typ == "" {
 		return memrank.OntologyTerm{}, false
 	}
+	// A retired class's former name names it too (RFC GQ P5.1).
+	typ = memrank.TenantClassAliases(read.Terms, true).Resolve(typ)
 	for _, c := range memrank.EffectiveClasses(read.Terms, true) {
 		if c.EntryStatus != "" && strings.EqualFold(c.Name, typ) {
 			return c, true
