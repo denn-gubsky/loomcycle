@@ -420,6 +420,21 @@ jobs:
           grep -q -- '--- PASS: TestContainerKernel_' kernel.log
           ! grep -q -- '--- SKIP' kernel.log
 
+      # Egress end to end (RFC GW P4): pip and npm through the preset's
+      # routes, a tenant's credentialed route to a local HTTPS upstream on
+      # port 443 (hence the sysctl), two tenants with a route of the same
+      # name, and the token canary; first on the host engine's loopback
+      # port, then on two container-engine workers. Neither part may skip.
+      - name: Egress end to end
+        env:
+          LOOMCYCLE_REQUIRE_DOCKER: "1"
+          EGRESS_REQUIRE_API: "1"
+          WORKSPACE_IMAGE: ci-loomcycle-workspace
+        run: |
+          sudo sysctl -w net.ipv4.ip_unprivileged_port_start=0
+          EGRESS_ENGINE=host ./test/runtime/workspace/egress.sh
+          EGRESS_ENGINE=container ./test/runtime/workspace/egress.sh
+
       # A session's egress (RFC GW P4, plan O12): each session on a network
       # of its own with no route out, shared only with a gateway that
       # forwards to the worker over a Unix socket. The gateway needs python3,
