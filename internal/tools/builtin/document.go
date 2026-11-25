@@ -1683,7 +1683,10 @@ func (d *Document) provisionTables(ctx context.Context, key sqlmem.ScopeKey) err
 	if err := d.migrateMentionKinds(ctx, key); err != nil {
 		return err
 	}
-	return d.migrateOntologyVersion(ctx, key)
+	if err := d.migrateOntologyVersion(ctx, key); err != nil {
+		return err
+	}
+	return d.migrateOntologyContent(ctx, key)
 }
 
 // migrateConfidencePrecision widens chunk_memory_meta.confidence from postgres
