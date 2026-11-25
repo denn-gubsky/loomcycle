@@ -141,6 +141,12 @@ type DialRequest struct {
 	Root      string
 	// Port is the port on the workspace's own loopback, 1 to 65535.
 	Port int
+	// Owners are the processes of the servers that declared Port. The host
+	// engine reaches the port only when every listener on it is a process of
+	// one of their groups: a declared port is not a bound one, and on the
+	// host's shared loopback it could be the core's or any other service's.
+	// The container engine needs none: its relay dials inside the session.
+	Owners []Process
 }
 
 // Conn is a byte stream Dial opened.
