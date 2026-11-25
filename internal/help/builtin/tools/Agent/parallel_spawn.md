@@ -12,7 +12,8 @@ only the ones that failed.
 - `op` (required) — `parallel_spawn`.
 - `spawns` (required) — 1 to 32 entries, each `{name, prompt, def_id?,
   compaction?, timeout_ms?, untrusted?, result?, workspaces?}` with the same meaning as on `spawn`.
-  An entry's `untrusted` text and `workspaces` shares go to that child only. Do not also
+  An entry's `untrusted` text and `workspaces` shares and forks go to that child only; give each
+  child its own `{fork}` to fan out from one prepared workspace. Do not also
   pass a top-level `name`, `prompt` or `def_id`.
 - `result` — the default for every entry that names none: `text` (default) or
   `object`. Not with `mode: "poll"`.

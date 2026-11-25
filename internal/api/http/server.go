@@ -1251,6 +1251,8 @@ type workspaceReleaser interface {
 	ReleaseRun(ctx context.Context, runID string) error
 	// Share makes a spawn's workspace shares with its child (RFC GW P8).
 	Share(ctx context.Context, o lifecycle.Owner, name string, p lifecycle.Peer, access string) (store.WorkspaceRow, error)
+	// ForkForChild makes a spawn's workspace forks for its child (RFC GW P6).
+	ForkForChild(ctx context.Context, parent lifecycle.Owner, f lifecycle.ChildFork) (store.WorkspaceRow, error)
 }
 
 // SetWorkspaceExposures serves the workspaces' exposed ports (RFC GW §5.3)
@@ -6493,10 +6495,10 @@ func (s *Server) runSubRun(ctx context.Context, name, systemExtra, prompt, defID
 		return "", nil, "", err
 	}
 	defer prep.cleanup()
-	// The spawn's workspace shares (RFC GW P8) are made now: the child's run
-	// exists, and its first turn has not begun. One that cannot be made
-	// fails the child before that turn.
-	if err := s.shareSpawnWorkspaces(ctx, prep.RunID, prep.AgentID); err != nil {
+	// The spawn's workspace shares and forks (RFC GW P8, P6) are made now:
+	// the child's run exists, and its first turn has not begun. One that
+	// cannot be made fails the child before that turn.
+	if err := s.spawnWorkspaces(ctx, prep.LoopCtx, prep.RunID, prep.AgentID); err != nil {
 		s.finishRunWithCancel(ctx, prep.SteerCtx, prep.RunID, loop.RunResult{}, err, prep.Meta)
 		return "", nil, prep.RunID, err
 	}

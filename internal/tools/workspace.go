@@ -164,26 +164,33 @@ func (v WorkspacePolicyValue) Report() map[string]any {
 	return map[string]any{"ops": v.Ops(), "open": v.Open, "share": v.Share, "expose": v.Expose, "egress": egress, "engine": v.Engine}
 }
 
-// SpawnWorkspaceShare is one of a spawn's `workspaces` (RFC GW §5.2): a
-// workspace of the parent run to share with the child before its first turn.
-type SpawnWorkspaceShare struct {
-	Name   string
+// SpawnWorkspace is one of a spawn's `workspaces`: a workspace of the parent
+// run to share with the child before its first turn (RFC GW §5.2), or, with
+// Fork, to fork for the child, which owns the copy (§5.4).
+type SpawnWorkspace struct {
+	// Name is the parent's workspace.
+	Name string
+	// Access is a share's access; "" for a fork.
 	Access string
+	// Fork makes a copy of Name for the child, named As there ("" = Name).
+	Fork bool
+	As   string
 }
 
 type ctxKeySpawnWorkspaces struct{}
 
-// WithSpawnWorkspaces carries a spawn's workspace shares from the Agent tool
-// to the sub-run that makes them. It ALWAYS sets the value, an empty one
-// too, and the sub-run clears it: the sub-run's ctx is the root of
-// everything its child does, so a value left in place would be shared again
-// with a grandchild the child spawns.
-func WithSpawnWorkspaces(ctx context.Context, in []SpawnWorkspaceShare) context.Context {
+// WithSpawnWorkspaces carries a spawn's workspace shares and forks from the
+// Agent tool to the sub-run that makes them. It ALWAYS sets the value, an
+// empty one too, and the sub-run clears it: the sub-run's ctx is the root
+// of everything its child does, so a value left in place would be made
+// again for a grandchild the child spawns.
+func WithSpawnWorkspaces(ctx context.Context, in []SpawnWorkspace) context.Context {
 	return context.WithValue(ctx, ctxKeySpawnWorkspaces{}, in)
 }
 
-// SpawnWorkspaces returns the workspace shares of the spawn ctx belongs to.
-func SpawnWorkspaces(ctx context.Context) []SpawnWorkspaceShare {
-	in, _ := ctx.Value(ctxKeySpawnWorkspaces{}).([]SpawnWorkspaceShare)
+// SpawnWorkspaces returns the workspace shares and forks of the spawn ctx
+// belongs to.
+func SpawnWorkspaces(ctx context.Context) []SpawnWorkspace {
+	in, _ := ctx.Value(ctxKeySpawnWorkspaces{}).([]SpawnWorkspace)
 	return in
 }
