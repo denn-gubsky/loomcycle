@@ -33,6 +33,8 @@ func TestRunPolicy_WorkspaceNarrowsForAChild(t *testing.T) {
 		{"share needs both sides", WorkspacePolicyValue{Read: true, Share: true}, WorkspacePolicyValue{Read: true}, read},
 		{"a sharing parent and child keep share", WorkspacePolicyValue{Read: true, Share: true}, WorkspacePolicyValue{Read: true, Write: true, Share: true}, WorkspacePolicyValue{Read: true, Share: true}},
 		{"a child cannot share past its parent", read, WorkspacePolicyValue{Read: true, Share: true}, read},
+		{"templates needs both sides", WorkspacePolicyValue{Read: true, Templates: true}, WorkspacePolicyValue{Read: true}, read},
+		{"a child keeps templates when both hold it", WorkspacePolicyValue{Read: true, Templates: true}, WorkspacePolicyValue{Read: true, Templates: true}, WorkspacePolicyValue{Read: true, Templates: true}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			got := RunPolicy{Workspace: c.parent}.Inherit(ChildGrant{Own: RunPolicy{Workspace: c.own}}).Workspace

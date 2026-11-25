@@ -185,6 +185,8 @@ func (w *worker) run(ctx context.Context, start *workspacepb.OpStart, input []by
 		return answer{}
 	case workspace.OpFork:
 		return hidePaths(w.forkOp(ctx, id, dir, start.GetArgs()), false, dir, w.opt.Root)
+	case workspace.OpTemplateOpen:
+		return hidePaths(w.templateOpenOp(ctx, id, dir, start.GetArgs()), false, dir, w.opt.Root)
 	case workspace.OpCheckpoint, workspace.OpCheckpoints, workspace.OpDeleteCheckpoint, workspace.OpRestore:
 		dir, real, a := w.workspaceDir(id)
 		if a.class == "" {

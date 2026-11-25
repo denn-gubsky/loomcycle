@@ -311,6 +311,10 @@ var tableCoverageMap = map[string]tableCoverage{
 	// A workspace's files live on a worker and never travel; its row (the
 	// pin) joins snapshots with durable workspaces in RFC GW P12. Until then
 	// a run restored elsewhere finds no workspace and its next op says so.
+	// A template's archive is a file under the data directory that never
+	// travels; its row joins snapshots, if ever, with durable state (P12).
+	"workspace_templates": {Kind: coverOmitted, Backends: onBoth,
+		Reason: "RFC GW P6 D-P6-36: template rows stay with their archives under the data directory; durable workspace state is P12"},
 	"workspaces": {Kind: coverOmitted, Backends: onBoth,
 		Reason: "RFC GW P1 ruling Q5: workspace rows (the pin) join snapshots in P12; the files on a worker never do"},
 	// A workspace's exposed ports (RFC GW P9): each names a port a server

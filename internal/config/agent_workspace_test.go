@@ -25,8 +25,8 @@ func TestLoad_WorkspaceReachesTheAgent(t *testing.T) {
 	}{
 		{"absent", "", nil},
 		{"read only", "    workspace: {ops: [read]}\n", &AgentWorkspace{Ops: []string{"read"}}},
-		{"everything", "    workspace:\n      ops: [read, write, exec]\n      open: true\n      share: true\n      egress: [pypi, pypi-files]\n      engine: container\n",
-			&AgentWorkspace{Ops: []string{"read", "write", "exec"}, Open: true, Share: true, Egress: []string{"pypi", "pypi-files"}, Engine: "container"}},
+		{"everything", "    workspace:\n      ops: [read, write, exec]\n      open: true\n      share: true\n      templates: true\n      egress: [pypi, pypi-files]\n      engine: container\n",
+			&AgentWorkspace{Ops: []string{"read", "write", "exec"}, Open: true, Share: true, Templates: true, Egress: []string{"pypi", "pypi-files"}, Engine: "container"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg, err := loadYAMLString(t, workspaceYAMLHead+tc.field)
@@ -55,7 +55,6 @@ func TestLoad_RefusesAnInvalidWorkspace(t *testing.T) {
 		{"expose not a flag", "    workspace: {ops: [read], expose: [8080]}\n", []string{"cannot unmarshal", "bool"}},
 		{"egress not a route name", "    workspace: {ops: [read], egress: [pypi, PyPI]}\n", []string{`"coder"`, "workspace.egress[1]", `"PyPI" is not a route name`}},
 		{"egress repeated", "    workspace: {ops: [read], egress: [npm, npm]}\n", []string{`"coder"`, "workspace.egress[1]", "twice"}},
-		{"templates", "    workspace: {ops: [read], templates: true}\n", []string{"workspace", `unknown key "templates"`}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := loadYAMLString(t, workspaceYAMLHead+tc.field)
@@ -99,13 +98,13 @@ func TestValidateAgentWorkspace_RefusesUnknownAndRepeatedValues(t *testing.T) {
 // yaml one: a key a later phase adds is refused, not dropped.
 func TestAgentWorkspace_JSONRefusesUnknownKeys(t *testing.T) {
 	var w AgentWorkspace
-	if err := json.Unmarshal([]byte(`{"ops":["read"],"open":true,"share":true,"egress":["npm"],"engine":"host"}`), &w); err != nil {
+	if err := json.Unmarshal([]byte(`{"ops":["read"],"open":true,"share":true,"templates":true,"egress":["npm"],"engine":"host"}`), &w); err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(w, AgentWorkspace{Ops: []string{"read"}, Open: true, Share: true, Egress: []string{"npm"}, Engine: "host"}) {
+	if !reflect.DeepEqual(w, AgentWorkspace{Ops: []string{"read"}, Open: true, Share: true, Templates: true, Egress: []string{"npm"}, Engine: "host"}) {
 		t.Errorf("decoded %+v", w)
 	}
-	for _, in := range []string{`{"ops":["read"],"connect":true}`, `{"connect":["x"]}`, `{"templates":[]}`} {
+	for _, in := range []string{`{"ops":["read"],"connect":true}`, `{"connect":["x"]}`, `{"template":true}`} {
 		var w AgentWorkspace
 		if err := json.Unmarshal([]byte(in), &w); err == nil || !strings.Contains(err.Error(), "unknown field") {
 			t.Errorf("%s: err = %v, want an unknown field refusal", in, err)
@@ -181,9 +180,9 @@ func TestWorkspaceFromDiscovered_CarriesEveryKey(t *testing.T) {
 	if mirror.NumField() != own.NumField() {
 		t.Fatalf("agents.AgentWorkspace has %d fields, config.AgentWorkspace %d: add the new key to both and to workspaceFromDiscovered", mirror.NumField(), own.NumField())
 	}
-	in := &agents.AgentWorkspace{Ops: []string{"read", "write"}, Open: true, Share: true, Expose: true, Egress: []string{"pypi"}, Engine: "container"}
+	in := &agents.AgentWorkspace{Ops: []string{"read", "write"}, Open: true, Share: true, Expose: true, Templates: true, Egress: []string{"pypi"}, Engine: "container"}
 	got := workspaceFromDiscovered(in)
-	want := &AgentWorkspace{Ops: []string{"read", "write"}, Open: true, Share: true, Expose: true, Egress: []string{"pypi"}, Engine: "container"}
+	want := &AgentWorkspace{Ops: []string{"read", "write"}, Open: true, Share: true, Expose: true, Templates: true, Egress: []string{"pypi"}, Engine: "container"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("workspaceFromDiscovered = %+v, want %+v", got, want)
 	}

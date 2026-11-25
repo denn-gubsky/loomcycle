@@ -135,6 +135,7 @@ agents:
     workspace:
       ops: [read, write, exec]   # any of read, write, exec
       open: true                 # may open workspaces of its own
+      templates: true            # may save and delete templates (default false)
       engine: host               # least isolating engine it accepts; unset = any
 ```
 
@@ -220,6 +221,7 @@ One tool, `Workspace`, with an `op`:
 | `run_cell` | run code in an interpreter that keeps its variables between calls | `name`, `code`, `kernel` (`python` or `node`), `timeout_s` |
 | `reset_kernel` | stop the interpreter; the next cell starts clean | `name`, `kernel` |
 | `checkpoint`, `checkpoints`, `restore`, `delete_checkpoint`, `fork` | record the files, put them back, open a copy; see "Checkpoints and forks" | `name`, `label`, `checkpoint`, `as` |
+| `save_template`, `templates`, `delete_template` | keep a checkpoint as a template, list them, delete one; `open` takes `template`; see "Templates" | `name`, `checkpoint`, `as`, `scope`, `template` |
 | `view` | return a picture in it to the model as an image | `name`, `path` |
 | `start` | run a command that keeps running after the call, a server (see Servers) | `name`, `command`, `cwd`, `port` |
 | `stop` | end a server and what it started | `name`, `server` |
@@ -318,6 +320,32 @@ The read returns `144`. When the run ends, the workspace is deleted. A command t
 - **Failures.** A fork that cannot be made (a name the parent does not hold, a limit, a full worker) fails the child before its first turn.
 - **Results.** The parent reads what the children made through a share each child makes (`workspace.share`), or the children copy it back with `File`.
 - **Audit.** Every fork made, by `Workspace op=fork` or at spawn, writes one `workspace_fork` audit line: the source workspace and its run, the copy's id and name and the run that owns it, the tenant, and the path (`fork` or `fork at spawn`). Never a file's content. A refused fork writes none.
+
+## Templates
+
+A template is a named starting state: a checkpoint's files, installed packages included, kept by the runtime after the run that saved it ends (RFC GW §5.5, P6). `open` with `template` starts a new workspace as a copy of it, on any worker that has its toolchains.
+
+```json
+{"op": "save_template", "name": "py", "checkpoint": "ck_3f9a1c0e5b7d2a64", "as": "pandas-ready", "scope": "user"}
+```
+```json
+{"op": "open", "name": "analysis", "template": "pandas-ready"}
+```
+
+| op | What it does | Grant | Arguments |
+|---|---|---|---|
+| `save_template` | keep a checkpoint of the run's own workspace as a template | `templates` | `name`, `checkpoint`, `as`, `scope` |
+| `templates` | the templates the run may open | `open` or `templates` | — |
+| `delete_template` | delete a template | `templates` | `template`, `scope` |
+| `open` with `template` | a new workspace as a copy of a template | `open` | `name`, `template` (not with `toolchain`) |
+
+- **Who sees one.** A `user` template is open to its author's runs only (runs of the same user); a `tenant` one to every run of the tenant. Saving or deleting a `tenant` template also needs the tenant value in the agent's `memory_scopes`. A template never leaves its tenant; a run with no user id sees tenant templates only and cannot save a user one. `open` takes the user's own template of a name first, then the tenant's. Not offered over the MCP server.
+- **Never overwritten.** A name already in that scope is refused with `exists`: delete it first, or save as another name.
+- **Where it is kept.** As one archive (tar, gzip) under the core's data directory (`<LOOMCYCLE_DATA_DIR>/workspace-templates/`), with its tenant, scope, toolchains and SHA-256 on a row (`workspace_templates`). The core copies the bytes and never opens them. A worker that opens a template it does not hold is sent the archive once, checks its digest, unpacks it into a cache beside its workspaces (`.loomcycle-templates/<digest>/`, at most 8 kept, the least recently used removed) and copies each new workspace from there by its checkpoint mechanism. Unpacking refuses a name that leaves the template and never follows a link.
+- **Bounds.** `workspace.template.max_mb` (default 1024) bounds one archive; a save past it keeps nothing (`template_too_large`). `workspace.template.max_per_tenant` (default 20) bounds a tenant's templates, user and tenant ones together (`template_limit`). A workspace opened from a template is held to its own `disk_quota_mb`.
+- **Python environments.** On the `host` engine an environment's paths are moved to the new workspace's folder, and on the `container` engine to `/workspace`, as for a fork; the answer's `rewritten` is not shown for an open.
+- **Audit.** A save and a delete each write an audit line (`workspace_template_save`, `workspace_template_delete`) naming the template, its scope, digest and size, and the run. Never a file's content.
+- **Not yet.** The worker image ships no templates of its own yet; a subject's erasure does not yet remove the user templates they saved.
 
 ## Servers
 
@@ -564,6 +592,8 @@ A session of loomcycle's MCP server (`loomcycle mcp`, `/v1/_mcp`) has no run, so
 | `workspace.checkout.max_documents` | 500 | The documents one `File op=checkout` writes. |
 | `workspace.checkout.max_bytes` | 256 MiB | The bytes one checkout writes. |
 | `workspace.checkpoint.max_per_workspace` | 8 | The checkpoints one workspace holds (1 to 100); each also counts against its disk quota. |
+| `workspace.template.max_mb` | 1024 | One template's archive, in MiB (1 to 65536). |
+| `workspace.template.max_per_tenant` | 20 | The templates a tenant holds, user and tenant ones together (1 to 1000). |
 | `workspace.convert.memory_limit_mb` | 1024 | The local worker's conversion child (`LOOMCYCLE_WORKSPACE_CONVERT_MEMORY_LIMIT_MB` on a remote worker). |
 | worker capacity | 8 | Workspaces a worker holds (`LOOMCYCLE_WORKSPACE_CAPACITY`). |
 

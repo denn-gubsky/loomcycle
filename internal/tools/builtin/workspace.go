@@ -62,7 +62,7 @@ func (w *Workspace) InputSchema() json.RawMessage {
 	return json.RawMessage(`{
 		"type": "object",
 		"properties": {
-			"op":               {"type": "string", "enum": ["open","release","list","status","exec","read","write","edit","glob","grep","share","unshare","run_cell","reset_kernel","view","start","stop","logs","request","expose","unexpose","checkpoint","checkpoints","restore","delete_checkpoint","fork"]},
+			"op":               {"type": "string", "enum": ["open","release","list","status","exec","read","write","edit","glob","grep","share","unshare","run_cell","reset_kernel","view","start","stop","logs","request","expose","unexpose","checkpoint","checkpoints","restore","delete_checkpoint","fork","save_template","delete_template","templates"]},
 			"name":             {"type": "string", "description": "The workspace's name, your label for it within this run: 1-64 letters, digits, '.', '-', '_'. Every op but list takes it. A workspace shared with you: <name>@<owner agent id> (read, write, edit, glob, grep only)."},
 			"with":             {"type": "string", "description": "share/unshare: the agent id of the run to share with: your parent, a child, a sibling or another run of your user."},
 			"access":           {"type": "string", "enum": ["read","read_write"], "description": "share: read (read, glob, grep and copying files out) or read_write (also writing files in). Never commands."},
@@ -82,8 +82,10 @@ func (w *Workspace) InputSchema() json.RawMessage {
 			"code":             {"type": "string", "description": "run_cell: the code to run, up to 1 MiB. The last expression's value is returned."},
 			"kernel":           {"type": "string", "enum": ["python","node"], "description": "run_cell, reset_kernel: the interpreter (default python)."},
 			"label":            {"type": "string", "description": "checkpoint: a note to tell it by, up to 200 characters."},
-			"checkpoint":       {"type": "string", "description": "restore, delete_checkpoint: the checkpoint's id (checkpoints lists them); fork: the checkpoint to start from (default the present files)."},
-			"as":               {"type": "string", "description": "fork: the new workspace's name."},
+			"checkpoint":       {"type": "string", "description": "restore, delete_checkpoint: the checkpoint's id (checkpoints lists them); fork: the checkpoint to start from (default the present files); save_template: the checkpoint to save."},
+			"as":               {"type": "string", "description": "fork: the new workspace's name; save_template: the template's name."},
+			"template":         {"type": "string", "description": "open: a template to start the workspace from, by name (templates lists them; your own first, then your tenant's); delete_template: the template to delete."},
+			"scope":            {"type": "string", "enum": ["user","tenant"], "description": "save_template, delete_template: user (your runs only) or tenant (every user of your tenant; needs the tenant value in memory_scopes)."},
 			"path":             {"type": "string", "description": "read/write/edit: the file; glob/grep: the directory to search. Relative to the workspace. request: the request target, starting with / (e.g. /api/items?page=2)."},
 			"content":          {"type": "string", "description": "write: the whole new file, up to 1 MiB."},
 			"old_string":       {"type": "string", "description": "edit: the exact text to replace; unique unless replace_all."},
@@ -110,7 +112,7 @@ func (w *Workspace) InputSchema() json.RawMessage {
 // another op takes is refused, as a misspelt one is: silently dropping it
 // would do something the caller did not ask for.
 var workspaceOpArgs = map[string][]string{
-	"open":         {"name", "toolchain", "egress"},
+	"open":         {"name", "toolchain", "egress", "template"},
 	"release":      {"name"},
 	"list":         {},
 	"status":       {"name"},
@@ -128,10 +130,15 @@ var workspaceOpArgs = map[string][]string{
 	"restore":           {"name", "checkpoint"},
 	"delete_checkpoint": {"name", "checkpoint"},
 	"fork":              {"name", "as", "checkpoint"},
-	"view":              {"name", "path"},
-	"start":             {"name", "command", "cwd", "port"},
-	"stop":              {"name", "server"},
-	"logs":              {"name", "server", "tail_bytes"},
+	// RFC GW §5.5: a checkpoint of the run's own workspace saved as a
+	// template, a template deleted, and the templates the run may open.
+	"save_template":   {"name", "checkpoint", "as", "scope"},
+	"delete_template": {"template", "scope"},
+	"templates":       {},
+	"view":            {"name", "path"},
+	"start":           {"name", "command", "cwd", "port"},
+	"stop":            {"name", "server"},
+	"logs":            {"name", "server", "tail_bytes"},
 	// RFC GW §5.3, D26: one HTTP request to a port of a server of the
 	// run's own workspace (P9 plan §3.2).
 	"request": {"name", "port", "method", "path", "headers", "body"},
@@ -191,6 +198,9 @@ var workspaceOpGrant = map[string]string{
 	// opens a workspace (RFC GW §5.4).
 	"checkpoint": config.WorkspaceOpWrite, "restore": config.WorkspaceOpWrite, "delete_checkpoint": config.WorkspaceOpWrite,
 	"checkpoints": config.WorkspaceOpRead, "fork": "open",
+	// Saving and deleting a template need workspace.templates (RFC GW
+	// §5.5); listing them, the grant to open one or to save one.
+	"save_template": "templates", "delete_template": "templates", "templates": "open_or_templates",
 }
 
 type workspaceInput struct {
@@ -228,6 +238,8 @@ type workspaceInput struct {
 	Label      string            `json:"label"`
 	Checkpoint string            `json:"checkpoint"`
 	As         string            `json:"as"`
+	Template   string            `json:"template"`
+	Scope      string            `json:"scope"`
 	Port       int               `json:"port"`
 	Server     string            `json:"server"`
 	TailBytes  int               `json:"tail_bytes"`
@@ -273,6 +285,10 @@ func (w *Workspace) Execute(ctx context.Context, input json.RawMessage) (tools.R
 		granted = pol.Share
 	case "expose":
 		granted = pol.Expose
+	case "templates":
+		granted = pol.Templates
+	case "open_or_templates":
+		granted = pol.Open || pol.Templates
 	default:
 		granted = pol.Allows(need)
 	}
@@ -301,9 +317,16 @@ func (w *Workspace) Execute(ctx context.Context, input json.RawMessage) (tools.R
 	}
 	switch in.Op {
 	case "open":
+		if in.Template != "" && owner.IsPrincipal() {
+			return workspaceRefusal("not_over_mcp", "a workspace is opened from a template inside a run; over the MCP server open takes no template"), nil
+		}
 		return w.open(ctx, owner, pol, in), nil
 	case "list":
 		return w.list(ctx, owner), nil
+	case "templates":
+		return w.templates(ctx, owner), nil
+	case "delete_template":
+		return w.deleteTemplate(ctx, owner, in), nil
 	}
 	if _, _, shared := lifecycle.SplitShared(in.Name); shared {
 		return w.sharedOp(ctx, owner, in), nil
@@ -347,6 +370,8 @@ func (w *Workspace) Execute(ctx context.Context, input json.RawMessage) (tools.R
 		return w.checkpointOp(ctx, row, in), nil
 	case "fork":
 		return w.fork(ctx, owner, pol, row, in), nil
+	case "save_template":
+		return w.saveTemplate(ctx, owner, row, in), nil
 	case "view":
 		return w.view(ctx, owner, in), nil
 	case "start", "stop", "logs":
@@ -384,7 +409,7 @@ func decodeWorkspaceInput(input json.RawMessage) (workspaceInput, tools.Result, 
 		sort.Strings(extra)
 		return in, workspaceRefusal("invalid_argument", fmt.Sprintf("%s does not take %s (it takes %s)", in.Op, strings.Join(extra, ", "), strings.Join(append([]string{"op"}, allowed...), ", "))), false
 	}
-	if in.Op != "list" && in.Name == "" {
+	if in.Op != "list" && in.Op != "templates" && in.Op != "delete_template" && in.Name == "" {
 		return in, workspaceRefusal("invalid_argument", in.Op+" needs name"), false
 	}
 	return in, tools.Result{}, true
@@ -438,6 +463,20 @@ func (w *Workspace) open(ctx context.Context, o lifecycle.Owner, pol tools.Works
 		return refusal
 	}
 	req := lifecycle.OpenRequest{Name: in.Name, Engine: pol.Engine, Egress: routes}
+	if in.Template != "" {
+		if in.Toolchain != "" {
+			return workspaceRefusal("invalid_argument", "a template names its own toolchains; open it without toolchain")
+		}
+		t, err := w.Manager.FindTemplate(ctx, o, in.Template)
+		if err != nil {
+			return templateError(err)
+		}
+		if !templateReachable(ctx, t) {
+			return templateError(lifecycle.ErrTemplateNotFound)
+		}
+		req.Template = &t
+		return w.finishOpen(ctx, o, req)
+	}
 	switch in.Toolchain {
 	case "":
 		// A general workspace (RFC GW §4.4) is placed where both are.
@@ -447,11 +486,21 @@ func (w *Workspace) open(ctx context.Context, o lifecycle.Owner, pol tools.Works
 	default:
 		return workspaceRefusal("invalid_argument", fmt.Sprintf("toolchain %q: want python or node", in.Toolchain))
 	}
+	return w.finishOpen(ctx, o, req)
+}
+
+func (w *Workspace) finishOpen(ctx context.Context, o lifecycle.Owner, req lifecycle.OpenRequest) tools.Result {
 	row, err := w.Manager.Open(ctx, o, req)
 	if err != nil {
-		return workspaceError(err, in.Name)
+		if req.Template != nil {
+			return templateError(err)
+		}
+		return workspaceError(err, req.Name)
 	}
 	out := map[string]any{"name": row.Name, "state": string(row.State), "engine": row.Engine}
+	if req.Template != nil {
+		out["template"] = req.Template.Name
+	}
 	withEgress(out, row.Egress)
 	return workspaceOK(out)
 }

@@ -285,7 +285,7 @@ func (w *worker) cleanWork() {
 		return
 	}
 	keep := map[string]bool{}
-	defer func() { w.kernels.Clean(keep); w.cleanCheckpoints(keep) }()
+	defer func() { w.kernels.Clean(keep); w.cleanCheckpoints(keep); w.cleanTemplates() }()
 	for _, id := range held {
 		keep[id] = true
 		r, err := os.OpenRoot(filepath.Join(w.opt.Root, id))

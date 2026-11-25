@@ -17,11 +17,14 @@ workspace unchanged.
   `[]` for none. A command reaches a route at `http://egress/<route>/…`;
   nothing else on the network. The routes are fixed when the workspace is
   opened: opening the same name again returns it with the routes it has.
+- `template` — a template to start from, by name (`templates` lists them):
+  your own first, then your tenant's. The workspace starts as a copy of its
+  files and is then yours. Not with `toolchain`: the template names its own.
 
 ## Returns
 
-`{name, state, engine, egress?}`; `state` is `ready`; `egress` lists the
-routes when it has any.
+`{name, state, engine, template?, egress?}`; `state` is `ready`; `egress`
+lists the routes when it has any.
 
 ## Errors
 
@@ -30,6 +33,8 @@ routes when it has any.
   `release` one first.
 - `no_worker` — no attached worker serves you with that toolchain.
 - `at_capacity` — every worker that could take it is full.
+- `template_not_found` — no template of that name you may use.
+- `workspace_over_quota` — the template holds more than a workspace may.
 
 ## Examples
 
