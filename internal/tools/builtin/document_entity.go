@@ -806,13 +806,16 @@ func (d *Document) writeChunkMeta(ctx context.Context, key sqlmem.ScopeKey, chun
 		sourceGone = 1
 	}
 
+	// Read before the delete, so the ontology read does not widen the window in which
+	// the fact has no sidecar row.
+	ontologyContent := d.ontologyContentArg(ctx)
 	if err := d.exec(ctx, key, `DELETE FROM chunk_memory_meta WHERE chunk_id = ?`, chunkID); err != nil {
 		return err
 	}
 	return d.exec(ctx, key,
 		`INSERT INTO chunk_memory_meta
-		   (chunk_id, valid_at, invalid_at, created_at, expired_at, class, origin, confidence, session_id, run_id, event_seq, natural_key, source_quote, subject, judged_at, judge_reason, judged_by, observed_at, access_count, last_accessed_at, ontology_version, source_gone)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		   (chunk_id, valid_at, invalid_at, created_at, expired_at, class, origin, confidence, session_id, run_id, event_seq, natural_key, source_quote, subject, judged_at, judge_reason, judged_by, observed_at, access_count, last_accessed_at, ontology_version, ontology_content, source_gone)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		chunkID, int64Arg(validAt), invalidAt, createdAt, expiredAt, class,
 		originForEntityWriteWith(ctx, in), confidence,
 		// session_id has no writer yet: it is not on the run ctx, only the run id is.
@@ -827,8 +830,10 @@ func (d *Document) writeChunkMeta(ctx context.Context, key sqlmem.ScopeKey, chun
 		// reset a count it cannot produce.
 		int64Arg(prev.AccessCount), int64Arg(prev.LastAccessedAt),
 		// STAMPED, never preserved: the vocabulary a fact is "written under" is the one
-		// in force at its latest write (RFC FO §3.6).
-		d.ontologyVersionArg(ctx),
+		// in force at its latest write (RFC FO §3.6), by revision and by content (RFC GQ
+		// P3.2). This delete-and-insert names every column it keeps; one left out here
+		// is cleared by every upsert.
+		d.ontologyVersionArg(ctx), ontologyContent,
 		sourceGone)
 }
 
@@ -1063,6 +1068,7 @@ func (d *Document) retireChunk(ctx context.Context, key sqlmem.ScopeKey, retired
 	// Read before the transaction opens: the version lives in the TENANT scope's
 	// database, and a lookup there must not happen while this scope holds a write txn.
 	ontologyVersionArgFor := d.ontologyVersionArg(ctx)
+	ontologyContentFor := d.ontologyContentArg(ctx)
 	err = d.withSqlTxn(ctx, key, func(txnID string) error {
 		// The retired row may have no sidecar yet (it predates the entity tier, or
 		// was written by plain create_chunk), so seed one before closing it —
@@ -1073,8 +1079,8 @@ func (d *Document) retireChunk(ctx context.Context, key sqlmem.ScopeKey, retired
 		}
 		if len(res.Rows) == 0 {
 			if err := d.execTxn(ctx, txnID,
-				`INSERT INTO chunk_memory_meta (chunk_id, valid_at, created_at, class, origin, ontology_version) VALUES (?, ?, ?, ?, ?, ?)`,
-				retiredID, now, now, "derived", originForEntityWrite(ctx), ontologyVersionArgFor); err != nil {
+				`INSERT INTO chunk_memory_meta (chunk_id, valid_at, created_at, class, origin, ontology_version, ontology_content) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				retiredID, now, now, "derived", originForEntityWrite(ctx), ontologyVersionArgFor, ontologyContentFor); err != nil {
 				return err
 			}
 		}

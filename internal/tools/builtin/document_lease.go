@@ -108,9 +108,9 @@ func (d *Document) releaseOp(ctx context.Context, key sqlmem.ScopeKey, in docInp
 
 func documentLeaseInput(op string, ctx context.Context, key sqlmem.ScopeKey, in docInput) (string, *tools.Result) {
 	name := strings.TrimSpace(in.Name)
-	// The annotate grant holds the annotator's lease and no other: an annotating
-	// driver must not be able to hold the linker off a scope.
-	if !documentLeaseAllowed(ctx, key) && (name != annotatorLeaseName || !hasAnnotateGrant(ctx)) {
+	// The annotate and ontology grants each hold their own pass's lease and no
+	// other: such a driver must not be able to hold the linker off a scope.
+	if !documentLeaseAllowed(ctx, key) && !narrowLeaseGranted(ctx, name) {
 		r := errPermission(op+": a scope lease is held only by a statement-maintaining driver or the operator",
 			"Run the pass from an agent granted statement_methods, or from the console.")
 		return "", &r
@@ -137,6 +137,13 @@ func documentLeaseInput(op string, ctx context.Context, key sqlmem.ScopeKey, in 
 		return "", &r
 	}
 	return name, nil
+}
+
+// narrowLeaseGranted reports a grant that holds exactly one lease name: annotate
+// the annotator's, ontology the ontologist's.
+func narrowLeaseGranted(ctx context.Context, name string) bool {
+	return (name == annotatorLeaseName && hasAnnotateGrant(ctx)) ||
+		(name == ontologistLeaseName && hasOntologyGrant(ctx))
 }
 
 // acquireDocumentLease takes name for owner until now+ttl, or reports who holds it.

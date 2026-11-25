@@ -186,6 +186,39 @@ func TestDocumentLease_GrantedRunTakesAndReleases(t *testing.T) {
 	}
 }
 
+// TestLease_OntologyGrantHoldsOnlyTheOntologistLease — the ontology grant (RFC GQ
+// P6.2) holds the ontologist lease and no other, so an ontology pass cannot hold the
+// linker or the annotator off a scope; no other grant, and no grant, holds it.
+func TestLease_OntologyGrantHoldsOnlyTheOntologistLease(t *testing.T) {
+	d, ctx, _ := documentFixture(t)
+	run := func(id string, sm ...string) context.Context {
+		return tools.UpdateRunPolicy(tools.WithRunID(ctx, id), func(rp *tools.RunPolicy) { rp.StatementMethods = sm })
+	}
+	ontologist := run("r_ontologist", "ontology")
+	if out, r := docExec(t, d, ontologist, `{"op":"lease","scope":"user","name":"ontologist"}`); r.IsError || out["acquired"] != true {
+		t.Fatalf("the granted run's ontologist lease = %s; want acquired", r.Text)
+	}
+	if out, r := docExec(t, d, ontologist, `{"op":"release","scope":"user","name":"ontologist"}`); r.IsError || out["released"] != true {
+		t.Fatalf("the granted run's release = %s; want released", r.Text)
+	}
+	for _, name := range []string{"linker", annotatorLeaseName, "ontologist2"} {
+		if _, r := docExec(t, d, ontologist, fmt.Sprintf(`{"op":"lease","scope":"user","name":%q}`, name)); !r.IsError || !strings.Contains(r.Text, "lease is held only by") {
+			t.Errorf("the ontology grant leased %q: %s; want a permission refusal", name, r.Text)
+		}
+	}
+	for who, c := range map[string]context.Context{
+		"no grant":       run("r_plain"),
+		"annotate grant": run("r_annotator", annotationGrant),
+		"link grant":     run("r_link", "link", "remember"),
+	} {
+		for _, op := range []string{"lease", "release"} {
+			if _, r := docExec(t, d, c, fmt.Sprintf(`{"op":%q,"scope":"user","name":"ontologist"}`, op)); !r.IsError || !strings.Contains(r.Text, "lease is held only by") {
+				t.Errorf("%s %s ontologist = %s; want a permission refusal", who, op, r.Text)
+			}
+		}
+	}
+}
+
 func TestDocumentLease_OperatorTakesAndReleasesThroughTheTool(t *testing.T) {
 	d, ctx, _ := documentFixture(t)
 	op := leaseKey(t, d, ctx)

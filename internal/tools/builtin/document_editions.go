@@ -1261,6 +1261,9 @@ func (d *Document) moveStatements(ctx context.Context, key sqlmem.ScopeKey, acl 
 				s.VerifiedAt, s.JudgedAt, nullIfEmpty(s.JudgeReason), nullIfEmpty(s.JudgedBy), s.VerdictConfidence, s.OperatorRuledAt, nullIfEmpty(s.RuledBy)); err != nil {
 				return err
 			}
+			if err := d.carryOntologyContent(ctx, txn, s.ID, copyID); err != nil {
+				return err
+			}
 			for _, e := range ev[s.ID] {
 				chunkID, stale := e.ChunkID, 0
 				var start, end any

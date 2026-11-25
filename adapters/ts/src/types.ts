@@ -6817,9 +6817,11 @@ export interface AgentDefOverlay {
    *  than filed for review. `'remember'`: its runs may call Document
    *  `remember`. `'annotate'` (code-js only): its runs may write document
    *  annotations (Document `set_annotation`) and hold the `annotator` lease.
+   *  `'ontology'` (code-js only): its runs may read Document
+   *  `ontology_signals` and hold the `ontologist` lease.
    *  Unset or `[]` = none. A new agent may list only what its author holds; a
    *  fork only what the version it forks held. */
-  statement_methods?: Array<'rule' | 'extractor' | 'judge' | 'link' | 'remember' | 'annotate'>;
+  statement_methods?: Array<'rule' | 'extractor' | 'judge' | 'link' | 'remember' | 'annotate' | 'ontology'>;
   /** Channel tool ACL (default-deny until set). */
   channels?: AgentChannelACL;
   /** Interruption tool gate — `enabled: true` REQUIRED for the tool to work. */
