@@ -345,7 +345,8 @@ A template is a named starting state: a checkpoint's files, installed packages i
 - **Bounds.** `workspace.template.max_mb` (default 1024) bounds one archive; a save past it keeps nothing (`template_too_large`). `workspace.template.max_per_tenant` (default 20) bounds a tenant's templates, user and tenant ones together (`template_limit`). A workspace opened from a template is held to its own `disk_quota_mb`.
 - **Python environments.** On the `host` engine an environment's paths are moved to the new workspace's folder, and on the `container` engine to `/workspace`, as for a fork; the answer's `rewritten` is not shown for an open.
 - **Audit.** A save and a delete each write an audit line (`workspace_template_save`, `workspace_template_delete`) naming the template, its scope, digest and size, and the run. Never a file's content.
-- **Not yet.** The worker image ships no templates of its own yet; a subject's erasure does not yet remove the user templates they saved.
+- **Erasure.** A subject's erasure (`POST /v1/_erasure` and its twins) reports the subject's user templates in tier 1 (`workspace_templates`) and deletes each row and its archive; a dry run only counts them. A tenant template the subject saved is the tenant's and stays: the report's notes and the result's `retained` (`workspace_templates_tenant`) count it, and a tenant operator removes it with `delete_template`.
+- **Not yet.** The worker image ships no templates of its own yet.
 
 ## Servers
 
