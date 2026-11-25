@@ -4625,9 +4625,10 @@ export type DocumentToolInput = {
    *  rests on: the fingerprint of a plan of the change (`planOntology`). A rename,
    *  retire, move under another parent or change of any directive without it is
    *  refused 409 `plan_required`; with one that is not current, 409 `plan_stale`.
-   *  Each refusal carries the current `fingerprint` (RFC GQ P2.4). A class something
-   *  rests on is not renamed at all until the rename job exists: 422, with
-   *  `rename_job_pending` in the error, whatever the fingerprint. */
+   *  Each refusal carries the current `fingerprint` (RFC GQ P2.4). Renaming a class
+   *  something rests on starts the rename job (RFC GQ P5.3); where the job cannot
+   *  carry it yet the rename is refused 422 with `rename_job_pending` in the error,
+   *  whatever the fingerprint. */
   plan_fingerprint?: string;
   type?: string;
   body?: string;

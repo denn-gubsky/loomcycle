@@ -37,6 +37,9 @@ names the current holder and `expires_at` says when its lease runs out.
 - `lease: name must be 1–64 characters of a-z 0-9 _ . : / -`.
 - `lease: names starting with "principal:" are reserved for the runtime` —
   pick another name.
+- `lease: the lease "ontology-rename" is reserved for the runtime's
+  class-rename job` — the runtime holds it while it renames a class; pick
+  another name.
 - `lease: ttl_ms must not be negative` — omit it for the default.
 - `lease: a scope lease is held only by a statement-maintaining driver or the
   operator` — a model-driven agent does not take leases.
