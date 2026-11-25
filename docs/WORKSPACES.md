@@ -136,10 +136,11 @@ agents:
       ops: [read, write, exec]   # any of read, write, exec
       open: true                 # may open workspaces of its own
       templates: true            # may save and delete templates (default false)
+      connect: true              # may reach a peer's exposed ports through a share, and share with connect (default false)
       engine: host               # least isolating engine it accepts; unset = any
 ```
 
-`exec`, `run_cell`, `reset_kernel`, `start`, `stop`, `logs` and `request` need `exec`; `write` and `edit` need `write`; `read`, `view`, `glob`, `grep`, `list` and `status` need `read`; `open` needs `open: true`; `expose` and `unexpose` need `expose: true`. A sub-agent holds only what both it and its parent hold, before and after a resume. The grant is not per-run overridable, and an agent a tenant member authors may not set it. A grant on an agent without the tool, or while `workspace.mode` is off, does nothing; the boot log and `loomcycle doctor` name such agents.
+`exec`, `run_cell`, `reset_kernel`, `start`, `stop`, `logs` and `request` need `exec`; `write` and `edit` need `write`; `read`, `view`, `glob`, `grep`, `list` and `status` need `read`; `open` needs `open: true`; `expose` and `unexpose` need `expose: true`; `request` on a workspace shared with the run needs `connect: true` instead of `exec`. A sub-agent holds only what both it and its parent hold, before and after a resume. The grant is not per-run overridable, and an agent a tenant member authors may not set it. A grant on an agent without the tool, or while `workspace.mode` is off, does nothing; the boot log and `loomcycle doctor` name such agents.
 
 ## Egress
 
@@ -402,7 +403,7 @@ A template is a named starting state: a checkpoint's files, installed packages i
 - **WebSocket.** A page's socket opens on the same address. A browser cannot set an `Authorization` header on a socket, so it offers the bearer as the subprotocol `bearer.<token>`, beside the marker `loomcycle.surface.v1` and the application's own protocols (as the client-tools socket does). A cookie never opens one, so a page of another site cannot open a socket in the user's name; the `Origin` is passed to the application as sent, for it to judge. The core dials the application first, through the same tunnel and listener check (an application that is not there, or refuses the upgrade, is a plain `502`, never a half-open socket). It offers the application only the client's protocols for it, never the marker or the bearer, and answers the client with the application's choice or the marker. Nothing else of the application's `101` reaches the client. Messages cross one by one, text and binary, with their close codes; each hop answers its own pings. Bounds: a message is at most `max_message_bytes` (16 MiB) each way, the byte rate holds both ways, a socket counts as one of `max_connections` while open, and it closes after `idle_timeout_s` with no message (1001), after `socket_lifetime_s` (4 hours, 1001), and within 15 seconds of an `unexpose` or the workspace's release (1008). A browser may instead present a one-time ticket as the subprotocol `ticket.<t>`: `POST /v1/workspaces/exposure-tickets/<id>` with the bearer in the `Authorization` header mints one for the page (a cookie never mints one), good once and for 30 seconds, on any replica sharing `LOOMCYCLE_SECRET_KEY`; the socket it opens follows the credential that minted it. In strict sign-in mode no bearer is read from a subprotocol, so a browser opens a page's socket there with a ticket (or a client that can set the header, with the header). Any other upgrade (`h2c`) is `501`.
 - **Limits.** Per workspace: `max_per_workspace` ports (default 2), `max_connections` requests and sockets open at once (32), `requests_per_second` (20, burst twice that) and `bytes_per_second` (8 MiB), the last three kept per replica. Over a bound the route answers `429`.
 - **How the user learns of it.** `expose` puts a `surface` event on the run's own stream: `{exposure_id, workspace, title, kind, base_path, expires_at}`, where `expires_at` is the idle deadline at that moment and moves on with every use. A `surface_closed` event, `{exposure_id, reason}`, follows when it goes: `unexposed` (the run's `unexpose`), `released` (the workspace's release or the run's end) or `idle` (the idle timeout, met by the sweep or by the next request). Both are on SSE, gRPC (`Event.surface`), the stored transcript and both adapters (`SurfaceInfo`); neither carries a bearer, a ticket or a host path, and the model never sees either. A close the run did not make in a tool call (a sweep, the run's end) is written to the run's transcript, which a re-attached stream (`GET /v1/runs/{id}/stream`) reads; it is not pushed to a stream already open. A sub-agent's page is told on the sub-agent's own stream, not its parent's. Turning the operator's switch off tells nothing at that moment; each page is told `idle` when the sweep removes its row.
-- **Not yet.** `await`, and a peer's `connect` arrive in later P9 PRs. `expose` is a run's: a workspace opened over the MCP server and a shared one take none.
+- **Not yet.** `await` arrives in a later P9 PR. A peer reaches a page with `request` through a share made with `connect` (see Sharing a workspace). `expose` is a run's: a workspace opened over the MCP server and a shared one take none.
 
 ## Looking at a picture
 
@@ -512,7 +513,7 @@ agents:
       ops: [read]                # reads what it is given; opens nothing
 ```
 
-**Making a share.** `Workspace op=share {name, with, access}`: `with` is the other run's agent id (a parent, a child, a sibling, or a run of another tree of the same user); `access` is `read` or `read_write`. `op=unshare {name, with}` ends it. `Agent op=spawn` and each entry of `op=parallel_spawn` take `workspaces: [{name, access}]`, shared with the child before its first turn (an entry `{fork, as?}` gives the child its own copy instead; see "Checkpoints and forks"):
+**Making a share.** `Workspace op=share {name, with, access, connect?}`: `with` is the other run's agent id (a parent, a child, a sibling, or a run of another tree of the same user); `access` is `read` or `read_write`. `op=unshare {name, with}` ends it. `Agent op=spawn` and each entry of `op=parallel_spawn` take `workspaces: [{name, access, connect?}]`, shared with the child before its first turn (an entry `{fork, as?}` gives the child its own copy instead; see "Checkpoints and forks"):
 
 ```json
 {"op": "spawn", "name": "reviewer", "prompt": "Review the change in build.",
@@ -521,20 +522,20 @@ agents:
 
 **Using one.** The peer names the workspace `<name>@<owner agent id>`; its `Workspace op=list` shows it under `shared_with_me`. With `read` it may use `Workspace read`, `view`, `glob` and `grep` on it, and `File` ops that read from `workspace:<name>@<agent id>:<path>` (copy out, stat, ls, extract, import). `read_write` adds `File` writes into it and `Workspace write` and `edit`.
 
-**What a share never allows:** `exec`, a release, a status, and sharing it on. Commands in a workspace are its owner's alone, so two agents never race in one session.
+**Reaching its pages (`connect`).** A share made with `connect: true` (in `op=share` or a spawn's `workspaces` entry) lets the peer send single HTTP requests to the ports its owner **exposed**, with `Workspace op=request {name: "<name>@<owner agent id>", port, method, path, headers?, body?}` (RFC GW §5.2, D20, D26). The owner needs `workspace.connect` to hand it over, the peer needs `workspace.connect` to use it (not `exec`), and the port must be one the owner exposed with `expose`, while the operator's `workspace.expose` is on and the page has not gone idle; a port a server listens on but the owner did not expose is refused `not_exposed`. The request then travels as the owner's does: down the tunnel, to a port a running server of the workspace declared and, on the `host` engine, its own processes listen on. A request through a share keeps the page from going idle, as a use by its user does. The owner's own `request` still needs `exec`, and reaches its servers' ports whether exposed or not.
+
+**What a share never allows:** `exec`, a release, a status, and sharing it on; and, with `connect`, never `expose`, `start`, `stop` or `logs`. Commands in a workspace are its owner's alone, so two agents never race in one session.
 
 **Who may share with whom.**
 
-- The owner needs `workspace.share` and the operations it hands over: `read` for a read share, `read` and `write` for `read_write`.
+- The owner needs `workspace.share` and the operations it hands over: `read` for a read share, `read` and `write` for `read_write`, and `connect` for a share with connect.
 - The peer needs the `workspace` operation each use asks for, in its own grant: a share never gives an agent more than its definition does.
 - The peer is a live run of the same user, in the same tenant. A run of another user, an ended run and an unknown agent id are refused alike; a run with no user id neither shares nor is shared with.
 - A workspace is shared with at most 16 runs.
 
 **How long it lasts.** A share is stored on the workspace's row, so every replica honours it and it survives a pause and a resume of either run. It ends with `unshare`, with the workspace's release, or when either run ends.
 
-**Audit.** Each share, unshare and each tool call through a share writes an audit event (`workspace_share`, `workspace_unshare`, `workspace_share_use`) naming the workspace, both runs and the access.
-
-Not yet: `connect` (a share's reach to a workspace's exposed ports) arrives with servers; a share asking for it is refused.
+**Audit.** Each share, unshare and each tool call through a share writes an audit event (`workspace_share`, `workspace_unshare`, `workspace_share_use`) naming the workspace, both runs and the access; a share with connect says so (`connect`), and each request through one is a use naming the port (`request :<port> via Workspace`).
 
 ## Documents as a working tree
 
