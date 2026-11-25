@@ -45,7 +45,7 @@ var kbOpContracts = []kbOpContract{
 	{Tool: "Document", Op: "query_chunks",
 		Request:  `{document_id, limit, scope} | {sql, scope}`,
 		Response: `{chunks: [{id, document_id, type, title, valid_at?, invalid_at?, definitional?}]} | {columns, rows, truncated}`,
-		Assumes:  `the filter form lists every chunk of the document, superseded ones included, with invalid_at; definitional is true on a passage of a definitions section and absent otherwise (never false, never on the sql form); the chunks table has anchor and stable_id columns`},
+		Assumes:  `the filter form lists every chunk of the document, superseded ones included, with invalid_at; definitional is true on a passage of a definitions section and absent otherwise (never false, never on the sql form); the chunks table has anchor, stable_id and type columns, and chunk_memory_meta holds at most one row per chunk_id, with subject set for a subject`},
 	{Tool: "Document", Op: "get_chunk",
 		Request:  `{id, scope}`,
 		Response: `{id, document_id, type, title, body, definitional?, boilerplate?: [[start, end]]}`,

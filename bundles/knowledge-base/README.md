@@ -222,6 +222,19 @@ For each statement, the first check that fails decides the outcome:
    - A kind the ontology renamed: the statement is proposed again under the new
      name, then the old one expires.
    - A kind no longer declared: demote it to `proposed`.
+   - An end outside the kind's `@domain` or `@range`: demote it to `proposed`
+     (a statement that is only proposed is flagged instead). The source is
+     compared with `@domain` and the target with `@range`, by the end chunk's
+     own type: a document's class for a document, the chunk's type for a
+     subject. A subclass of an allowed class is inside it, `entity` accepts any
+     subject and `concept` a concept of the ontology's schemes, as when the
+     relation was written. The write-time check does not run again when a
+     document is re-classified or the kind's ends are narrowed; this one does.
+     A statement is left alone and counted `unchecked` when its kind declares
+     neither end, or when an end has no type or a type the class tree does not
+     hold (a class renamed or removed since): the pass does not demote on a
+     class it cannot place. The classes are read in one query per 100 distinct
+     ends of a document's statements, and only for kinds that declare an end.
 3. **Validity.** An end replaced by a newer edition: expire it, after proposing
    it again on the successor (`attributes.revision_of`) when it still holds there.
    The new proposal keeps the original's `valid_at`, but not its confidence.
@@ -508,6 +521,12 @@ The run's final output is one JSON object:
     `already_asserted`. A re-run over the same text proposes nothing: its writes
     count as `unchanged`.
   - L6 adds `checks` (which check decided) and `actions` (per action).
+    `checks.domain_range` counts the domain and range check: `checked` (every
+    end the kind constrains could be placed, or one is outside), `mismatched`
+    (of those, an end outside),
+    `flagged` and `demoted` (what was done about a mismatch; in report mode,
+    what would be), and `unchecked`. It replaces the `domain_range_unchecked`
+    counter.
   - L4 keeps its findings and spans in UTF-16 units (`span_unit`). Each finding
     says whether a propose pass files it (`may_file`, and `not_filed` with the
     reason when not). L4 also reports `withheld_kinds`, `tenant_kinds`,

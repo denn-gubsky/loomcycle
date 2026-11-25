@@ -86,7 +86,7 @@ func (d *Document) annotationIndexHeader(ctx context.Context, key sqlmem.ScopeKe
 
 // indexAnnotation writes the index row of one record. Best-effort like every
 // document embed: a row that cannot be embedded is left out of the leg, and
-// rewriting the annotation writes it again.
+// rewriting the annotation (or the operator re-index pass) writes it again.
 //
 // Tenant scope only, as annotations are: a user's or an agent's memory is deleted
 // scope-wide (erasure, retention) by its own scope id, which a row kept beside it
@@ -95,34 +95,50 @@ func (d *Document) indexAnnotation(ctx context.Context, key sqlmem.ScopeKey, msc
 	if d.Store == nil || mscope != store.MemoryScopeTenant {
 		return
 	}
-	tenant, scopeID := direntTenant(ctx), annotationMemScopeID(mscope, key)
-	k := annotationKey(rec.ChunkID, rec.Level)
 	if rec.Basis == annotationBasisDeclared {
 		// A node rewritten declared (its last member left) drops the row it had.
-		_, _ = d.Store.MemoryDelete(ctx, tenant, mscope, scopeID, k)
+		_, _ = d.Store.MemoryDelete(ctx, direntTenant(ctx), mscope, annotationMemScopeID(mscope, key), annotationKey(rec.ChunkID, rec.Level))
 		return
 	}
-	text := d.annotationIndexHeader(ctx, key, rec) + "\n" + rec.Brief + "\n\n" + rec.Abstract
+	d.writeAnnotationIndex(ctx, key, mscope, rec, d.annotationIndexText(ctx, key, rec))
+}
+
+// annotationIndexText is the text a record's index row is embedded under. The write
+// path and the operator re-index pass (document_reindex.go) both derive it here, so a
+// row the pass judges current is exactly one the write path would write.
+func (d *Document) annotationIndexText(ctx context.Context, key sqlmem.ScopeKey, rec annotationRecord) string {
+	return d.annotationIndexHeader(ctx, key, rec) + "\n" + rec.Brief + "\n\n" + rec.Abstract
+}
+
+// writeAnnotationIndex writes rec's index row and embeds text under it, reporting
+// whether the row ended up embedded (with no embedder, only the row is written and
+// the result is false). A failed embed removes the row's old vector rather than leave
+// it ranking under what the record used to say.
+func (d *Document) writeAnnotationIndex(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, rec annotationRecord, text string) bool {
+	tenant, scopeID := direntTenant(ctx), annotationMemScopeID(mscope, key)
+	k := annotationKey(rec.ChunkID, rec.Level)
 	v, _ := json.Marshal(map[string]string{"chunk_id": rec.ChunkID, "level": rec.Level, "text": rec.Brief + "\n\n" + rec.Abstract})
 	if err := d.Store.MemorySet(ctx, tenant, mscope, scopeID, k, v, 0); err != nil {
 		slog.WarnContext(ctx, "document: annotation index row not written", "chunk_id", rec.ChunkID, "level", rec.Level, "err", err)
-		return
+		return false
 	}
 	if d.Embedder == nil {
-		return
+		return false
 	}
 	vec, err := d.Embedder.Embed(ctx, []string{text})
 	if err != nil || len(vec) == 0 {
 		_ = d.Store.MemoryEmbedDelete(ctx, tenant, mscope, scopeID, k)
 		slog.WarnContext(ctx, "document: annotation not embedded", "chunk_id", rec.ChunkID, "level", rec.Level, "err", err)
-		return
+		return false
 	}
 	if err := d.Store.MemoryEmbedSet(ctx, tenant, mscope, scopeID, k, store.MemoryEmbedding{
 		Provider: d.Embedder.Provider(), Model: d.Embedder.Model(), Dimension: len(vec[0]),
 		Vector: vec[0], EmbedText: text, CreatedAt: time.Now().UTC(),
 	}); err != nil {
 		slog.WarnContext(ctx, "document: annotation embedding not stored", "chunk_id", rec.ChunkID, "level", rec.Level, "err", err)
+		return false
 	}
+	return true
 }
 
 // unindexAnnotations removes the index rows of every level of the given chunks.
