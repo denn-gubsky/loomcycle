@@ -89,10 +89,20 @@ func (m *Manager) Fork(ctx context.Context, o Owner, src store.WorkspaceRow, as,
 	if src.OwnerRunID != o.RunID || src.TenantID != o.TenantID || src.OwnerKind != o.kind() || o.RunID == "" {
 		return store.WorkspaceRow{}, out, ErrNotFound
 	}
+	// A fork may send requests out through the routes its source may: the
+	// same owner opened the source within its grant (RFC GW §6.3).
+	return m.fork(ctx, o, src, as, checkpoint, src.Egress)
+}
+
+// fork makes dst's workspace as, a copy of src (a checkpoint of it, or its
+// present files), with egress for its routes. The caller has checked that
+// src is the source owner's and that dst may hold the copy.
+func (m *Manager) fork(ctx context.Context, dst Owner, src store.WorkspaceRow, as, checkpoint string, egress []string) (store.WorkspaceRow, workspace.ForkAnswer, error) {
+	var out workspace.ForkAnswer
 	if src.State != store.WorkspaceReady {
 		return store.WorkspaceRow{}, out, fmt.Errorf("%w: %q is %s", ErrNotReady, src.Name, src.State)
 	}
-	if _, err := m.Get(ctx, o, as); err == nil {
+	if _, err := m.Get(ctx, dst, as); err == nil {
 		return store.WorkspaceRow{}, out, fmt.Errorf("%w: %q", ErrNameTaken, as)
 	} else if !errors.Is(err, ErrNotFound) {
 		return store.WorkspaceRow{}, out, err
@@ -101,10 +111,8 @@ func (m *Manager) Fork(ctx context.Context, o Owner, src store.WorkspaceRow, as,
 	if err != nil {
 		return store.WorkspaceRow{}, out, err
 	}
-	// A fork may send requests out through the routes its source may: the
-	// same owner opened the source within its grant (RFC GW §6.3).
-	row, err := m.makeOn(ctx, o, as, src.Egress, src.WorkerID, src.Engine, func(id string) error {
-		res, err := m.disp.Do(ctx, src.WorkerID, dispatch.Request{TenantID: o.TenantID, WorkspaceID: id, Op: workspace.OpFork, Args: args, MaxOutput: maxCheckpointAnswer})
+	row, err := m.makeOn(ctx, dst, as, egress, src.WorkerID, src.Engine, func(id string) error {
+		res, err := m.disp.Do(ctx, src.WorkerID, dispatch.Request{TenantID: dst.TenantID, WorkspaceID: id, Op: workspace.OpFork, Args: args, MaxOutput: maxCheckpointAnswer})
 		if err != nil {
 			return err
 		}

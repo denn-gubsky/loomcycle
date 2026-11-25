@@ -10762,8 +10762,12 @@ type PlanOntologyResponse struct {
 	ScopesCounted int32 `protobuf:"varint,6,opt,name=scopes_counted,json=scopesCounted,proto3" json:"scopes_counted,omitempty"`
 	ScopesSkipped int32 `protobuf:"varint,7,opt,name=scopes_skipped,json=scopesSkipped,proto3" json:"scopes_skipped,omitempty"`
 	Complete      bool  `protobuf:"varint,8,opt,name=complete,proto3" json:"complete,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// Names what the ontology in force declares now, before the changes. Unlike
+	// the fingerprint it moves only when an in-force entry does; empty when the
+	// ontology could not be read whole.
+	ContentVersion string `protobuf:"bytes,9,opt,name=content_version,json=contentVersion,proto3" json:"content_version,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *PlanOntologyResponse) Reset() {
@@ -10850,6 +10854,13 @@ func (x *PlanOntologyResponse) GetComplete() bool {
 		return x.Complete
 	}
 	return false
+}
+
+func (x *PlanOntologyResponse) GetContentVersion() string {
+	if x != nil {
+		return x.ContentVersion
+	}
+	return ""
 }
 
 // ReviewQueueFilter narrows the review queue and selects what a bulk ruling
@@ -18459,7 +18470,7 @@ const file_loomcycle_proto_rawDesc = "" +
 	"\bproposal\x18\a \x01(\tR\bproposal\x1aZ\n" +
 	"\vCountsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x125\n" +
-	"\x05value\x18\x02 \x01(\v2\x1f.loomcycle.v1.OntologyPlanCountR\x05value:\x028\x01\"\xb0\x02\n" +
+	"\x05value\x18\x02 \x01(\v2\x1f.loomcycle.v1.OntologyPlanCountR\x05value:\x028\x01\"\xd9\x02\n" +
 	"\x14PlanOntologyResponse\x12\x16\n" +
 	"\x06tenant\x18\x01 \x01(\tR\x06tenant\x12 \n" +
 	"\vfingerprint\x18\x02 \x01(\tR\vfingerprint\x12=\n" +
@@ -18469,7 +18480,8 @@ const file_loomcycle_proto_rawDesc = "" +
 	"new_issues\x18\x05 \x03(\tR\tnewIssues\x12%\n" +
 	"\x0escopes_counted\x18\x06 \x01(\x05R\rscopesCounted\x12%\n" +
 	"\x0escopes_skipped\x18\a \x01(\x05R\rscopesSkipped\x12\x1a\n" +
-	"\bcomplete\x18\b \x01(\bR\bcomplete\"\xd8\x06\n" +
+	"\bcomplete\x18\b \x01(\bR\bcomplete\x12'\n" +
+	"\x0fcontent_version\x18\t \x01(\tR\x0econtentVersion\"\xd8\x06\n" +
 	"\x11ReviewQueueFilter\x12\x16\n" +
 	"\x06status\x18\x01 \x01(\tR\x06status\x12\x12\n" +
 	"\x04kind\x18\x02 \x01(\tR\x04kind\x12\x14\n" +

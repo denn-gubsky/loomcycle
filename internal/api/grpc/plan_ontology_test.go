@@ -32,7 +32,7 @@ func reasonOf(err error) (codes.Code, string, string) {
 func TestPlanOntology_DelegatesToTheConnector(t *testing.T) {
 	mc := &mockConnector{planRes: connector.PlanOntologyResult{
 		Tenant: "acme", Fingerprint: "fp", Issues: []string{"i1"}, NewIssues: []string{"n1"},
-		ScopesCounted: 3, ScopesSkipped: 1, Complete: false,
+		ScopesCounted: 3, ScopesSkipped: 1, Complete: false, ContentVersion: "0123456789abcdef",
 		Changes: []connector.OntologyPlannedChange{{
 			Op: "delete", Risk: connector.OntologyRiskDestroys, Notes: []string{"note"},
 			Entry:   connector.OntologyPlanEntry{ChunkID: "c1", Name: "Provision", Section: "classes", Kind: "class"},
@@ -68,7 +68,7 @@ func TestPlanOntology_DelegatesToTheConnector(t *testing.T) {
 			t.Errorf("change %d = %+v, want %+v", i, mc.planReq.Changes[i], want[i])
 		}
 	}
-	if resp.GetTenant() != "acme" || resp.GetFingerprint() != "fp" || resp.GetScopesCounted() != 3 || resp.GetScopesSkipped() != 1 ||
+	if resp.GetTenant() != "acme" || resp.GetFingerprint() != "fp" || resp.GetContentVersion() != "0123456789abcdef" || resp.GetScopesCounted() != 3 || resp.GetScopesSkipped() != 1 ||
 		resp.GetComplete() || strings.Join(resp.GetIssues(), ",") != "i1" || strings.Join(resp.GetNewIssues(), ",") != "n1" {
 		t.Errorf("response = %+v", resp)
 	}

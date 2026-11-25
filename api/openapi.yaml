@@ -664,6 +664,7 @@ paths:
                 properties:
                   tenant: { type: string }
                   fingerprint: { type: string, description: "sha256 (hex) of the ontology's state the plan was computed against." }
+                  content_version: { type: string, description: "Names what the ontology in force declares now, before the changes (RFC GQ P3): 16 hex characters of a sha256 over its in-force entries. Unlike the fingerprint it moves only when an in-force entry is added, changed, retired, moved or removed, not on a proposal, a review rule or a reorder. Empty when the ontology could not be read whole." }
                   changes:
                     type: array
                     items:

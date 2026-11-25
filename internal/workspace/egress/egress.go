@@ -170,6 +170,11 @@ type Options struct {
 	// Base is the address the session reaches routes at, for rewritten
 	// links and redirects. Default DefaultBase.
 	Base string
+	// PyPIFilesRoute is the operator's route to PyPI's file host
+	// (PyPIFilesRoute of the operator's routes), "" for none. PyPI's links
+	// are rewritten to it whether the workspace holds it or not, so a
+	// workspace without it is refused naming the route (P4 plan O34).
+	PyPIFilesRoute string
 	// ResponseHeaderTimeout bounds the wait for the upstream's answer.
 	// Default 60 s. The body has no time bound: the caller's context
 	// ends it.
@@ -188,7 +193,9 @@ type Proxy struct {
 	audit  func(Line)
 	limits Limits
 	base   string
-	now    func() time.Time
+	// filesRoute is Options.PyPIFilesRoute.
+	filesRoute string
+	now        func() time.Time
 
 	mu    sync.Mutex
 	usage map[usageKey]*usage
@@ -244,8 +251,11 @@ func New(o Options) (*Proxy, error) {
 		audit:  o.Audit,
 		limits: o.Limits.resolved(),
 		base:   base,
-		now:    now,
-		usage:  map[usageKey]*usage{},
+		// Checked as a route name, so it cannot write anything but a
+		// route's first segment into a link.
+		filesRoute: validFilesRoute(o.PyPIFilesRoute),
+		now:        now,
+		usage:      map[usageKey]*usage{},
 	}, nil
 }
 
@@ -391,6 +401,14 @@ func transportError(rt Route, err error) error {
 		msg = msg[:200]
 	}
 	return fmt.Errorf("egress: route %q: upstream request failed: %s", rt.Name, msg)
+}
+
+// validFilesRoute is name when it is a route name, else "".
+func validFilesRoute(name string) string {
+	if ValidName(name) {
+		return name
+	}
+	return ""
 }
 
 // baseFor is where a link in the answer to a request for path (under its

@@ -105,6 +105,7 @@ describe("planOntology", () => {
   const plan = {
     tenant: "acme",
     fingerprint: "a".repeat(64),
+    content_version: "0123456789abcdef",
     changes: [{
       op: "delete",
       entry: { chunk_id: "c1", name: "Provision", section: "classes", kind: "class" },
@@ -128,6 +129,7 @@ describe("planOntology", () => {
     expect(res.changes[0]!.risk).toBe("destroys");
     expect(res.changes[0]!.counts["typed_documents"]!.other_scopes).toBe(2);
     expect(res.complete).toBe(true);
+    expect(res.content_version).toBe("0123456789abcdef");
 
     const call = fetchMock.mock.calls[0]!;
     expect(call[0]).toBe("http://test-loomcycle:8787/v1/_ontology/plan");

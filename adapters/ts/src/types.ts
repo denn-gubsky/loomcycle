@@ -2413,6 +2413,11 @@ export interface PlanOntologyResult {
   tenant: string;
   /** Identifies the ontology the plan was computed against. */
   fingerprint: string;
+  /** Names what the ontology in force declares now, before the changes.
+   *  Unlike `fingerprint` it moves only when an in-force entry does (not on
+   *  a proposal, a review rule or a reorder). "" when the ontology could not
+   *  be read whole; absent from a server that predates it. */
+  content_version?: string;
   changes: OntologyPlannedChange[];
   /** The ontology's advisories as it would read after every change. */
   issues: string[];

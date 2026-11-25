@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
@@ -42,11 +43,32 @@ type ReindexReport struct {
 	Unindexed  int      `json:"unindexed"`
 	Failed     int      `json:"failed"`
 	FailedKeys []string `json:"failed_keys,omitempty"`
+	// The Annotations* counts are the same pass over the annotation index rows
+	// (tenant scope only, where annotations live), walked after the chunks. A row is
+	// up to date when it carries a vector of the current embedder under the text
+	// indexAnnotation derives now; a dry run with no embedder configured judges the
+	// text alone. AnnotationsUnindexed counts a declared node record's leftover row,
+	// removed — a declared record has no row. Failed keys share FailedKeys.
+	AnnotationsExamined  int `json:"annotations_examined"`
+	AnnotationsUpToDate  int `json:"annotations_up_to_date"`
+	AnnotationsReindexed int `json:"annotations_reindexed"`
+	AnnotationsUnindexed int `json:"annotations_unindexed"`
+	AnnotationsFailed    int `json:"annotations_failed"`
 	// NextCursor resumes the walk; pass it back as `after`. More is true while chunks
-	// beyond this page remain unexamined.
+	// or annotation records beyond this page remain unexamined.
 	NextCursor string `json:"next_cursor,omitempty"`
 	More       bool   `json:"more"`
 }
+
+// changed is how many rows this call changed (or, dry, would), against `limit`.
+func (r *ReindexReport) changed() int {
+	return r.Reindexed + r.Unindexed + r.Failed + r.AnnotationsReindexed + r.AnnotationsUnindexed + r.AnnotationsFailed
+}
+
+// reindexAnnotationCursor starts a cursor that resumes in the annotation phase; the
+// rest is "<chunk_id>/<level>" of the last record examined. A chunk-phase cursor is a
+// memory key under "doc.", so the two never collide.
+const reindexAnnotationCursor = "annotation:"
 
 const (
 	reindexPage          = 200
@@ -75,6 +97,9 @@ func (d *Document) ReindexScope(ctx context.Context, scope, after string, limit 
 		return rep, err
 	}
 	tenant := direntTenant(ctx)
+	if annAfter, ok := strings.CutPrefix(after, reindexAnnotationCursor); ok {
+		return rep, d.reindexAnnotations(ctx, key, mscope, annAfter, limit, dryRun, &rep)
+	}
 	cursor := after
 	for {
 		// ONE walk over "doc." covers chunk bodies and then their derived units:
@@ -115,14 +140,114 @@ func (d *Document) ReindexScope(ctx context.Context, scope, after string, limit 
 					rep.fail(row.Key)
 				}
 			}
-			if rep.Reindexed+rep.Unindexed+rep.Failed >= limit || rep.Examined >= reindexMaxExamined {
+			if rep.changed() >= limit || rep.Examined >= reindexMaxExamined {
 				rep.NextCursor, rep.More = cursor, true
 				return rep, nil
 			}
 		}
 		if len(page) < reindexPage {
-			return rep, nil // the walk reached the end of the scope
+			break // the walk reached the end of the scope's chunks
 		}
+	}
+	return rep, d.reindexAnnotations(ctx, key, mscope, "", limit, dryRun, &rep)
+}
+
+// reindexAnnotations is the pass's second phase: it walks the scope's annotation
+// records by (chunk_id, level) from `after` and brings each one's index row in line
+// with what indexAnnotation writes now. Records are read in keyset pages of
+// reindexPage; `limit` and reindexMaxExamined bound the call across both phases, and
+// a call that stops early hands back an annotation cursor.
+//
+// Embedding calls only, never a model call. Rows exist only in the tenant scope, so
+// any other scope has nothing to walk.
+func (d *Document) reindexAnnotations(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, after string,
+	limit int, dryRun bool, rep *ReindexReport) error {
+	if mscope != store.MemoryScopeTenant {
+		return nil
+	}
+	chunk, level, _ := strings.Cut(after, "/")
+	for {
+		q := `SELECT ` + annotationSelectCols + annotationFrom
+		var args []any
+		if chunk != "" {
+			q += ` WHERE (a.chunk_id > ? OR (a.chunk_id = ? AND a.level > ?))`
+			args = append(args, chunk, chunk, level)
+		}
+		res, err := d.query(ctx, key, q+` ORDER BY a.chunk_id, a.level LIMIT ?`, append(args, reindexPage)...)
+		if schemaMissing(err) {
+			// A scope that never held an annotation has no table; a dry run reads
+			// without creating it, and there is nothing to re-index either way.
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		for _, r := range res.Rows {
+			rec := scanAnnotationRecord(r)
+			chunk, level = rec.ChunkID, rec.Level
+			rep.AnnotationsExamined++
+			if err := d.reindexAnnotation(ctx, key, mscope, rec, dryRun, rep); err != nil {
+				return err
+			}
+			if rep.changed() >= limit || rep.Examined+rep.AnnotationsExamined >= reindexMaxExamined {
+				rep.NextCursor, rep.More = reindexAnnotationCursor+chunk+"/"+level, true
+				return nil
+			}
+		}
+		if len(res.Rows) < reindexPage {
+			return nil
+		}
+	}
+}
+
+// reindexAnnotation brings one record's index row up to date, following
+// indexAnnotation's rules: a declared node record has no row; any other record has
+// one embedded by the current embedder under annotationIndexText.
+func (d *Document) reindexAnnotation(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, rec annotationRecord,
+	dryRun bool, rep *ReindexReport) error {
+	tenant, scopeID := direntTenant(ctx), annotationMemScopeID(mscope, key)
+	k := annotationKey(rec.ChunkID, rec.Level)
+	if rec.Basis == annotationBasisDeclared {
+		if _, err := d.Store.MemoryGet(ctx, tenant, mscope, scopeID, k); err != nil {
+			if !isNotFound(err) {
+				return err
+			}
+			rep.AnnotationsUpToDate++
+			return nil
+		}
+		rep.AnnotationsUnindexed++
+		if !dryRun {
+			// The row's vector goes with it (memory_embeddings cascades on its row).
+			if _, err := d.Store.MemoryDelete(ctx, tenant, mscope, scopeID, k); err != nil {
+				rep.AnnotationsUnindexed--
+				rep.failAnnotation(k)
+			}
+		}
+		return nil
+	}
+	stored, gerr := d.Store.MemoryEmbedGet(ctx, tenant, mscope, scopeID, k)
+	if gerr != nil && !isNotFound(gerr) {
+		return gerr // no vector support: nothing here can be re-indexed
+	}
+	want := d.annotationIndexText(ctx, key, rec)
+	current := gerr == nil && stored.EmbedText == want &&
+		(d.Embedder == nil || (stored.Provider == d.Embedder.Provider() && stored.Model == d.Embedder.Model()))
+	if current {
+		rep.AnnotationsUpToDate++
+		return nil
+	}
+	rep.AnnotationsReindexed++
+	if !dryRun && !d.writeAnnotationIndex(ctx, key, mscope, rec, want) {
+		rep.AnnotationsReindexed--
+		rep.failAnnotation(k)
+	}
+	return nil
+}
+
+func (r *ReindexReport) failAnnotation(key string) {
+	r.AnnotationsFailed++
+	if len(r.FailedKeys) < reindexFailedKeysCap {
+		r.FailedKeys = append(r.FailedKeys, key)
 	}
 }
 

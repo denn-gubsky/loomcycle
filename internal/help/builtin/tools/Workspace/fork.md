@@ -10,7 +10,8 @@ worker, with its own session and disk quota, counted against how many
 workspaces your run may hold. It starts with no checkpoints, no shares, no
 interpreter running, and no record of Documents checked out into the
 original (check them out again to commit from the fork). A workspace
-shared with you cannot be forked.
+shared with you cannot be forked. To give a sub-agent its own copy, spawn
+it with `workspaces: [{fork: <name>, as?}]` (see Agent/spawn).
 
 ## Arguments
 

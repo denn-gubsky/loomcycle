@@ -2174,8 +2174,10 @@ class LoomcycleClient:
         proposal, planned as the direct changes accepting it makes (an add
         proposal as op ``add``, risk ``none``), together with the rest.
 
-        Returns ``{tenant, fingerprint, changes, issues, new_issues,
-        scopes_counted, scopes_skipped, complete}``; each change is ``{op,
+        Returns ``{tenant, fingerprint, content_version, changes, issues,
+        new_issues, scopes_counted, scopes_skipped, complete}``
+        (``content_version`` names what the ontology in force declares now; it
+        moves only when an in-force entry does); each change is ``{op,
         entry, risk, counts, subtree, notes, proposal}`` with ``entry``
         ``{chunk_id, name, section, kind}``, ``proposal`` the proposal's chunk
         id ("" for a direct change), and each count ``{n, effect,
@@ -2222,6 +2224,7 @@ class LoomcycleClient:
         return {
             "tenant": resp.tenant,
             "fingerprint": resp.fingerprint,
+            "content_version": resp.content_version,
             "changes": [
                 {
                     "op": c.op,
