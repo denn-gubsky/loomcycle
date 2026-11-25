@@ -271,3 +271,52 @@ func TestTemplate_DeleteRemovesRowAndArchiveAndBothAreAudited(t *testing.T) {
 		t.Errorf("delete line = %+v", del)
 	}
 }
+
+// A user holds at most MaxTemplatesPerUser user templates, so one member
+// cannot fill the tenant's bound; a principal and a run of one subject share
+// the count; another user can still save; the tenant bound still holds.
+func TestTemplate_AUserHoldsAtMostItsOwnShare(t *testing.T) {
+	f := newTemplateFixture(t, Limits{MaxPerRun: 4, MaxTemplates: 4, MaxTemplatesPerUser: 2})
+	ctx := context.Background()
+	if _, err := f.m.SaveTemplate(ctx, f.alice, f.src, f.ck, "a1", store.WorkspaceTemplateUser); err != nil {
+		t.Fatal(err)
+	}
+	// The same subject over the MCP server: its own workspace and checkpoint.
+	p := PrincipalOwner("acme", "alice", "tok")
+	psrc := f.open(t, p, "pw")
+	pck, err := f.m.Checkpoint(ctx, psrc, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.m.SaveTemplate(ctx, p, psrc, pck.ID, "a2", store.WorkspaceTemplateUser); err != nil {
+		t.Fatal(err)
+	}
+	for _, try := range []struct {
+		who string
+		o   Owner
+		src store.WorkspaceRow
+		ck  string
+	}{{"the run", f.alice, f.src, f.ck}, {"the principal", p, psrc, pck.ID}} {
+		_, err := f.m.SaveTemplate(ctx, try.o, try.src, try.ck, "a3", store.WorkspaceTemplateUser)
+		if !errors.Is(err, ErrTemplateLimit) || !strings.Contains(err.Error(), "max_per_user") {
+			t.Errorf("a third user template by %s = %v, want ErrTemplateLimit naming max_per_user", try.who, err)
+		}
+	}
+	// Tenant templates are not a user's share.
+	if _, err := f.m.SaveTemplate(ctx, f.alice, f.src, f.ck, "t1", store.WorkspaceTemplateTenant); err != nil {
+		t.Errorf("a tenant template past alice's user share: %v", err)
+	}
+	bob := f.run(t, "bob")
+	bsrc := f.open(t, bob, "work")
+	bck, err := f.m.Checkpoint(ctx, bsrc, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.m.SaveTemplate(ctx, bob, bsrc, bck.ID, "b1", store.WorkspaceTemplateUser); err != nil {
+		t.Errorf("another user's save: %v", err)
+	}
+	// Four held: the tenant bound refuses bob's second.
+	if _, err := f.m.SaveTemplate(ctx, bob, bsrc, bck.ID, "b2", store.WorkspaceTemplateUser); !errors.Is(err, ErrTemplateLimit) || !strings.Contains(err.Error(), "max_per_tenant") {
+		t.Errorf("past the tenant bound = %v, want ErrTemplateLimit naming max_per_tenant", err)
+	}
+}

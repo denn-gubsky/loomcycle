@@ -85,6 +85,10 @@ type WorkspaceTemplateConfig struct {
 	// MaxPerTenant bounds the templates a tenant holds, user and tenant
 	// ones together. Default 20.
 	MaxPerTenant int `yaml:"max_per_tenant,omitempty"`
+	// MaxPerUser bounds one user's user templates, so one member cannot
+	// fill the tenant's bound alone. Default 5, or max_per_tenant when that
+	// is lower; at most max_per_tenant.
+	MaxPerUser int `yaml:"max_per_user,omitempty"`
 }
 
 // WorkspaceCheckpointConfig is `workspace.checkpoint`. A checkpoint's size
@@ -226,6 +230,7 @@ const (
 	DefaultWorkspaceCheckpoints    = 8
 	DefaultWorkspaceTemplateMaxMB  = 1024
 	DefaultWorkspaceTemplates      = 20
+	DefaultWorkspaceUserTemplates  = 5
 	// maxWorkspaceTemplateMB bounds workspace.template.max_mb (64 GiB), and
 	// maxWorkspaceTemplates workspace.template.max_per_tenant.
 	maxWorkspaceTemplateMB = 64 << 10
@@ -294,6 +299,9 @@ func (w WorkspaceConfig) Resolved() WorkspaceConfig {
 	}
 	if w.Template.MaxPerTenant == 0 {
 		w.Template.MaxPerTenant = DefaultWorkspaceTemplates
+	}
+	if w.Template.MaxPerUser == 0 {
+		w.Template.MaxPerUser = min(DefaultWorkspaceUserTemplates, w.Template.MaxPerTenant)
 	}
 	w.Egress = w.Egress.Resolved()
 	if w.Expose.MaxPerWorkspace == 0 {
@@ -442,6 +450,9 @@ func validateWorkspace(c *Config) error {
 	}
 	if c := w.Template.MaxPerTenant; c < 0 || c > maxWorkspaceTemplates {
 		return fmt.Errorf("workspace.template.max_per_tenant: %d is out of range (1 to %d)", c, maxWorkspaceTemplates)
+	}
+	if u, r := w.Template.MaxPerUser, w.Resolved().Template; u < 0 || u > r.MaxPerTenant {
+		return fmt.Errorf("workspace.template.max_per_user: %d is out of range (1 to max_per_tenant, %d)", u, r.MaxPerTenant)
 	}
 	for _, op := range w.MCP.Ops {
 		switch op {

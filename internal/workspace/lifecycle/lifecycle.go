@@ -68,6 +68,10 @@ type Limits struct {
 	// and DefaultMaxTemplates.
 	TemplateMaxBytes int64
 	MaxTemplates     int
+	// MaxTemplatesPerUser bounds one user's user templates
+	// (workspace.template.max_per_user), so one member cannot fill the
+	// tenant's bound; zero is DefaultMaxTemplatesPerUser.
+	MaxTemplatesPerUser int
 	// ConvertQuarantine is how long a file that crashed a worker's
 	// conversion child is refused for its workspace
 	// (conversion.quarantine_ttl_s); zero is DefaultConvertQuarantine.

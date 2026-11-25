@@ -45,8 +45,9 @@ var (
 // DefaultTemplateMaxBytes and DefaultMaxTemplates are config
 // workspace.template's defaults, for a Limits that names none.
 const (
-	DefaultTemplateMaxBytes = 1 << 30
-	DefaultMaxTemplates     = 20
+	DefaultTemplateMaxBytes    = 1 << 30
+	DefaultMaxTemplates        = 20
+	DefaultMaxTemplatesPerUser = 5
 )
 
 const templateIDPrefix = "tpl_"
@@ -89,6 +90,25 @@ func (m *Manager) templateMaxBytes() int64 {
 		return m.limits.TemplateMaxBytes
 	}
 	return DefaultTemplateMaxBytes
+}
+
+func (m *Manager) maxTemplatesPerUser() int {
+	if m.limits.MaxTemplatesPerUser > 0 {
+		return m.limits.MaxTemplatesPerUser
+	}
+	return DefaultMaxTemplatesPerUser
+}
+
+// userTemplateCount counts a user's user templates: a run and a session of
+// the MCP server of one subject share them (D-P6-45), and so share the
+// per-user bound that keeps one member from filling the tenant's.
+func (m *Manager) userTemplateCount(ctx context.Context, tenantID, user string) (int, error) {
+	rows, err := m.store.WorkspaceTemplateList(ctx, tenantID, store.WorkspaceTemplateUser, user)
+	return len(rows), err
+}
+
+func (m *Manager) userTemplateLimit(n int) error {
+	return fmt.Errorf("%w: you hold %d user templates (workspace.template.max_per_user); delete one first", ErrTemplateLimit, n)
 }
 
 func (m *Manager) maxTemplates() int {
@@ -138,6 +158,13 @@ func (m *Manager) SaveTemplate(ctx context.Context, o Owner, src store.Workspace
 	} else if !isNotFound(err) {
 		return store.WorkspaceTemplateRow{}, err
 	}
+	if scope == store.WorkspaceTemplateUser {
+		if n, err := m.userTemplateCount(ctx, o.TenantID, scopeID); err != nil {
+			return store.WorkspaceTemplateRow{}, err
+		} else if n >= m.maxTemplatesPerUser() {
+			return store.WorkspaceTemplateRow{}, m.userTemplateLimit(n)
+		}
+	}
 	if n, err := m.store.WorkspaceTemplateCount(ctx, o.TenantID); err != nil {
 		return store.WorkspaceTemplateRow{}, err
 	} else if n >= m.maxTemplates() {
@@ -169,6 +196,15 @@ func (m *Manager) SaveTemplate(ctx context.Context, o Owner, src store.Workspace
 	}
 	// Counted again with the row written: two saves racing each see the
 	// other's row, so neither passes the bound both together would break.
+	if scope == store.WorkspaceTemplateUser {
+		if n, err := m.userTemplateCount(ctx, o.TenantID, scopeID); err != nil || n > m.maxTemplatesPerUser() {
+			m.removeTemplate(out)
+			if err != nil {
+				return store.WorkspaceTemplateRow{}, err
+			}
+			return store.WorkspaceTemplateRow{}, m.userTemplateLimit(n - 1)
+		}
+	}
 	if n, err := m.store.WorkspaceTemplateCount(ctx, o.TenantID); err != nil || n > m.maxTemplates() {
 		m.removeTemplate(out)
 		if err != nil {
