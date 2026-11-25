@@ -27,7 +27,7 @@ func TestAcceptEntry_TamperedMarkIsRefused422(t *testing.T) {
 		"meaning": "One party reviews another's memo.", "directives": map[string]any{"domain": "Memo"}})["chunk_id"].(string)
 	g := exec(map[string]any{"op": "get_chunk", "scope": "tenant", "id": bad})
 	fields := g["fields"].(map[string]any)
-	fields["entry_proposal"].(map[string]any)["directives"] = []map[string]any{{"name": "acl", "value": "admins"}}
+	fields["entry_proposal"].(map[string]any)["directives"] = []map[string]any{{"name": "auto_assert"}, {"name": "domain", "value": "Memo"}}
 	exec(map[string]any{"op": "update_chunk", "scope": "tenant", "id": bad, "revision": g["revision"], "fields": fields})
 
 	code, body := postProposal(t, s, mi.Tenant, map[string]string{"chunk_id": bad, "action": "accept"})

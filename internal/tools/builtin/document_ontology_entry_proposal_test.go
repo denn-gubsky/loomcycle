@@ -226,7 +226,11 @@ func TestAcceptEntry_BodyIsMeaningAndDirectivesNotEvidence(t *testing.T) {
 // nothing is written: the proposal stays proposed with its body.
 func TestAcceptEntry_TamperedMarkWritesNothing(t *testing.T) {
 	for name, tamper := range map[string]func(m map[string]any){
+		// auto_assert is one a relation takes, so only the add list refuses it.
 		"a directive outside the list": func(m map[string]any) {
+			m["directives"] = []map[string]any{{"name": "auto_assert"}, {"name": "domain", "value": "Policy"}}
+		},
+		"a directive no relation takes": func(m map[string]any) {
 			m["directives"] = []map[string]any{{"name": "acl", "value": "admins"}}
 		},
 		"a live directive in the meaning": func(m map[string]any) { m["meaning"] = "@auto_assert" },
