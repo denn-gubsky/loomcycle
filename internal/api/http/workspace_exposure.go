@@ -134,12 +134,10 @@ func (h *exposureHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		},
 		FlushInterval: -1,
 		ModifyResponse: func(resp *http.Response) error {
-			resp.Header.Del("Set-Cookie")
-			resp.Header.Del("Content-Security-Policy-Report-Only")
-			if loc := resp.Header.Get("Location"); loc != "" {
-				resp.Header.Set("Location", underPrefix(loc, prefix))
-			}
-			setExposureHeaders(resp.Header)
+			resp.Header = exposureAnswerHeaders(resp.Header, prefix)
+			// Trailers would carry headers past the allowlist; noTrailers
+			// drops any written after the body too.
+			resp.Trailer = nil
 			return nil
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
@@ -156,7 +154,89 @@ func (h *exposureHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "the workspace's application did not answer", http.StatusBadGateway)
 		},
 	}
-	rp.ServeHTTP(h.gate.limitBytes(w, row.ID), r)
+	rp.ServeHTTP(h.gate.limitBytes(&noTrailers{ResponseWriter: w}, row.ID), r)
+}
+
+// noTrailers keeps an application's trailers from the client: ReverseProxy
+// writes them into the header map after the body, where they would carry
+// any header past the allowlist. Once the head is written, Header is a
+// scratch map nobody sends.
+type noTrailers struct {
+	http.ResponseWriter
+	sent    bool
+	scratch http.Header
+}
+
+func (n *noTrailers) Header() http.Header {
+	if n.sent {
+		if n.scratch == nil {
+			n.scratch = http.Header{}
+		}
+		return n.scratch
+	}
+	return n.ResponseWriter.Header()
+}
+
+func (n *noTrailers) WriteHeader(code int) {
+	n.sent = true
+	n.ResponseWriter.WriteHeader(code)
+}
+
+func (n *noTrailers) Write(b []byte) (int, error) {
+	n.sent = true
+	return n.ResponseWriter.Write(b)
+}
+
+func (n *noTrailers) Flush() {
+	if f, ok := n.ResponseWriter.(http.Flusher); ok {
+		n.sent = true
+		f.Flush()
+	}
+}
+
+// Unwrap lets http.ResponseController reach the underlying writer.
+func (n *noTrailers) Unwrap() http.ResponseWriter { return n.ResponseWriter }
+
+// exposureForwarded are the only headers of an application's answer that
+// reach the client (the security review of #2931). The answer is served
+// from the API's own origin, so a header that acts on the whole origin —
+// Clear-Site-Data, Strict-Transport-Security, Access-Control-*, Link,
+// Refresh, Service-Worker-Allowed, Origin-Agent-Cluster,
+// Permissions-Policy, Alt-Svc, the reporting headers, Set-Cookie — would
+// apply to the core, not the page. An allowlist, so a header the next
+// browser release gives power to is dropped too. Each is here because a
+// page needs it:
+var exposureForwarded = []string{
+	// What the body is, so the page renders and nosniff holds.
+	"Content-Type",
+	// The body's own framing and form; ReverseProxy sets Content-Length.
+	"Content-Encoding", "Content-Length",
+	// A download the page offers.
+	"Content-Disposition",
+	// Revalidation of what the page loads (the cache itself is forced
+	// private below).
+	"Etag", "Last-Modified",
+	// Seeking in audio and video the page plays (206 answers).
+	"Accept-Ranges", "Content-Range",
+}
+
+// exposureAnswerHeaders is an application's answer's headers as the client
+// gets them: the allowlist, the Location rewritten under the prefix,
+// Cache-Control forced private and never stored (a page is one user's), and
+// the sandbox policy.
+func exposureAnswerHeaders(in http.Header, prefix string) http.Header {
+	out := http.Header{}
+	for _, name := range exposureForwarded {
+		if v := in.Values(name); len(v) > 0 {
+			out[name] = append([]string(nil), v...)
+		}
+	}
+	if loc := in.Get("Location"); loc != "" {
+		out.Set("Location", underPrefix(loc, prefix))
+	}
+	out.Set("Cache-Control", "private, no-store")
+	setExposureHeaders(out)
+	return out
 }
 
 // setExposureHeaders puts the sandbox policy on an answer.
