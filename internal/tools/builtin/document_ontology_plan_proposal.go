@@ -114,6 +114,14 @@ func (d *Document) planProposal(ctx context.Context, key sqlmem.ScopeKey, mscope
 		if raw, marked := marks[changeProposalField]; marked {
 			return d.planChangeProposal(ctx, key, mscope, at, self, raw)
 		}
+		// An add carrying structured data is planned as an add, once its mark passes the
+		// accept's checks: one the accept would refuse is refused here too.
+		if raw, marked := marks[entryProposalField]; marked {
+			if _, err := checkEntryAccept(before, self, raw); err != nil {
+				return nil, nil, connector.WithMessage(connector.ErrOntologyPlanInvalid,
+					at+": proposal "+strconv.Quote(self.ID)+" cannot be accepted as it stands: "+err.Error())
+			}
+		}
 	}
 	return nil, addProposalPlan(*listed), nil
 }

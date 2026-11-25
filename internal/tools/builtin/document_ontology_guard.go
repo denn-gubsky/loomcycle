@@ -361,6 +361,10 @@ func (d *Document) proposeEntity(ctx context.Context, in docInput) (tools.Result
 	if wantsWholeScheme(in) && section != memrank.SectionSchemes {
 		return errValidation("propose_entity: concepts and header describe a scheme; pass section=schemes", ""), nil
 	}
+	if wantsStructuredAdd(in) && section != "" && section != memrank.SectionClasses && section != memrank.SectionRelations {
+		return errValidation("propose_entity: meaning, directives, evidence and signal describe a new class or relation kind, "+
+			"or (with change=\"edit\") a change to an entry", "Omit them here, or pass change and entry."), nil
+	}
 	switch section {
 	case "", memrank.SectionClasses:
 	case memrank.SectionRelations:
@@ -425,6 +429,9 @@ func (d *Document) proposeEntity(ctx context.Context, in docInput) (tools.Result
 		}
 		parentChunk = id
 	}
+	if wantsStructuredAdd(in) {
+		return d.fileEntryProposal(ctx, key, mscope, read, planKindClass, parentChunk, name, in)
+	}
 	// Accepted in place like every other proposal, so its evidence must not carry a
 	// declaration that would go live on the accept.
 	return d.createOntologyProposal(ctx, key, mscope, read.DocumentID, parentChunk, name, neutraliseDirectives(in.Body))
@@ -484,6 +491,9 @@ func (d *Document) proposeRelation(ctx context.Context, key sqlmem.ScopeKey, msc
 				"Relations section (have: "+strings.Join(have, ", ")+")",
 				"Pass one of the listed kinds as parent, or omit parent."), nil
 		}
+	}
+	if wantsStructuredAdd(in) {
+		return d.fileEntryProposal(ctx, key, mscope, read, planKindRelation, parentChunk, name, in)
 	}
 	return d.createOntologyProposal(ctx, key, mscope, read.DocumentID, parentChunk, name, neutraliseDirectives(in.Body))
 }

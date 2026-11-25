@@ -524,7 +524,7 @@ func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, msco
 	issues = append(issues, memrank.FormerClassNameIssues(memrank.EffectiveClasses(out, true))...)
 	read := OntologyRead{
 		Terms: out, Confirmed: confirmed, DepthCapped: depthCapped,
-		Proposals: withChangeMarks(proposals, chunkOf), DocumentID: docID, RootChunkID: rootID,
+		Proposals: withEntryMarks(withChangeMarks(proposals, chunkOf), chunkOf), DocumentID: docID, RootChunkID: rootID,
 		Sections: sections, Grammars: grammars, Issues: issues, RootRevision: rootRevision,
 		Relations: relations, SectionChunks: sectionChunks, partial: partial,
 		Schemes: checkedSchemes(schemes, out, instances), Instances: instances, Review: review,
