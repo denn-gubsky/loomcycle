@@ -102,6 +102,10 @@ type ontologyResponse struct {
 	// with. FactVersions counts the tenant scope's facts by the version they carry.
 	OntologyVersion int                    `json:"ontology_version,omitempty"`
 	FactVersions    []builtin.VersionCount `json:"fact_versions,omitempty"`
+	// ContentVersion names what the document's entries declare (RFC GQ P3): unlike
+	// OntologyVersion it changes only when an entry does, not on a proposal, a review
+	// rule or a reorder. Absent when the document could not be read whole.
+	ContentVersion string `json:"content_version,omitempty"`
 	// UndeclaredTypes are chunks.type values in use in the TENANT scope that no class
 	// declares (structural types excluded), with counts — what an operator would declare
 	// or map with @renamed_from. Tenant scope only: user scopes are per person and are
@@ -351,6 +355,7 @@ func (s *Server) ontologyState(ctx context.Context, tenant string) (ontologyResp
 	if read, rerr := doc.OntologyTermsFromTree(dctx, "tenant", meminject.OntologyPath); rerr == nil {
 		resp.Proposals = read.Proposals
 		resp.Sections, resp.Grammars, resp.OntologyVersion = read.Sections, read.Grammars, read.RootRevision
+		resp.ContentVersion = read.ContentVersion
 		sectioned = len(read.Sections) > 0
 		relRead = read
 		_, hasRelations = read.SectionChunks[meminject.SectionRelations]

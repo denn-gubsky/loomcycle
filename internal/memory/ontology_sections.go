@@ -575,6 +575,9 @@ type OntologyGrammar struct {
 	// Issue is set when the grammar cannot be used. A broken grammar is DISABLED and
 	// reported; the class naming it stays in force.
 	Issue string `json:"issue,omitempty"`
+	// ChunkID is the grammar's chunk in the ontology document. Not serialised: it keys
+	// the grammar in the ontology's content version.
+	ChunkID string `json:"-"`
 }
 
 // GrammarRule is one `scope:` or `anchor:` line: `<RE2 pattern> => <alt> | <alt> …`.
