@@ -1261,6 +1261,9 @@ func (s *Server) SetWorkspaceExposures(x workspaceExposures, c config.WorkspaceE
 	s.exposures = newExposureHandler(x, exposeRouteLimits{MaxConnections: c.MaxConnections,
 		RequestsPerSecond: c.RequestsPerSecond, BytesPerSecond: c.BytesPerSecond, MaxMessageBytes: c.MaxMessageBytes,
 		SocketIdle: time.Duration(c.IdleTimeoutS) * time.Second, SocketLifetime: time.Duration(c.SocketLifetimeS) * time.Second})
+	// A page's socket re-checks its credential as the document feed does.
+	s.exposures.reauth = s.reauthenticateFeed
+	s.exposures.expiry = s.credentialExpiry
 }
 
 // handleWorkspaceExposure serves the route, or 404 with no bookkeeping.

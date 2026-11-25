@@ -2,6 +2,7 @@ package http
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -157,6 +158,7 @@ func (f *exposureFixture) rebuild() {
 	if f.recheck > 0 {
 		h.socketRecheck = f.recheck
 	}
+	withRequestPrincipal(h)
 	f.mux.Handle(exposureRoutePattern, h)
 }
 
@@ -509,4 +511,18 @@ func TestExposure_EveryAnswerIsSandboxedWithoutSameOrigin(t *testing.T) {
 			t.Errorf("%s: no X-Content-Type-Options: nosniff", name)
 		}
 	}
+}
+
+// withRequestPrincipal gives a test handler the credential re-check as the
+// request's own principal, unchanging; the tests that end a credential go
+// through the real server (workspace_exposure_ws_test.go).
+func withRequestPrincipal(h *exposureHandler) *exposureHandler {
+	h.reauth = func(r *http.Request) (auth.Principal, error) {
+		if p, ok := auth.PrincipalFromContext(r.Context()); ok {
+			return p, nil
+		}
+		return auth.Principal{}, errors.New("no principal")
+	}
+	h.expiry = func(*http.Request) time.Time { return time.Time{} }
+	return h
 }

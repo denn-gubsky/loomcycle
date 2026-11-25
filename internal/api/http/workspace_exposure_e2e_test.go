@@ -129,7 +129,7 @@ func TestExposureRoute_EndToEndThroughAHostWorker(t *testing.T) {
 	base := expose(port)
 
 	mux := http.NewServeMux()
-	mux.Handle(exposureRoutePattern, newExposureHandler(m, exposeRouteLimits{MaxConnections: 8, RequestsPerSecond: 100, BytesPerSecond: 1 << 30}))
+	mux.Handle(exposureRoutePattern, withRequestPrincipal(newExposureHandler(m, exposeRouteLimits{MaxConnections: 8, RequestsPerSecond: 100, BytesPerSecond: 1 << 30})))
 	get := func(p *auth.Principal, path string) *httptest.ResponseRecorder {
 		r := httptest.NewRequest("GET", path, nil)
 		r.Header.Set("Authorization", "Bearer lc_test")

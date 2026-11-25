@@ -69,8 +69,14 @@ type exposureHandler struct {
 	gate *exposureGate
 	lim  exposeRouteLimits
 	// socketRecheck is how often an open socket asks whether its exposure
-	// is still open (unexposed, released, the switch turned off).
+	// is still open (unexposed, released, the switch turned off) and its
+	// credential still resolves.
 	socketRecheck time.Duration
+	// reauth resolves a socket's request's credential again (the server's
+	// reauthenticateFeed); expiry is when it stops being valid
+	// (credentialExpiry). Without both, no socket is opened.
+	reauth func(r *http.Request) (auth.Principal, error)
+	expiry func(r *http.Request) time.Time
 }
 
 func newExposureHandler(x workspaceExposures, lim exposeRouteLimits) *exposureHandler {

@@ -3,6 +3,7 @@ package http
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,6 +14,8 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/workspace"
 	"github.com/denn-gubsky/loomcycle/internal/workspace/dispatch"
 )
@@ -322,5 +325,146 @@ func TestExposureSocket_KeepsItsBounds(t *testing.T) {
 				break
 			}
 		})
+	}
+}
+
+// socketThroughServer is the route behind the real auth middleware, with
+// token auth on and a bearer for alice of acme; expires is the token's fixed
+// end (zero: none). recheck is how often an open socket re-checks.
+func socketThroughServer(t *testing.T, f *exposureFixture, expires time.Time, recheck time.Duration) (*httptest.Server, store.Store) {
+	t.Helper()
+	s, st := tokenAuthServer(t, "legacy-secret")
+	if _, err := st.OperatorTokenDefCreate(context.Background(), store.OperatorTokenDefRow{
+		DefID: "def_alice", Name: "alice", TenantID: "acme", Subject: "alice",
+		TokenHash: auth.HashToken(testTokenPepper, "alice-token"), AllowedScopes: []string{auth.ScopeRunsRead},
+		ExpiresAt: expires,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s.SetWorkspaceExposures(testExposures{Manager: f.m, f: f}, config.WorkspaceExposeConfig{MaxConnections: 8,
+		RequestsPerSecond: 100, BytesPerSecond: 1 << 30, MaxMessageBytes: 1 << 20, IdleTimeoutS: 600, SocketLifetimeS: 3600})
+	s.exposures.socketRecheck = recheck
+	mux := http.NewServeMux()
+	mux.Handle(exposureRoutePattern, s.authMiddleware(http.HandlerFunc(s.handleWorkspaceExposure)))
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+	return ts, st
+}
+
+func dialWithBearer(t *testing.T, ts *httptest.Server, bearer string) *websocket.Conn {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	t.Cleanup(cancel)
+	c, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(ts.URL, "http")+socketPath, &websocket.DialOptions{
+		Subprotocols: []string{exposureSocketMarker, "bearer." + bearer}})
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	t.Cleanup(func() { c.CloseNow() })
+	return c
+}
+
+// A long-lived socket re-checks its credential, as the document feed does
+// (the security review of #2935): a token retired mid-connection closes the
+// socket with 1008 at the next recheck, and a token with a fixed end closes
+// it at that end, whatever the recheck interval.
+func TestExposureSocket_ClosesWhenItsCredentialEnds(t *testing.T) {
+	ctx := context.Background()
+	t.Run("retired", func(t *testing.T) {
+		f := newExposureFixture(t)
+		f.wsApp = echoSocket(&wsSeen{})
+		ts, st := socketThroughServer(t, f, time.Time{}, 100*time.Millisecond)
+		c := dialWithBearer(t, ts, "alice-token")
+		if err := c.Write(ctx, websocket.MessageText, []byte("hi")); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := c.Read(ctx); err != nil {
+			t.Fatalf("echo before the retirement: %v", err)
+		}
+		if err := st.OperatorTokenDefSetRetiredAt(ctx, "def_alice", time.Now().Add(-time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+		rctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		if _, _, err := c.Read(rctx); websocket.CloseStatus(err) != websocket.StatusPolicyViolation {
+			t.Errorf("after the token was retired the socket read %v, want a close with 1008", err)
+		}
+	})
+	t.Run("expiry", func(t *testing.T) {
+		f := newExposureFixture(t)
+		f.wsApp = echoSocket(&wsSeen{})
+		// Long enough that a slow (race-detector) setup still dials before
+		// the end; the recheck is an hour, so only the end can close it.
+		end := time.Now().Add(4 * time.Second)
+		ts, _ := socketThroughServer(t, f, end, time.Hour)
+		c := dialWithBearer(t, ts, "alice-token")
+		rctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		if _, _, err := c.Read(rctx); websocket.CloseStatus(err) != websocket.StatusPolicyViolation {
+			t.Errorf("at the token's end the socket read %v, want a close with 1008", err)
+		}
+		if late := time.Since(end); late > 2*time.Second {
+			t.Errorf("the socket outlived its token by %v", late)
+		}
+	})
+}
+
+// A message crosses as it arrives, piece by piece, never held whole (the
+// security review of #2935: a buffered relay holds up to two whole messages
+// per socket): the application reads the first piece of a message while
+// the client has not finished sending it.
+func TestExposureSocket_StreamsAMessageWithoutHoldingItWhole(t *testing.T) {
+	f := newExposureFixture(t)
+	firstPiece := make(chan int, 1)
+	f.wsApp = func(w http.ResponseWriter, r *http.Request) {
+		c, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
+		if err != nil {
+			return
+		}
+		defer c.CloseNow()
+		c.SetReadLimit(64 << 20)
+		_, rd, err := c.Reader(context.Background())
+		if err != nil {
+			return
+		}
+		buf := make([]byte, 32<<10)
+		n, _ := io.ReadAtLeast(rd, buf, 1)
+		firstPiece <- n
+		_, _ = io.Copy(io.Discard, rd)
+	}
+	f.lim.MaxMessageBytes = 8 << 20
+	f.rebuild()
+	c, _, err := dialPage(t, socketServer(t, f, alice, false), socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.CloseNow()
+	ctx := context.Background()
+	wr, err := c.Writer(ctx, websocket.MessageBinary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := wr.Write(make([]byte, 64<<10)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case n := <-firstPiece:
+		if n <= 0 {
+			t.Errorf("first piece = %d bytes", n)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the application received nothing of a message the client had not finished: the relay holds messages whole")
+	}
+	_, _ = wr.Write(make([]byte, 1<<20))
+	_ = wr.Close()
+}
+
+// The relay's memory for one workspace's sockets on a replica stays within
+// its stated budget at the defaults (D-P9-49): max_connections × 2
+// directions × one piece is at most 1 MiB, whatever max_message_bytes is.
+func TestExposureSocket_DefaultsKeepTheRelayWithinItsBudget(t *testing.T) {
+	const budget = 1 << 20
+	if got := config.DefaultWorkspaceExposeMaxConnections * 2 * socketPiece; got > budget {
+		t.Errorf("max_connections × 2 × piece = %d bytes, over the %d budget", got, budget)
 	}
 }

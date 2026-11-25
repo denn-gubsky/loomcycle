@@ -21,6 +21,11 @@ import (
 
 // The defaults of a page's socket bounds (P9 plan §3.3; workspace.expose).
 const (
+	// socketPiece is how much of a message the relay holds at once, each
+	// way. With the default max_connections (32) a workspace's sockets
+	// hold at most 32 × 2 × 16 KiB = 1 MiB in the relay on one replica,
+	// whatever max_message_bytes is (D-P9-49).
+	socketPiece               = 16 << 10
 	defaultSocketMessageBytes = 16 << 20
 	defaultSocketIdle         = 15 * time.Minute
 	defaultSocketLifetime     = 4 * time.Hour
@@ -109,6 +114,11 @@ func applicationProtocols(r *http.Request) []string {
 func (h *exposureHandler) serveSocket(w http.ResponseWriter, r *http.Request, e store.WorkspaceExposure, row store.WorkspaceRow,
 	tenantID, userID, rest string) {
 	lim := h.socketLimits()
+	if h.reauth == nil || h.expiry == nil {
+		// A socket that could not re-check its credential is not opened.
+		http.Error(w, "the page's socket is not available", http.StatusServiceUnavailable)
+		return
+	}
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
@@ -158,16 +168,45 @@ func (h *exposureHandler) serveSocket(w http.ResponseWriter, r *http.Request, e 
 		mu.Unlock()
 	}
 	ended := make(chan relayEnd, 2)
+	// Each message is streamed, piece by piece, never held whole: what one
+	// socket holds is one piece a direction, whatever the message's size
+	// (the security review of #2935). The read limit still bounds the
+	// message, and the byte rate is taken per piece.
 	relay := func(from, to *websocket.Conn) {
 		for {
-			typ, data, err := from.Read(ctx)
+			typ, rd, err := from.Reader(ctx)
 			if err != nil {
 				ended <- relayEnd{from: from, err: err}
 				return
 			}
 			used()
-			h.gate.waitBytes(ctx, row.ID, len(data))
-			if err := to.Write(ctx, typ, data); err != nil {
+			wr, err := to.Writer(ctx, typ)
+			if err != nil {
+				ended <- relayEnd{from: to, err: err}
+				return
+			}
+			src := &trackedReader{r: rd}
+			for {
+				h.gate.waitBytes(ctx, row.ID, socketPiece)
+				n, err := io.CopyN(wr, src, socketPiece)
+				if n > 0 {
+					used()
+				}
+				if err == io.EOF {
+					break
+				}
+				if err != nil {
+					// A failed read is the sender's (its close, its
+					// message past the bound); any other, the receiver's.
+					if src.err != nil {
+						ended <- relayEnd{from: from, err: src.err}
+					} else {
+						ended <- relayEnd{from: to, err: err}
+					}
+					return
+				}
+			}
+			if err := wr.Close(); err != nil {
 				ended <- relayEnd{from: to, err: err}
 				return
 			}
@@ -178,6 +217,16 @@ func (h *exposureHandler) serveSocket(w http.ResponseWriter, r *http.Request, e 
 
 	lifetime := time.NewTimer(lim.SocketLifetime)
 	defer lifetime.Stop()
+	// The credential's own end (a token's expiry or the end of its
+	// retirement's grace), as the document feed does: the socket never
+	// outlives it, whatever the recheck interval. Zero: no fixed end, which
+	// the recheck finds.
+	var credentialEnd <-chan time.Time
+	if until := h.expiry(r); !until.IsZero() {
+		t := time.NewTimer(time.Until(until))
+		defer t.Stop()
+		credentialEnd = t.C
+	}
 	tick := time.NewTicker(h.recheckEvery())
 	defer tick.Stop()
 	for {
@@ -188,12 +237,23 @@ func (h *exposureHandler) serveSocket(w http.ResponseWriter, r *http.Request, e 
 		case <-lifetime.C:
 			closeBoth(client, app, websocket.StatusGoingAway, "the page's socket reached its lifetime")
 			return
+		case <-credentialEnd:
+			closeBoth(client, app, websocket.StatusPolicyViolation, "the credential expired")
+			return
 		case <-tick.C:
 			mu.Lock()
 			idle := time.Since(lastUsed)
 			mu.Unlock()
 			if idle >= lim.SocketIdle {
 				closeBoth(client, app, websocket.StatusGoingAway, "the page's socket was idle")
+				return
+			}
+			// The credential is resolved again, as every request is: a
+			// token revoked, retired or expired, or a user disabled, ends
+			// the socket. The bearer is read from the request again and
+			// never kept or logged here; resolving it compares its hash.
+			if p, err := h.reauth(r); err != nil || p.TenantID != tenantID || p.Subject != userID {
+				closeBoth(client, app, websocket.StatusPolicyViolation, "the credential no longer holds")
 				return
 			}
 			if _, _, err := h.x.OpenExposure(ctx, tenantID, userID, e.ID); err != nil {
@@ -342,4 +402,19 @@ func (g *exposureGate) waitBytes(ctx context.Context, wsID string, n int) {
 		}
 		left -= piece
 	}
+}
+
+// trackedReader keeps the error its reader failed with (EOF aside), so the
+// relay can tell the sender's failure from the receiver's.
+type trackedReader struct {
+	r   io.Reader
+	err error
+}
+
+func (t *trackedReader) Read(p []byte) (int, error) {
+	n, err := t.r.Read(p)
+	if err != nil && err != io.EOF {
+		t.err = err
+	}
+	return n, err
 }
