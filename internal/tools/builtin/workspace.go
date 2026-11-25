@@ -155,7 +155,11 @@ var workspaceOpArgs = map[string][]string{
 // server, where the owner is the session's principal (RFC GW D35, P9 plan
 // §3.5): the lifecycle, commands and the file ops. Sharing, interpreters and
 // servers are a run's.
-var WorkspaceMCPOps = []string{"open", "release", "list", "status", "exec", "read", "write", "edit", "glob", "grep"}
+var WorkspaceMCPOps = []string{"open", "release", "list", "status", "exec", "read", "write", "edit", "glob", "grep",
+	// RFC GW P6, D-P6-24 (ruled 2026-11-25): templates, as the principal;
+	// and the checkpoints a template is saved from (D-P6-14: they act on the
+	// pinned row and need nothing of its owner).
+	"checkpoint", "checkpoints", "delete_checkpoint", "save_template", "templates", "delete_template"}
 
 var workspaceMCPOps = func() map[string]bool {
 	m := map[string]bool{}
@@ -317,9 +321,6 @@ func (w *Workspace) Execute(ctx context.Context, input json.RawMessage) (tools.R
 	}
 	switch in.Op {
 	case "open":
-		if in.Template != "" && owner.IsPrincipal() {
-			return workspaceRefusal("not_over_mcp", "a workspace is opened from a template inside a run; over the MCP server open takes no template"), nil
-		}
 		return w.open(ctx, owner, pol, in), nil
 	case "list":
 		return w.list(ctx, owner), nil
@@ -470,9 +471,6 @@ func (w *Workspace) open(ctx context.Context, o lifecycle.Owner, pol tools.Works
 		t, err := w.Manager.FindTemplate(ctx, o, in.Template)
 		if err != nil {
 			return templateError(err)
-		}
-		if !templateReachable(ctx, t) {
-			return templateError(lifecycle.ErrTemplateNotFound)
 		}
 		req.Template = &t
 		return w.finishOpen(ctx, o, req)

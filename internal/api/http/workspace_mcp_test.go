@@ -3,6 +3,7 @@ package http
 import (
 	"context"
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -139,5 +140,46 @@ func TestWorkspaceMCP_EgressIsTheOperatorsListAndOpenNarrowsIt(t *testing.T) {
 	}
 	if text, isErr := wsMCPCall(t, f, alice, `{"op":"open","name":"x","egress":["pypi","npm"]}`); !isErr || !strings.Contains(text, "not_granted") {
 		t.Errorf("open widening the list: %s, want not_granted", text)
+	}
+}
+
+// D-P6-24 (ruled 2026-11-25): a session of the MCP server keeps and opens
+// templates as its token's subject: the grant the server gives a session
+// covers saving a user template from its own checkpoint, and a member token
+// is refused a tenant one.
+func TestWorkspaceMCP_ASessionKeepsAndOpensItsOwnTemplates(t *testing.T) {
+	f := wsMCPFixture(t, config.WorkspaceMCPConfig{Enabled: true, Ops: []string{"read", "write"}})
+	f.mgr.SetTemplateDir(filepath.Join(t.TempDir(), "templates"))
+	carol := wsPrincipalCtx("acme", "carol", "tok-carol", auth.ScopeRunsCreate)
+	for _, in := range []string{`{"op":"open","name":"pw"}`, `{"op":"write","name":"pw","path":"a.txt","content":"kept"}`} {
+		if out, isErr := wsMCPCall(t, f, carol, in); isErr {
+			t.Fatalf("%s: %s", in, out)
+		}
+	}
+	out, isErr := wsMCPCall(t, f, carol, `{"op":"checkpoint","name":"pw"}`)
+	if isErr {
+		t.Fatalf("checkpoint over MCP: %s", out)
+	}
+	var ck struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(out), &ck); err != nil {
+		t.Fatal(err)
+	}
+	if out, isErr := wsMCPCall(t, f, carol, `{"op":"save_template","name":"pw","checkpoint":"`+ck.ID+`","as":"kept","scope":"user"}`); isErr {
+		t.Fatalf("save_template over MCP: %s", out)
+	}
+	if out, isErr := wsMCPCall(t, f, carol, `{"op":"save_template","name":"pw","checkpoint":"`+ck.ID+`","as":"wide","scope":"tenant"}`); !isErr || !strings.Contains(out, "not_granted") {
+		t.Errorf("a member token's tenant template = %s", out)
+	}
+	if out, isErr := wsMCPCall(t, f, carol, `{"op":"open","name":"again","template":"kept"}`); isErr {
+		t.Fatalf("open from a template over MCP: %s", out)
+	}
+	if out, _ := wsMCPCall(t, f, carol, `{"op":"read","name":"again","path":"a.txt"}`); out != "kept" {
+		t.Errorf("the opened workspace's file = %q", out)
+	}
+	dave := wsPrincipalCtx("acme", "dave", "tok-dave", auth.ScopeRunsCreate)
+	if out, _ := wsMCPCall(t, f, dave, `{"op":"templates"}`); strings.Contains(out, "kept") {
+		t.Errorf("another subject's list = %s", out)
 	}
 }
