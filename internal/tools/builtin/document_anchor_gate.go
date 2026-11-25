@@ -43,8 +43,10 @@ func (d *Document) classGrammar(ctx context.Context, key sqlmem.ScopeKey, rootID
 	}
 	var term memrank.OntologyTerm
 	found := false
+	// A document still typed with its class's former name is of the class.
+	typ := memrank.TenantClassAliases(read.Terms, true).Resolve(row.Type)
 	for _, c := range memrank.EffectiveClasses(read.Terms, true) {
-		if strings.EqualFold(c.Name, row.Type) {
+		if strings.EqualFold(c.Name, typ) {
 			term, found = c, true
 			break
 		}

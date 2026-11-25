@@ -365,6 +365,15 @@ func (d *Document) classStatNodes(ctx context.Context, key sqlmem.ScopeKey, read
 	if err != nil {
 		return nil, err
 	}
+	// A document still typed with a class's former name is a member of the class.
+	if aliases := memrank.TenantClassAliases(read.Terms, read.Confirmed); aliases.Any() {
+		for typ, ids := range byType {
+			if class := aliases.Resolve(typ); class != typ {
+				byType[class] = append(byType[class], ids...)
+				delete(byType, typ)
+			}
+		}
+	}
 	out := make([]statNode, 0, len(classes))
 	for _, c := range classes {
 		var chain []string

@@ -117,3 +117,27 @@ func TestWorkspaceMCP_TheSubjectOwnsItAndExecIsTheOperatorsToGrant(t *testing.T)
 		t.Errorf("run_cell over MCP: %s, want not_over_mcp", text)
 	}
 }
+
+// A session's workspace gets the routes of workspace.mcp.egress (P4 plan
+// O28 as ruled 2026-11-25): none when the list is empty; open may name a
+// subset of the list and never a route off it.
+func TestWorkspaceMCP_EgressIsTheOperatorsListAndOpenNarrowsIt(t *testing.T) {
+	alice := wsPrincipalCtx("acme", "alice", "otd_1", auth.ScopeRunsCreate)
+	none := wsMCPFixture(t, config.WorkspaceMCPConfig{Enabled: true})
+	if text, isErr := wsMCPCall(t, none, alice, `{"op":"open","name":"w"}`); isErr || strings.Contains(text, "egress") {
+		t.Errorf("open with an empty list: %s, want no egress", text)
+	}
+	if text, isErr := wsMCPCall(t, none, alice, `{"op":"open","name":"w2","egress":["pypi"]}`); !isErr || !strings.Contains(text, "not_granted") {
+		t.Errorf("open naming a route with an empty list: %s, want not_granted", text)
+	}
+	f := wsMCPFixture(t, config.WorkspaceMCPConfig{Enabled: true, Egress: []string{"pypi", "pypi-files"}})
+	if text, isErr := wsMCPCall(t, f, alice, `{"op":"open","name":"w"}`); isErr || !strings.Contains(text, `"egress":["pypi","pypi-files"]`) {
+		t.Errorf("open with the list: %s, want both routes", text)
+	}
+	if text, isErr := wsMCPCall(t, f, alice, `{"op":"open","name":"n","egress":["pypi"]}`); isErr || !strings.Contains(text, `"egress":["pypi"]`) {
+		t.Errorf("open narrowing the list: %s", text)
+	}
+	if text, isErr := wsMCPCall(t, f, alice, `{"op":"open","name":"x","egress":["pypi","npm"]}`); !isErr || !strings.Contains(text, "not_granted") {
+		t.Errorf("open widening the list: %s, want not_granted", text)
+	}
+}
