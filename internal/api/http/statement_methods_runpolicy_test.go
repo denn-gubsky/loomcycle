@@ -29,3 +29,18 @@ func TestAgentRunPolicy_StatementMethodsOnlyForACodeJSAgent(t *testing.T) {
 		t.Errorf("a sub-agent inherited its parent's statement methods %v", child.StatementMethods)
 	}
 }
+
+// A model-driven definition that reached a run holding ontology (RFC GQ P6.2) runs
+// without it: the grant reads every scope's signals, and only code may hold it.
+func TestAgentRunPolicy_OntologyGrantOnlyForACodeJSAgent(t *testing.T) {
+	h := newReviewHarness(t)
+	ctx := context.Background()
+	code, _ := h.srv.agentRunPolicy(ctx, config.AgentDef{Provider: "code-js", StatementMethods: []string{"ontology"}}, "kb/ontologist", runPolicySource{})
+	if got := strings.Join(code.StatementMethods, ","); got != "ontology" {
+		t.Errorf("code-js run: StatementMethods = %q, want ontology", got)
+	}
+	model, _ := h.srv.agentRunPolicy(ctx, config.AgentDef{Provider: "anthropic", StatementMethods: []string{"ontology", "link"}}, "writer", runPolicySource{})
+	if got := strings.Join(model.StatementMethods, ","); got != "link" {
+		t.Errorf("a model-driven run holds statement methods %q, want link alone", got)
+	}
+}
