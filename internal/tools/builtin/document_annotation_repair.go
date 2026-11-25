@@ -68,6 +68,7 @@ func (s *annotationScope) classTerm(ctx context.Context, name string) (memrank.O
 	if onto == nil || name == "" {
 		return memrank.OntologyTerm{}, false
 	}
+	name = memrank.TenantClassAliases(onto.Terms, onto.Confirmed).Resolve(name) // a former name is the class
 	for _, t := range memrank.EffectiveClasses(onto.Terms, onto.Confirmed) {
 		if strings.EqualFold(t.Name, name) {
 			return t, true

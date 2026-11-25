@@ -1,0 +1,408 @@
+== read
+{
+ "issues": null,
+ "terms": [
+  {
+   "name": "Document",
+   "fields": [
+    "title"
+   ],
+   "source": "tenant",
+   "field_specs": [
+    {
+     "name": "title",
+     "type": "text"
+    }
+   ],
+   "document_class": true
+  },
+  {
+   "name": "Policy",
+   "fields": null,
+   "source": "tenant",
+   "parent": "Document",
+   "document_class": true,
+   "definitions": "^Definitions$",
+   "meaning": "A rule the organisation sets.",
+   "annotate": "the scope; the owner"
+  },
+  {
+   "name": "Internal Policy",
+   "fields": null,
+   "source": "tenant",
+   "parent": "Policy",
+   "document_class": true
+  },
+  {
+   "name": "Memo",
+   "fields": null,
+   "source": "tenant",
+   "parent": "Document",
+   "document_class": true
+  },
+  {
+   "name": "Supplier",
+   "fields": [
+    "name"
+   ],
+   "source": "tenant",
+   "field_specs": [
+    {
+     "name": "name",
+     "type": "text"
+    }
+   ]
+  },
+  {
+   "name": "Vendor",
+   "fields": [
+    "name"
+   ],
+   "source": "tenant",
+   "field_specs": [
+    {
+     "name": "name",
+     "type": "text"
+    }
+   ]
+  }
+ ]
+}
+== describe_ontology with_counts
+{"exists":true,"document_id":"<id>","status":"confirmed","confirmed":true,"version":2,"sections":["classes","relations","schemes"],"classes":[{"name":"Document","source":"tenant","kind":"document","fields":[{"name":"title","type":"text"}],"documents":3},{"name":"Internal Policy","parent":"Policy","source":"tenant","kind":"document","fields":[{"name":"title","type":"text"}],"directives":{"annotate":"the scope; the owner","definitions":"^Definitions$"},"documents":1},{"name":"Memo","parent":"Document","source":"tenant","kind":"document","fields":[{"name":"title","type":"text"}],"documents":1},{"name":"Policy","parent":"Document","source":"tenant","kind":"document","fields":[{"name":"title","type":"text"}],"directives":{"annotate":"the scope; the owner","definitions":"^Definitions$"},"meaning":"A rule the organisation sets.","documents":2},{"name":"Supplier","source":"tenant","kind":"chunk","fields":[{"name":"name","type":"text"}],"documents":0},{"name":"Vendor","source":"tenant","kind":"chunk","fields":[{"name":"name","type":"text"}],"documents":0},{"name":"event","source":"base","kind":"chunk","documents":0},{"name":"fact","source":"base","kind":"chunk","documents":0},{"name":"location","source":"base","kind":"chunk","documents":0},{"name":"object","source":"base","kind":"chunk","documents":0},{"name":"organization","source":"base","kind":"chunk","documents":0},{"name":"person","source":"base","kind":"chunk","documents":0},{"name":"preference","source":"base","kind":"chunk","documents":0}],"relations":[{"name":"about","inverse":"described_by","meaning":"a fact is about this entity","source":"reserved"},{"name":"alternate_of","symmetric":true,"meaning":"the same content in another form or language","source":"base"},{"name":"amends","parent":"changes","inverse":"amended_by","qualifiers":[{"name":"mod_type","values":["substitution","insertion","repeal","renumbering","split","join"]},{"name":"effective_from"}],"discriminator":"mod_type","dated":true,"meaning":"changes the text of an act or provision","source":"base"},{"name":"applies","parent":"references","inverse":"applied_by","meaning":"puts another act or provision into practice","source":"base"},{"name":"attributed_to","inverse":"attributed","meaning":"the agent a claim or document is attributed to","source":"base"},{"name":"based_on","parent":"references","inverse":"basis_for","walk":true,"meaning":"is issued on the authority of another act","source":"base"},{"name":"broader","inverse":"narrower","meaning":"a concept is narrower than another (the scheme tree)","source":"base"},{"name":"changes","inverse":"changed_by","meaning":"alters another act or provision","source":"base"},{"name":"cites","parent":"references","inverse":"cited_by","walk":true,"meaning":"refers to another act or provision","source":"base"},{"name":"classified_as","inverse":"classifies","functional":true,"meaning":"the file-plan class this record is filed under","source":"base"},{"name":"close_match","symmetric":true,"meaning":"nearly the same concept in another scheme","source":"base"},{"name":"commences","parent":"changes","inverse":"commenced_by","meaning":"brings another act or provision into force","source":"base"},{"name":"conflicts_with","symmetric":true,"irreflexive":true,"meaning":"cannot both be followed","source":"base"},{"name":"conforms_to","inverse":"conformed_to_by","meaning":"meets a standard","source":"base"},{"name":"consolidates","inverse":"consolidated_by","meaning":"combines an act with its amendments","source":"base"},{"name":"corrects","inverse":"corrected_by","meaning":"fixes an error in another document","source":"base"},{"name":"defines","inverse":"defined_by","walk":true,"meaning":"gives the definition of a term","source":"base"},{"name":"derived_from","inverse":"source_of","meaning":"a fact or summary was distilled from this","source":"reserved"},{"name":"derogates_from","inverse":"derogated_by","qualifiers":[{"name":"scope"}],"walk":true,"meaning":"makes an exception to another provision","source":"base"},{"name":"duplicate_of","parent":"alternate_of","inverse":"duplicated_by","asymmetric":true,"irreflexive":true,"qualifiers":[{"name":"basis","values":["sha256","title"]}],"meaning":"a copy of another document with the same content","source":"base"},{"name":"elaborates","parent":"related","inverse":"elaborated_by","meaning":"gives detail to a general statement","source":"base"},{"name":"exact_match","symmetric":true,"transitive":true,"meaning":"the same concept in another scheme","source":"base"},{"name":"focus","inverse":"focus_of","meaning":"the entity a concept is about","source":"base"},{"name":"generated_by","inverse":"generated","meaning":"the run or event that produced this","source":"base"},{"name":"governs","domain":["Policy"],"source":"tenant","chunk_id":"<id>"},{"name":"holds","inverse":"held_by","dated":true,"meaning":"a person holds a post","source":"base"},{"name":"implements","parent":"applies","inverse":"implemented_by","qualifiers":[{"name":"coverage","values":["full","partial"]}],"walk":true,"meaning":"carries out a higher norm","source":"base"},{"name":"instance_of","inverse":"has_instance","meaning":"a thing is an instance of a class","source":"base"},{"name":"invalidated_by","inverse":"invalidated","meaning":"the event that ended this","source":"base"},{"name":"issued_by","inverse":"issued","meaning":"the organisation that issued a document","source":"base"},{"name":"member_of","inverse":"has_member","meaning":"an item of a collection","source":"base"},{"name":"mentions","inverse":"mentioned_in","meaning":"the text names this thing","source":"reserved"},{"name":"overrides","inverse":"overridden_by","asymmetric":true,"qualifiers":[{"name":"principle","values":["superior","specialis","posterior"]}],"walk":true,"meaning":"takes precedence over another provision","source":"base"},{"name":"part_of","inverse":"has_part","asymmetric":true,"meaning":"a part of a whole (the document tree itself is not written as edges)","source":"base"},{"name":"post_in","inverse":"has_post","meaning":"a post exists in a unit","source":"base"},{"name":"primary_source","parent":"derived_from","inverse":"primary_source_of","meaning":"the original source of a claim","source":"base"},{"name":"primary_topic","parent":"subject","inverse":"primary_topic_of","functional":true,"meaning":"the one concept this is chiefly about","source":"base"},{"name":"quoted_from","parent":"derived_from","inverse":"quoted_in","meaning":"takes words verbatim from a source","source":"base"},{"name":"references","inverse":"referenced_by","meaning":"a link written in the text","source":"reserved"},{"name":"related","symmetric":true,"meaning":"is related, without saying how","source":"base"},{"name":"repeals","parent":"changes","inverse":"repealed_by","meaning":"ends the force of another act or provision","source":"base"},{"name":"replaces","inverse":"replaced_by","meaning":"supersedes a non-legislative document","source":"base"},{"name":"reports_to","inverse":"manages","meaning":"a post reports to another post","source":"base"},{"name":"requires","parent":"references","inverse":"required_by","meaning":"needs a form or document to be carried out","source":"base"},{"name":"responsible_for","inverse":"responsibility_of","meaning":"a post or unit is responsible for a document or function","source":"base"},{"name":"revision_of","parent":"derived_from","inverse":"revised_by","meaning":"a later edition of a prior edition","source":"base"},{"name":"stricter_than","inverse":"looser_than","asymmetric":true,"transitive_within":"aspect","qualifiers":[{"name":"aspect"}],"meaning":"sets a stricter version of the same requirement","source":"base"},{"name":"sub_organization_of","inverse":"has_sub_organization","meaning":"a unit within an organisation","source":"base"},{"name":"subclass_of","inverse":"has_subclass","transitive":true,"meaning":"a class is a kind of another class","source":"base"},{"name":"subject","inverse":"subject_of","meaning":"what a document or fact is about","source":"base"},{"name":"supersedes","inverse":"superseded_by","asymmetric":true,"walk":true,"meaning":"a correction retires the earlier record","source":"reserved"},{"name":"supported_by","inverse":"supports","meaning":"a claim's evidence","source":"reserved"},{"name":"transposes","parent":"implements","inverse":"transposed_by","meaning":"brings a directive or standard into national law","source":"base"},{"name":"version_of","inverse":"has_version","functional":true,"meaning":"an edition of a work","source":"base"}],"grammars":[],"schemes":[{"name":"topics","projects":["Policy"],"chunk_id":"<id>","concepts":[{"scheme":"topics","name":"Risk","path":["Risk"],"tag":"topics/risk","chunk_id":"<id>","members":1,"members_by_class":{"Policy":1}}],"members":1,"unplaced":1}],"instances":[],"norm_classes":[],"policy":{"enforced":false,"note":"Reported only: no access is removed and nothing is deleted by age because of this policy yet. No access-control rules apply to this caller (open mode), so groups would not limit access here even once they are enforced.","open_mode":true}}
+== query_documents type=Policy
+[Access policy Internal rules] [Policy Internal Policy]
+== query_chunks type=Policy
+[Access policy Internal rules] [Policy Internal Policy]
+== query_documents type=Internal Policy
+[Internal rules] <nil>
+== query_chunks type=Internal Policy
+[Internal rules] <nil>
+== query_documents type=Memo
+[Memo one] <nil>
+== query_chunks type=Memo
+[Memo one] <nil>
+== query_documents type=Document
+[Access policy Internal rules Memo one] [Document Internal Policy Memo Policy]
+== query_chunks type=Document
+[Access policy Internal rules Memo one] [Document Internal Policy Memo Policy]
+== query_documents type=Rule
+[] <nil>
+== query_chunks type=Rule
+[] <nil>
+== query_documents type=policy
+[] <nil>
+== query_chunks type=policy
+[] <nil>
+== list_facts type=Supplier
+[Acme] <nil>
+== undeclaredEntityType Supplier
+[] false
+== list_facts type=Vendor
+[] <nil>
+== undeclaredEntityType Vendor
+[] false
+== list_facts type=Partner
+[] <nil>
+== undeclaredEntityType Partner
+[Document Internal Policy Memo Policy Supplier Vendor event fact location object organization person preference] true
+== memberships
+[Policy Document]
+== memberships
+[Internal Policy Policy Document]
+== memberships
+[Memo Document]
+== memberships
+[]
+== plan retire Policy
+{
+ "tenant": "",
+ "fingerprint": "",
+ "changes": [
+  {
+   "op": "retire",
+   "entry": {
+    "chunk_id": "<id>",
+    "name": "Policy",
+    "section": "classes",
+    "kind": "class"
+   },
+   "risk": "stales",
+   "counts": {
+    "document_annotations": {
+     "n": 0,
+     "effect": "kept",
+     "tenant_scope": 0
+    },
+    "identity_keys": {
+     "n": 0,
+     "effect": "stale",
+     "tenant_scope": 0
+    },
+    "instances": {
+     "n": 0,
+     "effect": "stale",
+     "tenant_scope": 0
+    },
+    "measure_points": {
+     "n": 0,
+     "effect": "stale",
+     "tenant_scope": 0
+    },
+    "node_annotations": {
+     "n": 0,
+     "effect": "stale",
+     "tenant_scope": 0
+    },
+    "node_stats": {
+     "n": 0,
+     "effect": "stale",
+     "tenant_scope": 0
+    },
+    "projects": {
+     "n": 1,
+     "effect": "stale",
+     "tenant_scope": 1,
+     "sample": [
+      "<id>"
+     ]
+    },
+    "statements": {
+     "n": 0,
+     "effect": "stale",
+     "tenant_scope": 0
+    },
+    "subject_keys": {
+     "n": 0,
+     "effect": "stale",
+     "tenant_scope": 0
+    },
+    "typed_chunks": {
+     "n": 2,
+     "effect": "stale",
+     "tenant_scope": 2,
+     "sample": [
+      "<id>",
+      "<id>"
+     ]
+    },
+    "typed_documents": {
+     "n": 2,
+     "effect": "stale",
+     "tenant_scope": 2,
+     "sample": [
+      "<id>",
+      "<id>"
+     ]
+    }
+   },
+   "subtree": [
+    {
+     "chunk_id": "<id>",
+     "name": "Internal Policy",
+     "section": "classes",
+     "kind": "class"
+    }
+   ],
+   "notes": [
+    "the ontology after the change is read as if the entry and its subtree were gone; its dependents are kept"
+   ]
+  }
+ ],
+ "issues": [
+  "scheme \"topics\": @projects \"Policy\" is not a class of this ontology"
+ ],
+ "new_issues": [
+  "scheme \"topics\": @projects \"Policy\" is not a class of this ontology"
+ ],
+ "scopes_counted": 1,
+ "scopes_skipped": 0,
+ "complete": true
+}
+== plan retire Memo
+{
+ "tenant": "",
+ "fingerprint": "",
+ "changes": [
+  {
+   "op": "retire",
+   "entry": {
+    "chunk_id": "<id>",
+    "name": "Memo",
+    "section": "classes",
+    "kind": "class"
+   },
+   "risk": "stales",
+   "counts": {
+    "document_annotations": {
+     "n": 0,
+     "effect": "kept",
+     "tenant_scope": 0
+    },
+    "identity_keys": {
+     "n": 0,
+     "effect": "stale",
+     "tenant_scope": 0
+    },
+    "instances": {
+     "n": 0,
+     "effect": "stale",
+     "tenant_scope": 0
+    },
+    "measure_points": {
+     "n": 0,
+     "effect": "stale",
+     "tenant_scope": 0
+    },
+    "node_annotations": {
+     "n": 0,
+     "effect": "stale",
+     "tenant_scope": 0
+    },
+    "node_stats": {
+     "n": 0,
+     "effect": "stale",
+     "tenant_scope": 0
+    },
+    "projects": {
+     "n": 0,
+     "effect": "stale",
+     "tenant_scope": 0
+    },
+    "statements": {
+     "n": 0,
+     "effect": "stale",
+     "tenant_scope": 0
+    },
+    "subject_keys": {
+     "n": 0,
+     "effect": "stale",
+     "tenant_scope": 0
+    },
+    "typed_chunks": {
+     "n": 1,
+     "effect": "stale",
+     "tenant_scope": 1,
+     "sample": [
+      "<id>"
+     ]
+    },
+    "typed_documents": {
+     "n": 1,
+     "effect": "stale",
+     "tenant_scope": 1,
+     "sample": [
+      "<id>"
+     ]
+    }
+   },
+   "notes": [
+    "the ontology after the change is read as if the entry and its subtree were gone; its dependents are kept"
+   ]
+  }
+ ],
+ "issues": [],
+ "new_issues": [],
+ "scopes_counted": 1,
+ "scopes_skipped": 0,
+ "complete": true
+}
+== plan retire Supplier
+{
+ "tenant": "",
+ "fingerprint": "",
+ "changes": [
+  {
+   "op": "retire",
+   "entry": {
+    "chunk_id": "<id>",
+    "name": "Supplier",
+    "section": "classes",
+    "kind": "class"
+   },
+   "risk": "stales",
+   "counts": {
+    "document_annotations": {
+     "n": 0,
+     "effect": "kept",
+     "tenant_scope": 0
+    },
+    "identity_keys": {
+     "n": 0,
+     "effect": "stale",
+     "tenant_scope": 0
+    },
+    "instances": {
+     "n": 0,
+     "effect": "stale",
+     "tenant_scope": 0
+    },
+    "measure_points": {
+     "n": 0,
+     "effect": "stale",
+     "tenant_scope": 0
+    },
+    "node_annotations": {
+     "n": 0,
+     "effect": "stale",
+     "tenant_scope": 0
+    },
+    "node_stats": {
+     "n": 0,
+     "effect": "stale",
+     "tenant_scope": 0
+    },
+    "projects": {
+     "n": 0,
+     "effect": "stale",
+     "tenant_scope": 0
+    },
+    "statements": {
+     "n": 0,
+     "effect": "stale",
+     "tenant_scope": 0
+    },
+    "subject_keys": {
+     "n": 1,
+     "effect": "stale",
+     "tenant_scope": 0,
+     "other_scopes": 1
+    },
+    "typed_chunks": {
+     "n": 1,
+     "effect": "stale",
+     "tenant_scope": 0,
+     "other_scopes": 1
+    },
+    "typed_documents": {
+     "n": 1,
+     "effect": "stale",
+     "tenant_scope": 0,
+     "other_scopes": 1
+    }
+   },
+   "notes": [
+    "the ontology after the change is read as if the entry and its subtree were gone; its dependents are kept"
+   ]
+  }
+ ],
+ "issues": [],
+ "new_issues": [],
+ "scopes_counted": 1,
+ "scopes_skipped": 0,
+ "complete": true
+}
+== node_stats members Document
+3
+== node_stats members Internal Policy
+1
+== node_stats members Memo
+1
+== node_stats members Policy
+2
+== link out of the domain
+true link_chunks: domain_range_violation: governs needs its source to be Policy, but chunk <id> is of type Memo. Link chunks of the declared classes, or type the chunk with one of them first.
+== create_document of an undeclared type
+type Polcy names no class this tenant declares; a document's type should be a document class
+== get_chunk definitional
+true

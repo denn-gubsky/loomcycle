@@ -171,11 +171,13 @@ func (d *Document) ontologyReadable(ctx context.Context, read OntologyRead) (boo
 
 // ontologyClassChain is typ, then each broader class of the classes in force, matched
 // case-insensitively as the gates match them. A type no class declares is its own
-// chain; a cycle (which the reader reports elsewhere) ends it.
+// chain; a cycle (which the reader reports elsewhere) ends it. A class's former name
+// (@renamed_from) is given as the class, which is what the type names now.
 func ontologyClassChain(read OntologyRead, typ string) []string {
 	if typ == "" {
 		return []string{}
 	}
+	typ = memrank.TenantClassAliases(read.Terms, read.Confirmed).Resolve(typ)
 	byName := map[string]memrank.OntologyTerm{}
 	for _, c := range memrank.EffectiveClasses(read.Terms, read.Confirmed) {
 		byName[strings.ToLower(c.Name)] = c

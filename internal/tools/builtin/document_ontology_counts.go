@@ -106,6 +106,30 @@ func (d *Document) countOntologyMembers(ctx context.Context, key sqlmem.ScopeKey
 	return out, nil
 }
 
+// foldFormerTypes re-keys every count by document type from a class's former name
+// (@renamed_from) to the class, so a document typed before the rename is counted where
+// its class is (RFC GQ P5.1). Nothing is touched when no former name is honoured.
+func (c *ontologyMemberCounts) foldFormerTypes(aliases memrank.ClassAliases) {
+	if !aliases.Any() {
+		return
+	}
+	fold := func(m map[string]int) {
+		for typ, n := range m {
+			if class := aliases.Resolve(typ); class != typ {
+				m[class] += n
+				delete(m, typ)
+			}
+		}
+	}
+	fold(c.types)
+	for _, m := range c.conceptTypes {
+		fold(m)
+	}
+	for _, m := range c.schemeTypes {
+		fold(m)
+	}
+}
+
 // describeUnplaced sets each described scheme's unplaced: the documents of the
 // classes it projects (projectedClasses) that no live placement puts under any of
 // its concepts. Both sides come from counts, so a document is placed exactly when

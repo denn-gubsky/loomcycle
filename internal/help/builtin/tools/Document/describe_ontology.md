@@ -69,6 +69,12 @@ relations, grammars, schemes, instances, norm_classes, policy, review?, issues?}
   - `alt` is the class's own other names, one `@alt` line each, as on a
     concept: what people call a document of the class ("playbook" for a
     `Runbook`). Not inherited.
+  - `renamed_from` is the name the class had before (`@renamed_from`). It reads
+    as the class: a `type` filter for either name finds the rows stored under
+    both, and a row still typed with the old name is declared, counted and
+    checked as one of the class. It is not honoured, and `issues` says so,
+    when two classes claim the name (it then reads as neither) or when it is
+    the name of a class in force (which keeps it).
   - `fields` is the complete typed field set, inherited fields first.
   - `directives` holds `identifier_pattern`, `title_pattern`, `anchor_grammar`,
     `citation_grammar`, `definitions`, `boilerplate`, `exclude` and `annotate`,

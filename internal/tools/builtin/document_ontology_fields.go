@@ -94,10 +94,17 @@ func (d *Document) classView(ctx context.Context) ontologyClassView {
 		return ontologyClassView{}
 	}
 	v := ontologyClassView{active: true, sectioned: len(read.Sections) > 0, byName: map[string]memrank.OntologyTerm{}}
+	aliases := memrank.TenantClassAliases(read.Terms, true)
 	for _, t := range memrank.EffectiveClasses(read.Terms, true) {
 		v.byName[strings.ToLower(t.Name)] = t
 		if t.IsDocumentClass && t.Source == "tenant" {
 			v.hasDocClasses = true
+		}
+		// A former name is the class (RFC GQ P5.1), so a chunk still typed with it
+		// answers to the class's rules — a retired class's former name included, or
+		// the old spelling would be a way to make something new of a retired class.
+		if former := aliases.Former(t.Name); former != "" {
+			v.byName[strings.ToLower(former)] = t
 		}
 	}
 	return v

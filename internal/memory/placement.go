@@ -251,7 +251,11 @@ func conflictingScope(in PlacementInput, typ, target string) (scopedType, bool) 
 	return scopedType{}, false
 }
 
+// findTerm is the term a type names: by its own name or, for a class renamed since the
+// writer learned it, by the name it had (@renamed_from). A subject typed either way is
+// then placed by the one declaration, not split between two scopes.
 func findTerm(terms []OntologyTerm, name string) (OntologyTerm, bool) {
+	name = ResolveClassName(terms, name)
 	for _, t := range terms {
 		if strings.EqualFold(t.Name, name) {
 			return t, true

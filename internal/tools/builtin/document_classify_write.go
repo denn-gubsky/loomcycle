@@ -89,8 +89,10 @@ func (d *Document) classifyVote(ctx context.Context, key sqlmem.ScopeKey, mscope
 	}
 	classOf := map[string]string{} // root chunk → declared class
 	votes := map[string]int{}
+	// A neighbour still typed with its class's former name votes for the class.
+	aliases := memrank.TenantClassAliases(read.Terms, true)
 	for _, r := range res.Rows {
-		if c, ok := classes[strings.ToLower(strings.TrimSpace(asStr(r[1])))]; ok {
+		if c, ok := classes[strings.ToLower(aliases.Resolve(strings.TrimSpace(asStr(r[1]))))]; ok {
 			classOf[asStr(r[0])] = c.Name
 			votes[c.Name]++
 		}
