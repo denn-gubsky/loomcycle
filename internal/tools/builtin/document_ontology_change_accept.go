@@ -60,6 +60,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"reflect"
 	"strconv"
 	"strings"
@@ -181,13 +182,28 @@ func (d *Document) AcceptChangeProposal(ctx context.Context, scope, chunkID, pla
 			return true, rep, err
 		}
 	}
+	// The ontology as it stands before the change, when no release holds it yet (owner
+	// ruling Q2): otherwise the apply release's diff would carry every direct edit made
+	// since the last release as part of this change. A record, not a gate.
+	var releaseWarnings []string
+	if _, _, err := d.CatchUpOntologyRelease(ctx); err != nil {
+		slog.WarnContext(ctx, "ontology: catch_up release before an accept failed", "proposal", chunkID, "err", err)
+		releaseWarnings = append(releaseWarnings, "No release was taken of the ontology before this change: "+err.Error())
+	}
 	if err := d.applyChangeAccept(ctx, a, fp, &rep); err != nil {
 		return true, rep, err
 	}
 	rep.Superseded, rep.Warnings = d.supersedeChangeProposals(ctx, a)
+	rep.Warnings = append(rep.Warnings, releaseWarnings...)
 	if _, err := d.execOp(ctx, map[string]any{"op": "delete_chunk", "scope": "tenant", "id": chunkID}); err != nil {
 		return true, rep, fmt.Errorf("the change was applied to %s, but the proposal could not be removed (reject it): %w",
 			strconv.Quote(a.mark.TargetName), err)
+	}
+	// After the proposal is gone, so the release's fingerprint is the ontology the accept
+	// left. Taken with the report so far as its plan summary.
+	if _, err := d.TakeOntologyRelease(ctx, OntologyReleaseApply, rep); err != nil {
+		slog.WarnContext(ctx, "ontology: apply release failed", "proposal", chunkID, "err", err)
+		rep.Warnings = append(rep.Warnings, "The change was applied, but no release of it was taken: "+err.Error())
 	}
 	return true, rep, nil
 }

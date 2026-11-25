@@ -151,6 +151,16 @@ type Document struct {
 	// when the ontology is not exactly what the update left. Nil in production.
 	betweenAcceptWrites func()
 
+	// duringReleaseCopy, when set, runs in an ontology release's copy after every chunk
+	// is read and before the fingerprint is read again. A test edits the ontology there
+	// to prove the copy is taken again. Nil in production.
+	duringReleaseCopy func()
+
+	// afterReleaseBatch, when set, runs after each batch of a release's entries is
+	// written; an error stops the release there. A test cuts a copy off with it to prove
+	// an incomplete release is never listed. Nil in production.
+	afterReleaseBatch func() error
+
 	// onNodeStatsPlan, when set, runs each time a node statistics plan is built,
 	// with whether it is a series read's light plan. A test counts them to prove a
 	// with_summary call builds at most one, and a light one when that is enough.
@@ -978,6 +988,12 @@ var docSchemaDDL = []string{
 	// ontology, by id rather than by name (document_ontology_identity.go).
 	documentRolesDDL,
 	documentRolesMarkerDDL,
+	// ontology_releases / ontology_release_entries / ontology_release_bodies: a copy
+	// of the tenant ontology per confirm and applied change (document_ontology_release.go).
+	ontologyReleasesDDL,
+	ontologyReleaseEntriesDDL,
+	ontologyReleaseEntriesBodyDDL,
+	ontologyReleaseBodiesDDL,
 	// chunk_annotations: a brief and an abstract per (chunk, level), beside the
 	// content and never part of it (document_annotations.go).
 	chunkAnnotationsDDL,
