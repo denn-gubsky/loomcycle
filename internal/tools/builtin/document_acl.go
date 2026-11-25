@@ -130,6 +130,10 @@ var docACLOps = map[string]docACLRule{
 	// describe_ontology reads the tenant's ontology document whatever the call's
 	// scope: it asks read on that document itself.
 	"describe_ontology": {verb: "read", target: docACLListing},
+	// ontology_signals names no document and returns counts and ids over every scope
+	// of the tenant, so no rule on a document answers it: it is answered before this
+	// guard and refuses every caller but the operator itself (document_ontology_signals.go).
+	"ontology_signals": {verb: "read", target: docACLListing},
 	// node_stats reads every document of the tenant scope whatever the call's scope:
 	// it refuses a caller whose rules hide any of them itself, and writes only the
 	// node_stats table, never a document (document_node_stats.go). Each proposal

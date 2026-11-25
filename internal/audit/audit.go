@@ -289,6 +289,17 @@ type Event struct {
 	// WorkspaceOp is a use's operation and tool, e.g. "read via File".
 	WorkspaceOp string `json:"workspace_op,omitempty"`
 
+	// --- Workspace fork (RFC GW P6; Action = "workspace_fork") ---
+	//
+	// One fork made: the source workspace in WorkspaceID and TargetName
+	// (`workspace:<name>`), its run in WorkspaceOwnerRunID/AgentID, the run
+	// that owns the copy in WorkspacePeerRunID/AgentID (the same run for an
+	// in-run fork, the child for a fork at spawn), the path in WorkspaceOp
+	// ("fork" | "fork at spawn"), the tenant in TargetTenant. Ids and names
+	// only, never a file's content.
+	WorkspaceForkID   string `json:"workspace_fork_id,omitempty"`
+	WorkspaceForkName string `json:"workspace_fork_name,omitempty"`
+
 	// --- Workspace templates (RFC GW P6; Action = "workspace_template_save"
 	// | "workspace_template_delete") ---
 	//

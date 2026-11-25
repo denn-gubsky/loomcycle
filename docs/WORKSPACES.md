@@ -318,6 +318,7 @@ The read returns `144`. When the run ends, the workspace is deleted. A command t
 - **Who may.** The parent needs `workspace.open`, and the source must be the parent's own workspace: one shared with it cannot be forked. The fork's routes are the source's that the child's `workspace.egress` also names; a child whose `workspace.engine` is stronger than the source's is refused.
 - **Failures.** A fork that cannot be made (a name the parent does not hold, a limit, a full worker) fails the child before its first turn.
 - **Results.** The parent reads what the children made through a share each child makes (`workspace.share`), or the children copy it back with `File`.
+- **Audit.** Every fork made, by `Workspace op=fork` or at spawn, writes one `workspace_fork` audit line: the source workspace and its run, the copy's id and name and the run that owns it, the tenant, and the path (`fork` or `fork at spawn`). Never a file's content. A refused fork writes none.
 
 ## Templates
 
