@@ -61,7 +61,7 @@ func TestOntology_WithoutRetiredReadsIdentically(t *testing.T) {
 			memrank.RenderRelations(memrank.EffectiveRelations(read.Relations, true, true)) +
 			memrank.RenderSchemes(read.Schemes),
 	}, "\n")
-	got = hexIDRe.ReplaceAllString(got, "<id>")
+	got = hexIDRe.ReplaceAllString(withoutContentVersion(got), "<id>")
 	path := filepath.Join("testdata", "ontology_without_retired.golden")
 	if *updateRetiredGolden {
 		if err := os.WriteFile(path, []byte(got), 0o644); err != nil {

@@ -145,6 +145,7 @@ func (d *Document) planOntologyAt(ctx context.Context, key sqlmem.ScopeKey, msco
 	if before.DocumentID == "" {
 		return out, connector.WithMessage(connector.ErrOntologyPlanNotFound, "this tenant has no ontology document")
 	}
+	out.ContentVersion = before.ContentVersion
 	rows, err := d.planChunkRows(ctx, key, before.DocumentID)
 	if err != nil {
 		return out, planReadErr(err)
@@ -603,7 +604,10 @@ func relationByChunk(r OntologyRead, id string) memrank.OntologyRelation {
 }
 
 // entrySignature is an entry's parsed declaration without its meaning, advisories or
-// (for a scheme) concepts, as JSON. "" when the read does not hold the entry.
+// (for a scheme) concepts, as JSON. "" when the read does not hold the entry. Built
+// on the declarations the content version hashes (document_ontology_content.go), so a
+// difference here is a difference there (an adopted instance's registry key aside,
+// which the runtime writes and the version leaves out).
 func entrySignature(r OntologyRead, e planEntry) string {
 	var v any
 	switch e.Kind {
@@ -618,25 +622,29 @@ func entrySignature(r OntologyRead, e planEntry) string {
 				id = r.classChunks[strings.ToLower(t.Name)]
 			}
 			if id == e.ChunkID {
-				t.Meaning, t.Issues, t.MemoryScopeIssue = "", nil, ""
+				t = classDeclaration(t)
+				t.Meaning = ""
 				v = t
 				break
 			}
 		}
 	case planKindRelation:
 		if rel := relationByChunk(r, e.ChunkID); rel.ChunkID != "" {
-			rel.Meaning, rel.Issues, rel.NameIssue = "", nil, ""
+			rel = relationDeclaration(rel)
+			rel.Meaning = ""
 			v = rel
 		}
 	case planKindScheme, planKindConcept:
 		for _, s := range r.Schemes {
 			if s.ChunkID == e.ChunkID {
-				s.Meaning, s.Issues, s.Concepts = "", nil, nil
+				s = schemeDeclaration(s)
+				s.Meaning = ""
 				v = s
 			}
 			for _, c := range s.Concepts {
 				if c.ChunkID == e.ChunkID {
-					c.Meaning, c.Issues = "", nil
+					c = conceptDeclaration(c)
+					c.Meaning = ""
 					v = c
 				}
 			}
@@ -644,8 +652,7 @@ func entrySignature(r OntologyRead, e planEntry) string {
 	case planKindInstance:
 		for _, in := range r.Instances {
 			if in.ChunkID == e.ChunkID {
-				in.Issues = nil
-				v = in
+				v = instanceDeclaration(in)
 			}
 		}
 	}

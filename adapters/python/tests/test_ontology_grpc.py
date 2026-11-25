@@ -184,6 +184,7 @@ class _PlanStub:
             issues=["i"],
             scopes_counted=2,
             complete=True,
+            content_version="0123456789abcdef",
         )
 
 
@@ -232,6 +233,7 @@ async def test_plan_ontology():
         "scopes_counted": 2,
         "scopes_skipped": 0,
         "complete": True,
+        "content_version": "0123456789abcdef",
     }
 
 

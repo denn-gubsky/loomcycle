@@ -124,6 +124,12 @@ type ontologyDescription struct {
 	// one — the policy @auto_assert implies. Absent when neither is.
 	Review *describedReview `json:"review,omitempty"`
 	Issues []string         `json:"issues,omitempty"`
+
+	// ContentVersion names what the document's entries declare (RFC GQ P3): it changes
+	// when an entry is added, changed, retired, moved or removed, and not on a
+	// proposal, a review rule or a reorder. Absent without a document and for a
+	// partial read.
+	ContentVersion string `json:"content_version,omitempty"`
 }
 
 // describedReview is the review policy as the runtime applies it. Applied is
@@ -263,6 +269,7 @@ func describeOntologyRead(read OntologyRead) ontologyDescription {
 		Instances:   []describedInstance{},
 		NormClasses: []string{},
 	}
+	out.ContentVersion = read.ContentVersion
 	if out.Exists {
 		out.Status = memrank.OntologyDraftStatus
 		if read.Confirmed {
