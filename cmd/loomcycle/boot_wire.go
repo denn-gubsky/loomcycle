@@ -344,6 +344,9 @@ func (b *boot) wireWorkspaceEgress() {
 	if b.credEngine != nil {
 		opt.Credentials = b.credEngine
 	}
+	// PyPI's file links go to the operator's file-host route whether a
+	// workspace holds it or not, so its absence is refused by name (O34).
+	opt.PyPIFilesRoute = egress.PyPIFilesRoute(lifecycle.OperatorRoutes(eg.Routes))
 	proxy, err := egress.New(opt)
 	if err != nil {
 		fatal("workspace: cannot build the egress proxy", "err", err)
