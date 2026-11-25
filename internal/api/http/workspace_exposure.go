@@ -135,8 +135,8 @@ func (h *exposureHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		FlushInterval: -1,
 		ModifyResponse: func(resp *http.Response) error {
 			resp.Header = exposureAnswerHeaders(resp.Header, prefix)
-			// Trailers would carry headers past the allowlist; noTrailers
-			// drops any written after the body too.
+			// Trailers would carry headers past the allowlist;
+			// exposureWriter drops any written after the body too.
 			resp.Trailer = nil
 			return nil
 		},
@@ -154,48 +154,73 @@ func (h *exposureHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "the workspace's application did not answer", http.StatusBadGateway)
 		},
 	}
-	rp.ServeHTTP(h.gate.limitBytes(&noTrailers{ResponseWriter: w}, row.ID), r)
+	rp.ServeHTTP(h.gate.limitBytes(newExposureWriter(w), row.ID), r)
 }
 
-// noTrailers keeps an application's trailers from the client: ReverseProxy
-// writes them into the header map after the body, where they would carry
-// any header past the allowlist. Once the head is written, Header is a
-// scratch map nobody sends.
-type noTrailers struct {
-	http.ResponseWriter
+// exposureWriter is the one way an answer reaches the client, whatever path
+// of ReverseProxy writes it (the security reviews of #2931):
+//
+//   - The head is collected in a map of its own and sent only at the final
+//     status: filtered again to the allowlist, Cache-Control forced, and the
+//     sandbox policy put on the client's header map right before
+//     WriteHeader, so nothing written earlier can strip it.
+//   - A 1xx is dropped. ReverseProxy relays one through its own
+//     ClientTrace (composed with any the request carries, so a trace of
+//     ours cannot stop it), past ModifyResponse, then clears the header map.
+//   - Trailers are dropped: ReverseProxy writes them into the header map
+//     after the body, which is then a scratch map nobody sends.
+type exposureWriter struct {
+	w       http.ResponseWriter
+	pending http.Header
 	sent    bool
 	scratch http.Header
 }
 
-func (n *noTrailers) Header() http.Header {
-	if n.sent {
-		if n.scratch == nil {
-			n.scratch = http.Header{}
+func newExposureWriter(w http.ResponseWriter) *exposureWriter {
+	return &exposureWriter{w: w, pending: http.Header{}}
+}
+
+func (e *exposureWriter) Header() http.Header {
+	if e.sent {
+		if e.scratch == nil {
+			e.scratch = http.Header{}
 		}
-		return n.scratch
+		return e.scratch
 	}
-	return n.ResponseWriter.Header()
+	return e.pending
 }
 
-func (n *noTrailers) WriteHeader(code int) {
-	n.sent = true
-	n.ResponseWriter.WriteHeader(code)
+func (e *exposureWriter) WriteHeader(code int) {
+	if e.sent || code < http.StatusOK {
+		return
+	}
+	e.sent = true
+	out := e.w.Header()
+	for name, v := range exposureKept(e.pending) {
+		out[name] = v
+	}
+	setExposureHeaders(out)
+	e.w.WriteHeader(code)
 }
 
-func (n *noTrailers) Write(b []byte) (int, error) {
-	n.sent = true
-	return n.ResponseWriter.Write(b)
+func (e *exposureWriter) Write(b []byte) (int, error) {
+	if !e.sent {
+		e.WriteHeader(http.StatusOK)
+	}
+	return e.w.Write(b)
 }
 
-func (n *noTrailers) Flush() {
-	if f, ok := n.ResponseWriter.(http.Flusher); ok {
-		n.sent = true
+func (e *exposureWriter) Flush() {
+	if !e.sent {
+		e.WriteHeader(http.StatusOK)
+	}
+	if f, ok := e.w.(http.Flusher); ok {
 		f.Flush()
 	}
 }
 
 // Unwrap lets http.ResponseController reach the underlying writer.
-func (n *noTrailers) Unwrap() http.ResponseWriter { return n.ResponseWriter }
+func (e *exposureWriter) Unwrap() http.ResponseWriter { return e.w }
 
 // exposureForwarded are the only headers of an application's answer that
 // reach the client (the security review of #2931). The answer is served
@@ -236,6 +261,20 @@ func exposureAnswerHeaders(in http.Header, prefix string) http.Header {
 	}
 	out.Set("Cache-Control", "private, no-store")
 	setExposureHeaders(out)
+	return out
+}
+
+// exposureKept is the head the writer sends: the allowlist and Location
+// as they are (ModifyResponse rewrote Location already; an error answer has
+// none), and Cache-Control forced.
+func exposureKept(in http.Header) http.Header {
+	out := http.Header{}
+	for _, name := range append(exposureForwarded, "Location") {
+		if v := in.Values(name); len(v) > 0 {
+			out[name] = append([]string(nil), v...)
+		}
+	}
+	out.Set("Cache-Control", "private, no-store")
 	return out
 }
 
