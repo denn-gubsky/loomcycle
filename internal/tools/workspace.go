@@ -21,6 +21,9 @@ type WorkspacePolicyValue struct {
 	// Expose lets the run publish a port of a workspace it owns to its user
 	// (RFC GW §5.3).
 	Expose bool
+	// Templates lets the run save and delete workspace templates (RFC GW
+	// §5.5).
+	Templates bool
 	// Egress names the routes a workspace the run opens may reach the
 	// network through (RFC GW §6.3). It bounds what open records; alone it
 	// grants nothing, so Grants does not count it. Never aliased with a
@@ -53,7 +56,7 @@ func WorkspaceFor(w *config.AgentWorkspace) WorkspacePolicyValue {
 	if !w.Grants() {
 		return WorkspacePolicyValue{}
 	}
-	v := WorkspacePolicyValue{Open: w.Open, Share: w.Share, Expose: w.Expose, Engine: w.Engine, Egress: slices.Clone(w.Egress)}
+	v := WorkspacePolicyValue{Open: w.Open, Share: w.Share, Expose: w.Expose, Templates: w.Templates, Engine: w.Engine, Egress: slices.Clone(w.Egress)}
 	for _, op := range w.Ops {
 		switch op {
 		case config.WorkspaceOpRead:
@@ -115,6 +118,8 @@ func NarrowWorkspace(parent, own WorkspacePolicyValue) WorkspacePolicyValue {
 		Open:   parent.Open && own.Open,
 		Share:  parent.Share && own.Share,
 		Expose: parent.Expose && own.Expose,
+		// Templates: only when both may (RFC GW §7).
+		Templates: parent.Templates && own.Templates,
 	}
 	if !out.Grants() {
 		return WorkspacePolicyValue{}
@@ -154,14 +159,14 @@ func (v WorkspacePolicyValue) Grant() *config.AgentWorkspace {
 	if !v.Grants() {
 		return nil
 	}
-	return &config.AgentWorkspace{Ops: v.Ops(), Open: v.Open, Share: v.Share, Expose: v.Expose, Egress: slices.Clone(v.Egress), Engine: v.Engine}
+	return &config.AgentWorkspace{Ops: v.Ops(), Open: v.Open, Share: v.Share, Expose: v.Expose, Templates: v.Templates, Egress: slices.Clone(v.Egress), Engine: v.Engine}
 }
 
 // Report is the policy for Context op=self. Always present: ops [] and open
 // false is the answer "no workspace access", and egress [] no routes.
 func (v WorkspacePolicyValue) Report() map[string]any {
 	egress := append([]string{}, v.Egress...)
-	return map[string]any{"ops": v.Ops(), "open": v.Open, "share": v.Share, "expose": v.Expose, "egress": egress, "engine": v.Engine}
+	return map[string]any{"ops": v.Ops(), "open": v.Open, "share": v.Share, "expose": v.Expose, "templates": v.Templates, "egress": egress, "engine": v.Engine}
 }
 
 // SpawnWorkspace is one of a spawn's `workspaces`: a workspace of the parent

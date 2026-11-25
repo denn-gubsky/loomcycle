@@ -530,7 +530,7 @@ interface AgentDefBody {
   // RFC FB: absent and [] both mean no Git network operation.
   git_remote?: string[];
   // RFC GW: absent = no workspace access.
-  workspace?: { ops?: string[]; open?: boolean; share?: boolean; egress?: string[]; engine?: string };
+  workspace?: { ops?: string[]; open?: boolean; share?: boolean; templates?: boolean; egress?: string[]; engine?: string };
   // Only a code-js agent holds it; absent and [] both mean none.
   statement_methods?: string[];
   volumes?: string[];
@@ -621,6 +621,7 @@ function workspaceGrantLines(w: AgentDefBody["workspace"]): string[] | undefined
   const out = [...(w.ops ?? [])];
   if (w.open) out.push("open");
   if (w.share) out.push("share");
+  if (w.templates) out.push("templates");
   if (w.egress && w.egress.length) out.push(`egress: ${w.egress.join(", ")}`);
   if (w.engine) out.push(`engine: ${w.engine}`);
   return out;

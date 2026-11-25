@@ -750,3 +750,63 @@ type ForkAnswer struct {
 	Rewritten []string `json:"rewritten,omitempty"`
 	Usage     Usage    `json:"usage"`
 }
+
+// The template ops (RFC GW §5.5, P6). A template is a checkpoint packed as
+// one archive (tar, gzip) the core keeps by digest; a worker that opens one
+// receives the archive once, unpacks it into a cache of its own outside
+// every workspace, and makes each workspace opened from it as a copy of
+// that tree.
+const (
+	// OpTemplatePack streams a checkpoint of the op's workspace out as a
+	// template archive (TemplatePackArgs).
+	OpTemplatePack = "template_pack"
+	// OpTemplatePut streams an archive in and unpacks it into the worker's
+	// cache under its digest (TemplatePutArgs). Sent with the id of the
+	// workspace about to be opened from it, which need not exist yet.
+	OpTemplatePut = "template_put"
+	// OpTemplateOpen is sent for the NEW workspace's id: its directory is
+	// made as a copy of the cached template (TemplateOpenArgs), answered as
+	// a fork is (ForkAnswer). A worker that does not hold the template
+	// answers ClassTemplateMissing.
+	OpTemplateOpen = "template_open"
+)
+
+// ClassTemplateMissing: the worker does not hold the template; the core
+// sends it with OpTemplatePut and opens again.
+const ClassTemplateMissing = "template_missing"
+
+// TemplatePackArgs are a template_pack op's arguments.
+type TemplatePackArgs struct {
+	// Checkpoint is the checkpoint of the op's workspace to pack.
+	Checkpoint string `json:"checkpoint"`
+}
+
+// TemplatePutArgs are a template_put op's arguments: the archive's SHA-256
+// (hex) and size, and MaxBytes, what its unpacked files may hold.
+type TemplatePutArgs struct {
+	Digest   string `json:"digest"`
+	Size     int64  `json:"size"`
+	MaxBytes int64  `json:"max_bytes"`
+}
+
+// TemplateOpenArgs are a template_open op's arguments.
+type TemplateOpenArgs struct {
+	Digest string `json:"digest"`
+	// DiskQuotaBytes is the new workspace's quota, as open's; the copy must
+	// fit it.
+	DiskQuotaBytes int64 `json:"disk_quota_bytes,omitempty"`
+}
+
+// ValidTemplateDigest reports whether d is a SHA-256 in lowercase hex: what
+// names a template in a worker's cache, so it is never a path.
+func ValidTemplateDigest(d string) bool {
+	if len(d) != 64 {
+		return false
+	}
+	for i := 0; i < len(d); i++ {
+		if c := d[i]; (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
