@@ -3604,6 +3604,15 @@ func (s *Server) tenantTelemetryRoutes(mux *http.ServeMux) *http.ServeMux {
 	return mux
 }
 
+// exposureRoutes registers RFC GW §5.3's exposure route: a workspace's
+// exposed port, every method, to the workspace's own user (the handler
+// decides who). Here, beside routes, so the route censuses that read this
+// file see it.
+func (s *Server) exposureRoutes(mux *http.ServeMux) *http.ServeMux {
+	mux.Handle("/v1/workspaces/exposures/{id}/{path...}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleWorkspaceExposure))))
+	return mux
+}
+
 // egressRouteDefRoutes registers RFC GW P4's EgressRouteDef: the egress routes
 // a tenant writes for its workspaces. Tenant operators only (ScopeTenant in the
 // route table, carved out of the member path); the tool stamps the caller's
@@ -4218,8 +4227,6 @@ func (s *Server) routes() *http.ServeMux {
 	// cannot send its credential on the upgrade (strict mode reads no bearer
 	// subprotocol). Gated exactly as the socket is.
 	mux.Handle("POST /v1/client-tools/ticket", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleClientToolsTicket))))
-	// RFC GW §5.3: a workspace's exposed port, to the workspace's own user.
-	mux.Handle("/v1/workspaces/exposures/{id}/{path...}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleWorkspaceExposure))))
 	// v0.7.3 Web UI — embedded React SPA. The shell and its assets are
 	// public; the SPA pulls protected data from /v1/*, which goes through
 	// authMiddleware. Standard SPA-on-API split.
@@ -4330,7 +4337,7 @@ func (s *Server) routes() *http.ServeMux {
 			return recoveryMiddleware(s.authMiddleware(next))
 		})
 	}
-	return s.inboxPutRoutes(s.ontologyPlanRoutes(s.tenantTelemetryRoutes(s.egressRouteDefRoutes(mux))))
+	return s.exposureRoutes(s.inboxPutRoutes(s.ontologyPlanRoutes(s.tenantTelemetryRoutes(s.egressRouteDefRoutes(mux)))))
 }
 
 // MuxRegistrar is the minimal mux surface the webhook receiver's Mount
