@@ -183,6 +183,19 @@ func (w *worker) run(ctx context.Context, start *workspacepb.OpStart, input []by
 		}
 		w.dropQuota(id)
 		return answer{}
+	case workspace.OpPark:
+		// A durable workspace no run holds (RFC GW P12 plan §3.3): what runs
+		// in it ends, as at a removal, and the directory stays. The update
+		// address its servers posted to goes with them (servers.Drop).
+		if _, _, a := w.workspaceDir(id); a.class != "" {
+			return a
+		}
+		w.kernels.Drop(id)
+		w.servers.Drop(id)
+		if err := w.engine.Forget(ctx, id); err != nil {
+			return refuse(workspace.ClassFailed, "ending the workspace's session: %v", err)
+		}
+		return answer{}
 	case workspace.OpFork:
 		return hidePaths(w.forkOp(ctx, id, dir, start.GetArgs()), false, dir, w.opt.Root)
 	case workspace.OpTemplateOpen:
