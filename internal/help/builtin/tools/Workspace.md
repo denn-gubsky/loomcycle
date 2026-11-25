@@ -16,7 +16,7 @@ Your agent's grant decides which operations work: `open` needs the grant to
 open workspaces; `exec`, `run_cell`, `reset_kernel`, `start`, `stop`,
 `logs` and `request` need `exec`; `write`
 and `edit` need `write`; `read`, `view`, `glob`, `grep`, `list` and `status` need
-`read`; `share` and `unshare` need the grant to share; `checkpoint`,
+`read`; `share` and `unshare` need the grant to share; `expose` and `unexpose` need the grant to expose; `checkpoint`,
 `restore` and `delete_checkpoint` need `write`, `checkpoints` needs `read`,
 and `fork` needs the grant to open workspaces. Anything else is
 refused with `not_granted`. Context op=self shows your grant.
@@ -62,6 +62,8 @@ reason.
 | `stop` | end a server and what it started | `name`, `server` |
 | `logs` | a server's latest output, or the list of servers | `name`, `server`, `tail_bytes` |
 | `request` | send one HTTP request to a port your running server declared; returns status, headers, body | `name`, `port`, `method`, `path`, `headers`, `body` |
+| `expose` | show the page your server serves on a port to your user, in their chat | `name`, `port`, `title`, `kind` |
+| `unexpose` | withdraw that page | `name`, `port` |
 | `read` | a file's text | `name`, `path`, `offset`, `limit`, `line_numbers` |
 | `view` | look at a picture (PNG, JPEG, GIF, WebP) | `name`, `path` |
 | `write` | create or replace a file whole | `name`, `path`, `content` |

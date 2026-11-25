@@ -535,6 +535,10 @@ func ceilWorkspace(ctx context.Context, def mergedDef, base *mergedDef, held str
 		return fmt.Errorf("workspace.share: true is not within %s workspace grant, which may not share workspaces. "+
 			"A new agent can only be granted authority its author holds: remove it, or ask an operator to author this agent", held)
 	}
+	if def.Workspace.Expose && !ceiling.Expose {
+		return fmt.Errorf("workspace.expose: true is not within %s workspace grant, which may not expose workspace ports. "+
+			"A new agent can only be granted authority its author holds: remove it, or ask an operator to author this agent", held)
+	}
 	if !ceiling.Grants() || !ceiling.AcceptsEngineRequirement(def.Workspace.Engine) {
 		return fmt.Errorf("workspace.engine: %q accepts a less isolating engine than %s workspace.engine %q. "+
 			"A new agent can only be granted authority its author holds: require that engine or a stricter one, or ask an operator to author this agent",
@@ -556,7 +560,7 @@ func unionWorkspace(a, b tools.WorkspacePolicyValue) tools.WorkspacePolicyValue 
 	}
 	out := tools.WorkspacePolicyValue{
 		Read: a.Read || b.Read, Write: a.Write || b.Write, Exec: a.Exec || b.Exec,
-		Open: a.Open || b.Open, Share: a.Share || b.Share, Engine: b.Engine,
+		Open: a.Open || b.Open, Share: a.Share || b.Share, Expose: a.Expose || b.Expose, Engine: b.Engine,
 		Egress: slices.Clone(a.Egress),
 	}
 	for _, r := range b.Egress {

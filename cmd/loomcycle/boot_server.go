@@ -391,6 +391,8 @@ func (b *boot) wireServerCatalog() {
 		srv.SetWorkspaceStats(b.workspace.Stats)
 		if b.workspaces != nil {
 			srv.SetWorkspaces(b.workspaces)
+			ex := b.cfg.Workspace.Resolved().Expose
+			srv.SetWorkspaceExposures(b.workspaces, ex.MaxConnections, ex.RequestsPerSecond, ex.BytesPerSecond)
 		}
 	}
 	srv.SetMCPPoolInspector(func(name string) json.RawMessage {

@@ -530,6 +530,9 @@ type Server struct {
 	// workspaces releases a run's workspaces when it ends (RFC GW); nil
 	// while workspace.mode is off.
 	workspaces workspaceReleaser
+	// exposures serves /v1/workspaces/exposures/… (RFC GW §5.3); nil while
+	// workspace.mode is off, and the route then answers 404.
+	exposures *exposureHandler
 
 	// metricsSampler is the v0.8.x process-resource sampler.
 	// Nil = the /v1/_metrics/* endpoints return 503. Set via
@@ -1250,6 +1253,23 @@ type workspaceReleaser interface {
 	Share(ctx context.Context, o lifecycle.Owner, name string, p lifecycle.Peer, access string) (store.WorkspaceRow, error)
 	// ForkForChild makes a spawn's workspace forks for its child (RFC GW P6).
 	ForkForChild(ctx context.Context, parent lifecycle.Owner, f lifecycle.ChildFork) (store.WorkspaceRow, error)
+}
+
+// SetWorkspaceExposures serves the workspaces' exposed ports (RFC GW §5.3)
+// with workspace.expose's bounds. Boot wiring only.
+func (s *Server) SetWorkspaceExposures(x workspaceExposures, maxConnections, requestsPerSecond int, bytesPerSecond int64) {
+	s.exposures = newExposureHandler(x, exposeRouteLimits{MaxConnections: maxConnections,
+		RequestsPerSecond: requestsPerSecond, BytesPerSecond: bytesPerSecond})
+}
+
+// handleWorkspaceExposure serves the route, or 404 with no bookkeeping.
+func (s *Server) handleWorkspaceExposure(w http.ResponseWriter, r *http.Request) {
+	if s.exposures == nil {
+		setExposureHeaders(w.Header())
+		exposureNotFound(w)
+		return
+	}
+	s.exposures.ServeHTTP(w, r)
 }
 
 // SetWorkspaces gives the server the workspace bookkeeping, so a run's
@@ -3586,6 +3606,15 @@ func (s *Server) tenantTelemetryRoutes(mux *http.ServeMux) *http.ServeMux {
 	return mux
 }
 
+// exposureRoutes registers RFC GW §5.3's exposure route: a workspace's
+// exposed port, every method, to the workspace's own user (the handler
+// decides who). Here, beside routes, so the route censuses that read this
+// file see it.
+func (s *Server) exposureRoutes(mux *http.ServeMux) *http.ServeMux {
+	mux.Handle("/v1/workspaces/exposures/{id}/{path...}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleWorkspaceExposure))))
+	return mux
+}
+
 // egressRouteDefRoutes registers RFC GW P4's EgressRouteDef: the egress routes
 // a tenant writes for its workspaces. Tenant operators only (ScopeTenant in the
 // route table, carved out of the member path); the tool stamps the caller's
@@ -4310,7 +4339,7 @@ func (s *Server) routes() *http.ServeMux {
 			return recoveryMiddleware(s.authMiddleware(next))
 		})
 	}
-	return s.inboxPutRoutes(s.ontologyPlanRoutes(s.tenantTelemetryRoutes(s.egressRouteDefRoutes(mux))))
+	return s.exposureRoutes(s.inboxPutRoutes(s.ontologyPlanRoutes(s.tenantTelemetryRoutes(s.egressRouteDefRoutes(mux)))))
 }
 
 // MuxRegistrar is the minimal mux surface the webhook receiver's Mount

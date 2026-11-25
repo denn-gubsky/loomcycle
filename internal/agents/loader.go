@@ -205,11 +205,12 @@ type AgentInterruptionACL struct {
 // AgentWorkspace mirrors config.AgentWorkspace locally so this package does
 // not import config. Its keys are checked strictly here, as config checks
 // them in yaml, so a Markdown agent cannot carry a key a later phase adds
-// (connect, expose, …) that would be dropped on the way to config.
+// (connect, templates, …) that would be dropped on the way to config.
 type AgentWorkspace struct {
 	Ops    []string `yaml:"ops"`
 	Open   bool     `yaml:"open"`
 	Share  bool     `yaml:"share"`
+	Expose bool     `yaml:"expose"`
 	Egress []string `yaml:"egress"`
 	Engine string   `yaml:"engine"`
 }
@@ -218,9 +219,9 @@ func (w *AgentWorkspace) UnmarshalYAML(n *yaml.Node) error {
 	if n.Kind == yaml.MappingNode {
 		for i := 0; i+1 < len(n.Content); i += 2 {
 			switch k := n.Content[i].Value; k {
-			case "ops", "open", "share", "egress", "engine":
+			case "ops", "open", "share", "expose", "egress", "engine":
 			default:
-				return fmt.Errorf("workspace: unknown key %q (the block takes: egress, engine, open, ops, share)", k)
+				return fmt.Errorf("workspace: unknown key %q (the block takes: egress, engine, expose, open, ops, share)", k)
 			}
 		}
 	}
