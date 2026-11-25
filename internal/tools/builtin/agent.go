@@ -440,8 +440,7 @@ type parallelSpawnEntry struct {
 }
 
 // spawnWorkspace is one entry of a spawn's `workspaces`: a share {name,
-// access} (RFC GW §5.2) or a fork {fork, as?} (§5.4). Connect is read only
-// to be refused by name: it arrives with servers (RFC GW P9).
+// access, connect?} (RFC GW §5.2) or a fork {fork, as?} (§5.4).
 type spawnWorkspace struct {
 	Name    string `json:"name"`
 	Access  string `json:"access"`
@@ -488,8 +487,8 @@ func spawnWorkspaces(ctx context.Context, field string, in []spawnWorkspace) ([]
 			return nil, errPermission(field+": a workspace is shared only between runs of a user, and this run has none", ""), false
 		}
 		switch {
-		case w.Connect != nil && *w.Connect:
-			return nil, errValidation(at+": connect (reaching a workspace's exposed ports) arrives with servers; share without it", ""), false
+		case w.Connect != nil && *w.Connect && !pol.Connect:
+			return nil, errPermission(at+": a share with connect hands over requests to your exposed ports, which this agent's workspace grant (workspace.connect) does not allow", ""), false
 		case !lifecycle.ValidName(w.Name):
 			return nil, errValidation(fmt.Sprintf("%s: name %q is not one of your workspaces' names", at, w.Name), "Workspace op=list shows yours."), false
 		case seen[w.Name]:
@@ -500,7 +499,7 @@ func spawnWorkspaces(ctx context.Context, field string, in []spawnWorkspace) ([]
 			return nil, errPermission(fmt.Sprintf("%s: a %s share hands over operations this agent's workspace grant does not hold", at, w.Access), ""), false
 		}
 		seen[w.Name] = true
-		out = append(out, tools.SpawnWorkspace{Name: w.Name, Access: w.Access})
+		out = append(out, tools.SpawnWorkspace{Name: w.Name, Access: w.Access, Connect: w.Connect != nil && *w.Connect})
 	}
 	return out, tools.Result{}, true
 }

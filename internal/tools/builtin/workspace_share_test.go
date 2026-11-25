@@ -162,9 +162,11 @@ func TestWorkspaceShare_BothDefinitionsMustAllowIt(t *testing.T) {
 	wantShareRefusal(t, "File copy out by a peer without read", f.copyAs(t, f.peer, "workspace:w@a_alice:notes.txt", "volume:inbox:o.txt"), "does not allow read")
 }
 
-func TestWorkspaceShare_ConnectIsRefusedUntilServersExist(t *testing.T) {
+// connect is its own grant: an owner without workspace.connect cannot hand
+// it over (wsSharer holds no connect).
+func TestWorkspaceShare_ConnectNeedsTheOwnersConnectGrant(t *testing.T) {
 	f := newShareFixture(t, tools.WorkspacePolicyValue{Read: true})
-	wantShareRefusal(t, "connect", f.wsCall(t, f.ctx, `{"op":"share","name":"w","with":"a_peer","access":"read","connect":true}`), "not_yet")
+	wantShareRefusal(t, "connect", f.wsCall(t, f.ctx, `{"op":"share","name":"w","with":"a_peer","access":"read","connect":true}`), "not_granted")
 }
 
 // The peer's list names what is shared with it, by the name to use; the

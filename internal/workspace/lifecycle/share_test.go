@@ -67,7 +67,7 @@ func (f *fixture) share(t *testing.T, owner Owner, name string, peer Owner, acce
 	if err != nil {
 		t.Fatalf("resolve peer: %v", err)
 	}
-	if _, err := f.m.Share(context.Background(), owner, name, p, access); err != nil {
+	if _, err := f.m.Share(context.Background(), owner, name, p, access, false); err != nil {
 		t.Fatalf("share: %v", err)
 	}
 }
@@ -151,7 +151,7 @@ func TestResolvePeer_OnlyALiveRunOfTheSameUser(t *testing.T) {
 	if _, err := f.m.ResolvePeer(ctx, noUser, "ag_peer"); !errors.Is(err, ErrShareNoUser) {
 		t.Errorf("no user: err = %v, want ErrShareNoUser", err)
 	}
-	if _, err := f.m.Share(ctx, noUser, "work", Peer{RunID: "r_y", AgentID: "ag_y"}, store.WorkspaceShareRead); !errors.Is(err, ErrShareNoUser) {
+	if _, err := f.m.Share(ctx, noUser, "work", Peer{RunID: "r_y", AgentID: "ag_y"}, store.WorkspaceShareRead, false); !errors.Is(err, ErrShareNoUser) {
 		t.Errorf("share with no user: err = %v, want ErrShareNoUser", err)
 	}
 }
@@ -218,7 +218,7 @@ func TestShare_ASharedNameIsNeverTheOwnersPin(t *testing.T) {
 	if _, err := f.m.Get(context.Background(), peer, SharedName("work", owner.AgentID)); !errors.Is(err, ErrNotFound) {
 		t.Errorf("Get of a shared name: err = %v, want ErrNotFound", err)
 	}
-	if _, err := f.m.Share(context.Background(), peer, SharedName("work", owner.AgentID), Peer{RunID: owner.RunID, AgentID: owner.AgentID}, store.WorkspaceShareRead); !errors.Is(err, ErrNotFound) {
+	if _, err := f.m.Share(context.Background(), peer, SharedName("work", owner.AgentID), Peer{RunID: owner.RunID, AgentID: owner.AgentID}, store.WorkspaceShareRead, false); !errors.Is(err, ErrNotFound) {
 		t.Errorf("re-share by the peer: err = %v, want ErrNotFound", err)
 	}
 	if _, err := f.m.Unshare(context.Background(), peer, SharedName("work", owner.AgentID), peer.AgentID); !errors.Is(err, ErrNotFound) {
@@ -231,15 +231,15 @@ func TestShare_IsBoundedPerWorkspace(t *testing.T) {
 	ctx := context.Background()
 	for i := range MaxSharesPerWorkspace {
 		p := Peer{RunID: "r_" + string(rune('a'+i)), AgentID: "ag"}
-		if _, err := f.m.Share(ctx, owner, "work", p, store.WorkspaceShareRead); err != nil {
+		if _, err := f.m.Share(ctx, owner, "work", p, store.WorkspaceShareRead, false); err != nil {
 			t.Fatalf("share %d: %v", i, err)
 		}
 	}
-	if _, err := f.m.Share(ctx, owner, "work", Peer{RunID: "r_over", AgentID: "ag"}, store.WorkspaceShareRead); !errors.Is(err, ErrShareLimit) {
+	if _, err := f.m.Share(ctx, owner, "work", Peer{RunID: "r_over", AgentID: "ag"}, store.WorkspaceShareRead, false); !errors.Is(err, ErrShareLimit) {
 		t.Errorf("one share past the bound: err = %v, want ErrShareLimit", err)
 	}
 	// Changing an existing share's access is not a new one.
-	if _, err := f.m.Share(ctx, owner, "work", Peer{RunID: "r_a", AgentID: "ag"}, store.WorkspaceShareReadWrite); err != nil {
+	if _, err := f.m.Share(ctx, owner, "work", Peer{RunID: "r_a", AgentID: "ag"}, store.WorkspaceShareReadWrite, false); err != nil {
 		t.Errorf("re-share at the bound: %v", err)
 	}
 }
