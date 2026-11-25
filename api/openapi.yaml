@@ -3150,6 +3150,12 @@ components:
         resource_too: { type: boolean }
         with_summary: { type: boolean, description: "ls (tenant scope): add each entry's annotation as summary." }
         summary_chars: { type: integer, description: "ls with_summary: the most abstract characters the page carries." }
+        limit: { type: integer, description: "ls: entries per page (default 500, at most 5000)." }
+        cursor: { type: string, description: "ls: the next_cursor of the previous page. Opaque." }
+        with_counts: { type: boolean, description: "ls (one level): add documents to each directory entry and to a document entry with names below it — the documents the caller may read named at or under it, each once, exact to 10000, then documents_capped. Absent where not computable." }
+        name_contains: { type: string, maxLength: 256, description: "ls (one level): keep only entries with a document at or under them whose Path name or title contains this, ignoring case; % and _ are literal." }
+        type: { type: string, maxLength: 256, description: "ls (one level): filter by the document's type, including its subtypes." }
+        status: { type: string, maxLength: 256, description: "ls (one level): filter by the document's exact status." }
     # CalcToolInput mirrors the Calc tool's InputSchema() less the fields a
     # caller with no run may not send (`from`, `to`); its properties are
     # drift-tested against the live tool schema (internal/api/http/openapi_test.go).

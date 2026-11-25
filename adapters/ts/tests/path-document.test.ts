@@ -17,6 +17,7 @@ import type {
   DocumentSearchFilter,
   DocumentSearchResult,
   DocumentToolInput,
+  PathToolInput,
 } from "../src/index.js";
 
 describe("path", () => {
@@ -40,6 +41,32 @@ describe("path", () => {
     const body = JSON.parse((call[1] as RequestInit).body as string);
     expect(body.op).toBe("ls");
     expect(body.scope).toBe("user");
+  });
+
+  it("sends ls counts and filters (RFC HA) and returns their fields", async () => {
+    const answer = {
+      path: "/kb",
+      entries: [
+        { name: "a", kind: "directory", full_path: "/kb/a", documents: 10000, documents_capped: true },
+        { name: "b", kind: "document", full_path: "/kb/b", matched: true, documents: 0, has_children: true },
+      ],
+      filters: { name_contains: "arch", type: "Guide", status: "done" },
+      type_expanded_to: ["Guide", "HowTo"],
+    };
+    const { client, fetchMock } = makeClient([jsonResponse(answer)]);
+    const input: PathToolInput = {
+      op: "ls",
+      scope: "tenant",
+      path: "/kb",
+      with_counts: true,
+      name_contains: "arch",
+      type: "Guide",
+      status: "done",
+    };
+    const result = await client.path(input);
+    expect(result).toEqual(answer);
+    const body = JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string);
+    expect(body).toEqual(input);
   });
 
   it("forwards bearer auth in the Authorization header", async () => {
@@ -122,6 +149,21 @@ describe("document", () => {
     const body = JSON.parse((call[1] as RequestInit).body as string);
     expect(body.op).toBe("create_document");
     expect(body.title).toBe("Launch plan");
+  });
+
+  it("asks query_chunks for each chunk's own brief (RFC HA)", async () => {
+    const answer = {
+      chunks: [
+        { id: "c0", document_id: "d1", title: "Guide", summary: { level: "document", brief: "A guide" } },
+        { id: "c1", document_id: "d1", parent_id: "c0", title: "Setup", summary: { level: "branch", brief: "Setting up", stale: true } },
+        { id: "c2", document_id: "d1", parent_id: "c1", title: "Step one" },
+      ],
+    };
+    const { client, fetchMock } = makeClient([jsonResponse(answer)]);
+    const input: DocumentToolInput = { op: "query_chunks", scope: "tenant", document_id: "d1", with_summary: true };
+    expect(await client.document(input)).toEqual(answer);
+    const body = JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string);
+    expect(body).toEqual(input);
   });
 
   it("passes the optimistic revision + fields through verbatim", async () => {
