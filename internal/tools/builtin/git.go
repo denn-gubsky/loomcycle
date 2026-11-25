@@ -19,6 +19,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/fsops"
 	"github.com/denn-gubsky/loomcycle/internal/gitsource"
 	"github.com/denn-gubsky/loomcycle/internal/gitsource/gitrepo"
+	"github.com/denn-gubsky/loomcycle/internal/gitsource/rootbilly"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/go-git/go-billy/v5"
 )
@@ -381,7 +382,7 @@ func (g *Git) repoDirUnlocked(ctx context.Context, in gitInput, needWrite, creat
 		return nil, "", gitRefusal("invalid_argument", err.Error()), false
 	}
 	if create {
-		top, err := newVolumeBilly(vfs, "")
+		top, err := rootbilly.New(vfs, "")
 		if err == nil {
 			err = top.MkdirAll(filepath.ToSlash(rel), 0o755)
 		}
@@ -401,7 +402,7 @@ func (g *Git) openRepo(ctx context.Context, in gitInput, needWrite, isInit bool)
 		return nil, func() {}, res
 	}
 	done := release
-	wt, err := newVolumeBilly(vfs, rel)
+	wt, err := rootbilly.New(vfs, rel)
 	if err != nil {
 		done()
 		return nil, func() {}, gitRefusal("invalid_argument", err.Error())
@@ -884,7 +885,7 @@ func (g *Git) network(ctx context.Context, in gitInput, kind gitOpKind) tools.Re
 		}
 		defer release()
 		var err error
-		if wt, err = newVolumeBilly(vfs, rel); err != nil {
+		if wt, err = rootbilly.New(vfs, rel); err != nil {
 			return deny("invalid_argument", err.Error())
 		}
 		if in.Op == "clone" {
