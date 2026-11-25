@@ -236,6 +236,21 @@ The read returns `144`. When the run ends, the workspace is deleted. A command t
 - **Where checkpoints live.** In the worker's root, beside the workspaces (`.loomcycle-checkpoints/<workspace id>/`), never inside one: no command or file op reaches them. They go with their workspace, and a worker's start removes what an interrupted checkpoint left.
 - **The `host` engine has no fixed path.** A fork's Python environment would still name the original's folder, so its `pip` would install into the original. On `host` the worker rewrites the paths in each environment's `pyvenv.cfg` and the text files of its `bin/`, and names them in the answer's `rewritten`. The `container` engine mounts every workspace at `/workspace`, so nothing needs it.
 
+### A fork for each child
+
+`Agent op=spawn` and each entry of `op=parallel_spawn` take `workspaces: [{fork: <name>, as?}]` beside the shares: the child gets its own fork of the parent's workspace `name`, named `as` in the child (default the same name), made after its run exists and before its first turn.
+
+```json
+{"op": "parallel_spawn", "spawns": [
+  {"name": "trial", "prompt": "Try plan A.", "workspaces": [{"fork": "py"}]},
+  {"name": "trial", "prompt": "Try plan B.", "workspaces": [{"fork": "py"}]}]}
+```
+
+- **The child owns it.** It counts against the child's `max_per_run`, the child may run commands in it as its own grant allows, and it is released when the child ends. Nothing a child does reaches the parent's workspace or a sibling's fork.
+- **Who may.** The parent needs `workspace.open`, and the source must be the parent's own workspace: one shared with it cannot be forked. The fork's routes are the source's that the child's `workspace.egress` also names; a child whose `workspace.engine` is stronger than the source's is refused.
+- **Failures.** A fork that cannot be made (a name the parent does not hold, a limit, a full worker) fails the child before its first turn.
+- **Results.** The parent reads what the children made through a share each child makes (`workspace.share`), or the children copy it back with `File`.
+
 ## Servers
 
 `start` runs a command that keeps running after the call: a web server, a file watcher, anything that does not end by itself (RFC GW §5.3). `exec` stays what it is, one command and one result. Servers need the `exec` grant, as commands do; a share never reaches them.
@@ -380,7 +395,7 @@ agents:
       ops: [read]                # reads what it is given; opens nothing
 ```
 
-**Making a share.** `Workspace op=share {name, with, access}`: `with` is the other run's agent id (a parent, a child, a sibling, or a run of another tree of the same user); `access` is `read` or `read_write`. `op=unshare {name, with}` ends it. `Agent op=spawn` and each entry of `op=parallel_spawn` take `workspaces: [{name, access}]`, shared with the child before its first turn:
+**Making a share.** `Workspace op=share {name, with, access}`: `with` is the other run's agent id (a parent, a child, a sibling, or a run of another tree of the same user); `access` is `read` or `read_write`. `op=unshare {name, with}` ends it. `Agent op=spawn` and each entry of `op=parallel_spawn` take `workspaces: [{name, access}]`, shared with the child before its first turn (an entry `{fork, as?}` gives the child its own copy instead; see "Checkpoints and forks"):
 
 ```json
 {"op": "spawn", "name": "reviewer", "prompt": "Review the change in build.",
