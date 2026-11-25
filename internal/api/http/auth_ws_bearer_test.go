@@ -128,3 +128,32 @@ func TestIsClientToolsUpgrade_HeaderTokenMatching(t *testing.T) {
 		})
 	}
 }
+
+// RFC GW §5.3: the exposure route takes the bearer as a subprotocol on a
+// WebSocket upgrade, as the client-tools socket does, because a browser's
+// socket cannot carry an Authorization header. Only on an upgrade to that
+// route: a plain request there with only the subprotocol is refused.
+func TestExtractBearer_SubprotocolAcceptedOnAnExposureUpgradeOnly(t *testing.T) {
+	s, st := tokenAuthServer(t, "legacy-secret")
+	seedToken(t, st, "lct_ws", "acme", "alice", []string{auth.ScopeRunsCreate, auth.ScopeRunsRead}, time.Time{})
+	for _, tc := range []struct {
+		name    string
+		upgrade bool
+		want    bool
+	}{{"an upgrade", true, true}, {"a plain request", false, false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/v1/workspaces/exposures/0123456789abcdef01234567/ws", nil)
+			req.Header.Set("Sec-WebSocket-Protocol", exposureSocketMarker+", bearer.lct_ws")
+			if tc.upgrade {
+				req.Header.Set("Connection", "Upgrade")
+				req.Header.Set("Upgrade", "websocket")
+			}
+			var reached bool
+			rec := httptest.NewRecorder()
+			s.authMiddleware(passthroughHandler(&reached)).ServeHTTP(rec, req)
+			if reached != tc.want {
+				t.Errorf("status = %d reached = %v, want reached %v", rec.Code, reached, tc.want)
+			}
+		})
+	}
+}
