@@ -116,6 +116,12 @@ type OntologyRead struct {
 	// RootRevision is the ontology root chunk's revision — the ontology_version stamped
 	// on facts and statements written under this vocabulary (RFC FO §3.6).
 	RootRevision int
+	// ContentVersion names what the ontology in force declares (RFC GQ P3,
+	// document_ontology_content.go): it changes with an in-force entry and with nothing
+	// else. Computed here, once per read, so the cached read carries it and no write
+	// pays for it. "" without a document, and for a partial read, whose missing bodies
+	// would give a value no complete read has.
+	ContentVersion string
 	// DepthCapped is true when the document nests deeper than OntologyMaxDepth, so
 	// some types were flattened onto the cap rather than kept at their written depth.
 	//
@@ -301,7 +307,9 @@ func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, msco
 			// A grammar is data under a class, not a subclass of it.
 			if sectioned {
 				if gname := memrank.GrammarName(c.title); gname != "" {
-					grammars = append(grammars, memrank.ParseGrammarBody(gname, parentName, bodyOf(c.id)))
+					g := memrank.ParseGrammarBody(gname, parentName, bodyOf(c.id))
+					g.ChunkID = c.id
+					grammars = append(grammars, g)
 					continue
 				}
 			}
@@ -514,14 +522,24 @@ func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, msco
 	// Against the classes the document WOULD put in force, seed included, as the
 	// scheme references are checked: a draft is told before it is confirmed.
 	issues = append(issues, memrank.FormerClassNameIssues(memrank.EffectiveClasses(out, true))...)
-	return OntologyRead{
+	read := OntologyRead{
 		Terms: out, Confirmed: confirmed, DepthCapped: depthCapped,
 		Proposals: withEntryMarks(withChangeMarks(proposals, chunkOf), chunkOf), DocumentID: docID, RootChunkID: rootID,
 		Sections: sections, Grammars: grammars, Issues: issues, RootRevision: rootRevision,
 		Relations: relations, SectionChunks: sectionChunks, partial: partial,
 		Schemes: checkedSchemes(schemes, out, instances), Instances: instances, Review: review,
 		classChunks: classChunks,
-	}, nil
+	}
+	if !read.partial {
+		treeParent := make(map[string]string, len(res.Rows))
+		for parent, cs := range kids {
+			for _, c := range cs {
+				treeParent[c.id] = parent
+			}
+		}
+		read.ContentVersion = ontologyContentVersion(read, treeParent)
+	}
+	return read, nil
 }
 
 // checkedSchemes adds the scheme advisories only the whole document can give (RFC GM):

@@ -126,7 +126,7 @@ func TestOntology_SchemeWithoutHeaderReadsIdentically(t *testing.T) {
 	if res.IsError {
 		t.Fatal(res.Text)
 	}
-	got := normaliseIDs(res.Text)
+	got := normaliseIDs(withoutContentVersion(res.Text))
 	golden := filepath.Join("testdata", "describe_ontology_schemes.golden.json")
 	if os.Getenv("LOOMCYCLE_UPDATE_GOLDEN") == "1" {
 		if err := os.MkdirAll("testdata", 0o755); err != nil {

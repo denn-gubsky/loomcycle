@@ -1590,6 +1590,12 @@ type PlanOntologyResult struct {
 	ScopesCounted int                     `json:"scopes_counted"`
 	ScopesSkipped int                     `json:"scopes_skipped"`
 	Complete      bool                    `json:"complete"`
+
+	// ContentVersion names what the ontology in force declares now, before the
+	// changes. Unlike Fingerprint it moves only when an in-force entry does (not on a
+	// proposal, a review rule or a reorder). "" when the ontology could not be read
+	// whole.
+	ContentVersion string `json:"content_version"`
 }
 
 // ReviewQueueFilter narrows the review queue (ListReviewQueue) and selects

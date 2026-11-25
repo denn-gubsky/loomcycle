@@ -2727,6 +2727,10 @@ message PlanOntologyResponse {
   int32 scopes_counted = 6;
   int32 scopes_skipped = 7;
   bool complete = 8;
+  // Names what the ontology in force declares now, before the changes. Unlike
+  // the fingerprint it moves only when an in-force entry does; empty when the
+  // ontology could not be read whole.
+  string content_version = 9;
 }
 
 // ReviewQueueFilter narrows the review queue and selects what a bulk ruling

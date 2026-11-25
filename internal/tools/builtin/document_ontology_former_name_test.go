@@ -657,7 +657,7 @@ func TestOntology_WithoutRenamedFromReadsIdentically(t *testing.T) {
 	section("create_document of an undeclared type", warningsOf(out))
 	section("get_chunk definitional", fmt.Sprint(f.must(map[string]any{"op": "get_chunk", "scope": "tenant", "id": f.definitions})["definitional"]))
 
-	got := hexIDRe.ReplaceAllString(b.String(), "<id>")
+	got := hexIDRe.ReplaceAllString(withoutContentVersion(b.String()), "<id>")
 	path := filepath.Join("testdata", "ontology_without_renamed_from.golden")
 	if *updateFormerGolden {
 		if err := os.WriteFile(path, []byte(got), 0o644); err != nil {

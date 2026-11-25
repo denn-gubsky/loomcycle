@@ -73,6 +73,7 @@ func planOntologyToProto(res connector.PlanOntologyResult) *loomcyclepb.PlanOnto
 		ScopesSkipped: int32(res.ScopesSkipped),
 		Complete:      res.Complete,
 	}
+	out.ContentVersion = res.ContentVersion
 	for _, c := range res.Changes {
 		pc := &loomcyclepb.OntologyPlannedChange{
 			Op: c.Op, Entry: planEntryToProto(c.Entry), Risk: c.Risk, Notes: c.Notes, Proposal: c.Proposal,

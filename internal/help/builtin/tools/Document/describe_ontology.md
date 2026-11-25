@@ -45,8 +45,9 @@ with `section: relations`, a concept with `section: schemes`, an instance with
 
 ## Returns
 
-`{exists, document_id?, status, confirmed, version, sections, partial?, classes,
-relations, grammars, schemes, instances, norm_classes, policy, review?, issues?}`:
+`{exists, document_id?, status, confirmed, version, content_version?, sections,
+partial?, classes, relations, grammars, schemes, instances, norm_classes, policy,
+review?, issues?}`:
 
 - `exists` — false when the tenant has no ontology document, so only the standard
   classes apply.
@@ -54,6 +55,15 @@ relations, grammars, schemes, instances, norm_classes, policy, review?, issues?}
   status of their own.
 - `version` — the ontology's version: the one stamped on facts and relations
   written under this vocabulary.
+- `content_version` — 16 hex characters naming what the ontology's entries
+  declare. It changes when a class, relation kind, scheme, concept, instance or
+  grammar is added, changed (its meaning included), retired, moved under another
+  parent or removed, and returns to its old value when the change is undone. It
+  does not change on a proposal or a rejection, an edit of the Review section,
+  anything under a section this version does not know, or a reorder of siblings
+  (a concept's place in an `@ordered` scheme is its rank, so that does count).
+  Use it to tell whether the vocabulary moved between two reads; `version` also
+  moves on a confirm. Absent without a document and when `partial` is true.
 - `sections` — the declared section kinds, in document order. A heading whose
   first directive is `@section` with a kind this version does not know is not
   listed, nothing under it is in force (no class, relation, concept or
@@ -352,7 +362,7 @@ entry's `issues` and ignored.
 ```
 
 ```json result
-{"exists": true, "document_id": "0b6f1e2a9c4d4e7f8a1b2c3d4e5f6a7b", "status": "confirmed", "confirmed": true, "version": 14, "sections": ["classes", "relations", "instances"], "classes": [{"name": "Law", "parent": "Document", "source": "tenant", "kind": "document", "fields": [{"name": "title", "type": "text", "required": true}], "directives": {"anchor_grammar": "law-part", "citation_grammar": "law-ua", "definitions": "(?i)визначення термінів"}}], "relations": [{"name": "amends", "inverse": "amended_by", "domain": ["Law"], "range": ["Law"], "dated": true, "source": "tenant"}], "grammars": [{"name": "law-ua", "class": "Law", "patterns": ["Закон(?:у)? України № ?(?P<number>\\d+-[IVX]+)"], "resolve": "work_key=law:{number}", "used_as": ["citation"]}], "schemes": [], "instances": [{"name": "Acme Bank", "class": "organization", "alt": ["Acme"], "chunk_id": "5c2d8e1f0a3b4c6d9e7f1a2b3c4d5e6f", "registry_key": "organization:acme-bank", "subject_chunk_id": "9a8b7c6d5e4f40312a1b0c9d8e7f6a5b"}]}
+{"exists": true, "document_id": "0b6f1e2a9c4d4e7f8a1b2c3d4e5f6a7b", "status": "confirmed", "confirmed": true, "version": 14, "content_version": "5f1c0a9e3b7d2468", "sections": ["classes", "relations", "instances"], "classes": [{"name": "Law", "parent": "Document", "source": "tenant", "kind": "document", "fields": [{"name": "title", "type": "text", "required": true}], "directives": {"anchor_grammar": "law-part", "citation_grammar": "law-ua", "definitions": "(?i)визначення термінів"}}], "relations": [{"name": "amends", "inverse": "amended_by", "domain": ["Law"], "range": ["Law"], "dated": true, "source": "tenant"}], "grammars": [{"name": "law-ua", "class": "Law", "patterns": ["Закон(?:у)? України № ?(?P<number>\\d+-[IVX]+)"], "resolve": "work_key=law:{number}", "used_as": ["citation"]}], "schemes": [], "instances": [{"name": "Acme Bank", "class": "organization", "alt": ["Acme"], "chunk_id": "5c2d8e1f0a3b4c6d9e7f1a2b3c4d5e6f", "registry_key": "organization:acme-bank", "subject_chunk_id": "9a8b7c6d5e4f40312a1b0c9d8e7f6a5b"}]}
 ```
 
 With member counts (a confirmed ontology with a `topics` scheme; other fields cut

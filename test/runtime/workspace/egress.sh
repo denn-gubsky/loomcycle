@@ -314,13 +314,13 @@ if [[ "$ENGINE" == container ]]; then
   run_cmd nofiles wsegressnf "$TEST_DIR/nofiles.cmd" "$RUN_TOKEN" "$RUN_USER"
   field nofiles output | grep -q "pip_rc=0" && fail "nofiles: pip succeeded without pypi-files"
   field nofiles output | grep -q "pip_rc=142" && fail "nofiles: pip hung until the timeout"
-  # As built (RFC GW D28), PyPI's file links are rewritten only when the
-  # workspace holds pypi-files, so without it they still name
-  # files.pythonhosted.org, which a session cannot resolve: pip fails at the
-  # lookup, at once. (Plan §6 asks for a 403 naming the route; see the
-  # plan's O34, for the owner.)
-  field nofiles output | grep -qE "pypi-files|name resolution|Name or service not known" ||
-    fail "nofiles: want the failure to name pypi-files or the lookup: $(field nofiles output)"
+  # The core rewrites PyPI's file links to the operator's pypi-files route
+  # whether the workspace holds it or not (O34, ruled 2026-11-25), so pip's
+  # fetch reaches the core and is refused with a 403 on that route.
+  field nofiles output | grep -q "403" ||
+    fail "nofiles: want a 403 from the core: $(field nofiles output)"
+  field nofiles output | grep -q "pypi-files" ||
+    fail "nofiles: want the failure to name pypi-files: $(field nofiles output)"
   secs=$(field nofiles output | sed -n 's/^seconds=//p')
   [[ -n "$secs" && "$secs" -lt 120 ]] || fail "nofiles: pip took ${secs:-?}s to fail"
 else
