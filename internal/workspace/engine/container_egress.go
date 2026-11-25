@@ -53,6 +53,24 @@ const (
 	labelRole      = "loomcycle.workspace.role"
 )
 
+// cargo's source replacement (RFC GW §6.3, P11): crates-io is read through
+// the crates route, whose config.json the core points at the crates-dl
+// route. cargo takes a [source] table from a file only, never from the
+// environment, so the worker writes this one into its egress directory and
+// mounts it read-only at the session's root, which cargo reads for every
+// project below it: nothing is written into the workspace, and nothing in
+// the session can change it. A project's own .cargo/config.toml still wins.
+const (
+	cargoConfigFile  = "cargo-config.toml"
+	cargoConfigMount = "/.cargo/config.toml"
+	cargoConfig      = `[source.crates-io]
+replace-with = "loomcycle-crates"
+
+[source.loomcycle-crates]
+registry = "sparse+http://` + EgressHost + `/crates/"
+`
+)
+
 // egressSessionArgs are a session's arguments when it has egress: a resolver
 // that answers nothing but the network's own names, and the package managers
 // pointed at the routes of the `workspace` preset. A workspace that does not
@@ -250,6 +268,22 @@ func (c *Container) gatewayArgs(workspace string) []string {
 	return a
 }
 
+// writeStatic writes the files every session and gateway of this worker
+// mounts: the forwarder, and cargo's source replacement (readable by any
+// user: it holds no secret, and the session's user may not be the worker's).
+func (e *egress) writeStatic() error {
+	if err := os.MkdirAll(e.dir, 0o700); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(e.dir, gatewayFile), []byte(gatewayPy), 0o400); err != nil && !errors.Is(err, os.ErrPermission) {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(e.dir, cargoConfigFile), []byte(cargoConfig), 0o444); err != nil && !errors.Is(err, os.ErrPermission) {
+		return err
+	}
+	return nil
+}
+
 // listen starts the worker's socket for a workspace, once.
 func (e *egress) listen(_ context.Context, workspace string) error {
 	e.mu.Lock()
@@ -257,11 +291,8 @@ func (e *egress) listen(_ context.Context, workspace string) error {
 	if e.listeners[workspace] != nil {
 		return nil
 	}
-	if err := os.MkdirAll(e.dir, 0o700); err != nil {
-		return err
-	}
 	// Written each time: Reconcile empties the directory.
-	if err := os.WriteFile(filepath.Join(e.dir, gatewayFile), []byte(gatewayPy), 0o400); err != nil && !errors.Is(err, os.ErrPermission) {
+	if err := e.writeStatic(); err != nil {
 		return err
 	}
 	dir := filepath.Join(e.dir, wsDir(workspace))

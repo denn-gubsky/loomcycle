@@ -355,7 +355,10 @@ func (b *boot) wireWorkspaceEgress() {
 	}
 	// PyPI's file links go to the operator's file-host route whether a
 	// workspace holds it or not, so its absence is refused by name (O34).
-	opt.PyPIFilesRoute = egress.PyPIFilesRoute(lifecycle.OperatorRoutes(eg.Routes))
+	// The same for the crates index's download host (RFC GW P11).
+	operatorRoutes := lifecycle.OperatorRoutes(eg.Routes)
+	opt.PyPIFilesRoute = egress.PyPIFilesRoute(operatorRoutes)
+	opt.CratesDLRoute = egress.CratesDLRoute(operatorRoutes)
 	proxy, err := egress.New(opt)
 	if err != nil {
 		fatal("workspace: cannot build the egress proxy", "err", err)

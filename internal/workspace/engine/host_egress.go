@@ -68,7 +68,8 @@ func guardEgress(host, secret string, next http.Handler) http.Handler {
 }
 
 // egressEnv is what a workspace's commands get to reach its routes: its
-// address, and pip and npm pointed at the `workspace` preset's routes. A
+// address, pip and npm pointed at the `workspace` preset's routes, and Go at
+// the goproxy and gosum routes an operator adds with that toolchain. A
 // workspace that does not hold one of them is refused by the core with the
 // route's name (P4 plan O22).
 func egressEnv(base, pipTrustedHost string) []string {
@@ -81,6 +82,14 @@ func egressEnv(base, pipTrustedHost string) []string {
 		"npm_config_audit=false",
 		"npm_config_fund=false",
 		"npm_config_update_notifier=false",
+		// Go through the goproxy and gosum routes (RFC GW P11). GOSUMDB
+		// keeps sum.golang.org's built-in key and moves only its address,
+		// so every module is still checked against the database.
+		// -modcacherw: the module cache is in the workspace, and read-only
+		// files there would make clearing it fail.
+		"GOPROXY=" + base + "goproxy/",
+		"GOSUMDB=sum.golang.org " + base + "gosum/",
+		"GOFLAGS=-modcacherw",
 	}
 }
 
