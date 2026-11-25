@@ -429,6 +429,12 @@ func (s *Server) authenticateRequest(r *http.Request) (auth.Principal, *uiAuth, 
 			p, ok := s.redeemClientToolsTicket(r, t)
 			return p, nil, ok
 		}
+		// A page socket's ticket (RFC GW P9, D-P9-42 as ruled), in every
+		// mode, as the client-tools ticket.
+		if t, id, ok := exposureTicketOf(r); ok {
+			p, ok := s.redeemExposureTicket(r, t, id)
+			return p, nil, ok
+		}
 	}
 	if bearer, ok := extractBearer(r, strict); ok {
 		p, ok := s.resolvePrincipal(ctx, bearer)
@@ -465,6 +471,9 @@ func (s *Server) credentialPresented(r *http.Request) bool {
 		return true
 	}
 	if _, ok := clientToolsTicketOf(r); ok {
+		return true
+	}
+	if _, _, ok := exposureTicketOf(r); ok {
 		return true
 	}
 	if c, err := r.Cookie(s.sessionCookieName(r)); err == nil && c.Value != "" {

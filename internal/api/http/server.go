@@ -1262,8 +1262,8 @@ func (s *Server) SetWorkspaceExposures(x workspaceExposures, c config.WorkspaceE
 		RequestsPerSecond: c.RequestsPerSecond, BytesPerSecond: c.BytesPerSecond, MaxMessageBytes: c.MaxMessageBytes,
 		SocketIdle: time.Duration(c.IdleTimeoutS) * time.Second, SocketLifetime: time.Duration(c.SocketLifetimeS) * time.Second})
 	// A page's socket re-checks its credential as the document feed does.
-	s.exposures.reauth = s.reauthenticateFeed
-	s.exposures.expiry = s.credentialExpiry
+	s.exposures.reauth = s.reauthenticateExposureSocket
+	s.exposures.expiry = s.exposureSocketExpiry
 }
 
 // handleWorkspaceExposure serves the route, or 404 with no bookkeeping.
@@ -3616,6 +3616,9 @@ func (s *Server) tenantTelemetryRoutes(mux *http.ServeMux) *http.ServeMux {
 // file see it.
 func (s *Server) exposureRoutes(mux *http.ServeMux) *http.ServeMux {
 	mux.Handle("/v1/workspaces/exposures/{id}/{path...}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleWorkspaceExposure))))
+	// A one-time ticket for a page's socket, for a browser in strict sign-in
+	// mode (P9 plan D-P9-42 as ruled 2026-11-25). Gated as the page is.
+	mux.Handle("POST /v1/workspaces/exposure-tickets/{id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleExposureTicket))))
 	return mux
 }
 

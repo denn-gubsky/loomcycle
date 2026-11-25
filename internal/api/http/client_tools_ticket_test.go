@@ -197,12 +197,12 @@ func TestClientToolsTicket_ExpiredTicketRefused(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c, reason := verifyTicket(key, ticket)
+	c, reason := verifyTicket(key, ticketFormat, ticket)
 	if reason != "" {
 		t.Fatalf("verify own ticket: %s", reason)
 	}
 	c.Exp = time.Now().Add(-time.Second).UnixMilli()
-	expired, err := signTicket(key, c)
+	expired, err := signTicket(key, ticketFormat, c)
 	if err != nil {
 		t.Fatal(err)
 	}

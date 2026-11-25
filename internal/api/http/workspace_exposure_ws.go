@@ -55,13 +55,15 @@ func isWebSocketUpgrade(r *http.Request) bool {
 	return false
 }
 
-// socketBearerOffered reports whether the upgrade carries a bearer as a
-// subprotocol: what the route accepts on a socket in place of the
-// Authorization header.
+// socketBearerOffered reports whether the upgrade carries a bearer or a
+// ticket as a subprotocol: what the route accepts on a socket in place of
+// the Authorization header.
 func socketBearerOffered(r *http.Request) bool {
 	for _, p := range offeredProtocols(r) {
-		if strings.HasPrefix(p, "bearer.") && len(p) > len("bearer.") {
-			return true
+		for _, prefix := range []string{"bearer.", ticketSubprotocolPrefix} {
+			if strings.HasPrefix(p, prefix) && len(p) > len(prefix) {
+				return true
+			}
 		}
 	}
 	return false
@@ -80,11 +82,11 @@ func offeredProtocols(r *http.Request) []string {
 }
 
 // applicationProtocols are the protocols offered for the application: never
-// the marker, and never the bearer (RFC GW §5.3: the core removes it).
+// the marker, the bearer (RFC GW §5.3: the core removes it) or a ticket.
 func applicationProtocols(r *http.Request) []string {
 	var out []string
 	for _, p := range offeredProtocols(r) {
-		if p == exposureSocketMarker || strings.HasPrefix(p, "bearer.") {
+		if p == exposureSocketMarker || strings.HasPrefix(p, "bearer.") || strings.HasPrefix(p, ticketSubprotocolPrefix) {
 			continue
 		}
 		out = append(out, p)
