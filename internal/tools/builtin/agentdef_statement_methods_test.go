@@ -149,3 +149,21 @@ func TestAgentDefCreate_StatementMethodsCeiling(t *testing.T) {
 	wantRefused(t, agentDefOp(t, tool, both, "fork", "sdlc/r1", `{"statement_methods":["rule","extractor"]}`),
 		"fork widening to extractor", "statement_methods:", `"extractor"`)
 }
+
+// TestAgentDefCreate_OntologyGrantCeiling — ontology (RFC GQ P6.2) is held like every
+// statement method: an in-run author may grant it only when its own run holds it, and
+// no author may put it on a model-driven definition.
+func TestAgentDefCreate_OntologyGrantCeiling(t *testing.T) {
+	tool, ctx := ceilingFixture(t) // in-run author holding no statement methods
+
+	annotator := tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.StatementMethods = []string{"annotate", "rule"} })
+	wantRefused(t, agentDefOp(t, tool, annotator, "create", "sdlc/o0", `{"provider":"code-js","history_scope":["user"],"statement_methods":["ontology"]}`),
+		"ontology by an author that does not hold it", "statement_methods:", `"ontology"`)
+
+	ontologist := tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.StatementMethods = []string{"ontology"} })
+	if res := agentDefOp(t, tool, ontologist, "create", "sdlc/o1", `{"provider":"code-js","history_scope":["user"],"statement_methods":["ontology"]}`); res.IsError {
+		t.Fatalf("ontology within the author's own grant refused: %s", res.Text)
+	}
+	wantRefused(t, agentDefOp(t, tool, ontologist, "create", "sdlc/o2", `{"model":"claude-haiku-4-5","history_scope":["user"],"statement_methods":["ontology"]}`),
+		"ontology on a model agent", "statement_methods", "code-js")
+}
