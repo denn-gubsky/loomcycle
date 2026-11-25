@@ -149,6 +149,7 @@ func (e *env) planGRPC(bearer string, changes []connector.OntologyChange) (conne
 	out := connector.PlanOntologyResult{
 		Tenant: resp.GetTenant(), Fingerprint: resp.GetFingerprint(), Issues: resp.GetIssues(), NewIssues: resp.GetNewIssues(),
 		ScopesCounted: int(resp.GetScopesCounted()), ScopesSkipped: int(resp.GetScopesSkipped()), Complete: resp.GetComplete(),
+		ContentVersion: resp.GetContentVersion(),
 	}
 	for _, c := range resp.GetChanges() {
 		pc := connector.OntologyPlannedChange{Op: c.GetOp(), Entry: entry(c.GetEntry()), Risk: c.GetRisk(), Notes: c.GetNotes()}
@@ -239,7 +240,7 @@ func TestPlanOntology_SamePlanOnEveryTransport(t *testing.T) {
 		if i == 0 {
 			first = p
 			typed := p.Changes[0].Counts["typed_documents"]
-			if p.Tenant != tenant || len(p.Fingerprint) != 64 || len(p.Changes) != 3 ||
+			if p.Tenant != tenant || len(p.Fingerprint) != 64 || len(p.ContentVersion) != 16 || len(p.Changes) != 3 ||
 				p.Changes[0].Risk != connector.OntologyRiskDestroys || typed.N != 2 || len(p.Changes[0].Subtree) != 1 {
 				t.Fatalf("http plan is not the fixture's: %+v", p)
 			}
