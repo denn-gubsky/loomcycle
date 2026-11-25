@@ -429,8 +429,9 @@ func (d *Document) saveOntologyJob(ctx context.Context, key sqlmem.ScopeKey, j *
 		j.State, j.Step, string(counts), errText, time.Now().UnixNano(), j.ID)
 	if err != nil {
 		// The rows already moved stay moved and every step is idempotent, so a lost
-		// save only makes the next slice redo a step.
-		slog.WarnContext(ctx, "ontology rename job: could not save its state", "tenant", key.Tenant, "job", j.ID, "err", err)
+		// save only makes the next slice redo a step. The store error is returned, not
+		// logged: its text can carry whatever the failing statement was bound with.
+		slog.WarnContext(ctx, "ontology rename job: could not save its state", "tenant", key.Tenant, "job", j.ID, "state", j.State, "step", j.Step)
 	}
 	return err
 }
