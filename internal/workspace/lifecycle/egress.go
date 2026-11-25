@@ -2,8 +2,12 @@ package lifecycle
 
 import (
 	"context"
+	"fmt"
 	"net/http"
+	"net/url"
+	"slices"
 	"sort"
+	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/audit"
 	"github.com/denn-gubsky/loomcycle/internal/config"
@@ -51,23 +55,58 @@ func (m *Manager) SetEgress(p *egress.Proxy, routes []egress.Route) {
 	}
 }
 
+// TenantRouteStore reads the routes a tenant wrote (EgressRouteDef).
+// store.Store satisfies it.
+type TenantRouteStore interface {
+	EgressRouteDefList(ctx context.Context, tenantID string) ([]store.EgressRouteDefRow, error)
+}
+
+// SetTenantRoutes turns tenant routes on (workspace.egress.tenant_routes),
+// bounded by hosts (workspace.egress.tenant_hosts; empty for any public
+// host). Called at boot, after SetEgress; without it a tenant's route is
+// not one any workspace holds.
+func (m *Manager) SetTenantRoutes(st TenantRouteStore, hosts []string) {
+	m.tenantRoutes = st
+	m.tenantHosts = slices.Clone(hosts)
+}
+
 // Egress answers one request a ready workspace's session sent out: the
 // dispatcher's EgressFunc. The grant is the workspace's own: its tenant,
-// user and owner run for the credential, and of the operator's routes only
-// those named on its row. A name on the row that is no operator route is
-// left out, so the proxy refuses it as a route the workspace does not hold.
-// Tenant routes (EgressRouteDef) are not resolved here yet.
+// user and owner run for the credential, and the routes named on its row.
+// A name is the operator's route when there is one (plan O14: it wins a
+// name a tenant also took), else, with tenant routes on, the workspace's
+// own tenant's route of that name, checked again here as at its creation.
+// A name that is neither is left out, so the proxy refuses it as a route the
+// workspace does not hold.
 func (m *Manager) Egress(ctx context.Context, row store.WorkspaceRow, req egress.Request) (*egress.Response, error) {
 	if m.proxy == nil {
 		return nil, &egress.Refusal{Status: http.StatusForbidden, Reason: "this runtime sends no workspace request out (no egress is configured)"}
 	}
+	if row.OwnerKind == store.WorkspaceOwnerPrincipal {
+		// A workspace opened over the MCP server (RFC GW D35) is granted no
+		// route at open; refused here too, so a row that somehow names one
+		// still sends nothing.
+		return nil, &egress.Refusal{Status: http.StatusForbidden, Reason: "a workspace opened over the MCP server has no egress routes"}
+	}
 	g := egress.Grant{TenantID: row.TenantID, UserID: row.UserID, RunID: row.OwnerRunID, WorkspaceID: row.ID}
-	credentialed := false
+	var tenantNames []string
 	for _, name := range row.Egress {
 		if rt, ok := m.routes[name]; ok {
 			g.Routes = append(g.Routes, rt)
-			credentialed = credentialed || rt.Credential != ""
+		} else {
+			tenantNames = append(tenantNames, name)
 		}
+	}
+	if len(tenantNames) > 0 && m.tenantRoutes != nil {
+		routes, ref := m.tenantRoutesFor(ctx, row.TenantID, tenantNames, req.Route)
+		if ref != nil {
+			return nil, ref
+		}
+		g.Routes = append(g.Routes, routes...)
+	}
+	credentialed := false
+	for _, rt := range g.Routes {
+		credentialed = credentialed || rt.Credential != ""
 	}
 	if credentialed {
 		// An agent-scoped credential is the agent's: the owner run's agent
@@ -81,6 +120,60 @@ func (m *Manager) Egress(ctx context.Context, row store.WorkspaceRow, req egress
 		g.AgentName = run.Agent
 	}
 	return m.proxy.Do(ctx, g, req)
+}
+
+// tenantRoutesFor reads the tenant's routes named on the row: only that
+// tenant's, never another's of the same name. Each is held again to the
+// rules its creation checked (tenant_hosts as the operator has it now, port
+// 443, a credential reference); a route that fails them is refused when it
+// is the one asked for, and otherwise left out (a redirect to it is then
+// refused too). A store fault refuses the request: nothing goes out on a
+// guess.
+func (m *Manager) tenantRoutesFor(ctx context.Context, tenantID string, names []string, asked string) ([]egress.Route, *egress.Refusal) {
+	rows, err := m.tenantRoutes.EgressRouteDefList(ctx, tenantID)
+	if err != nil {
+		m.log.Warn("cannot read the tenant's egress routes", "tenant", tenantID, "err", err)
+		return nil, &egress.Refusal{Status: http.StatusForbidden, Reason: "the tenant's egress routes cannot be read; try again"}
+	}
+	var out []egress.Route
+	for _, r := range rows {
+		if r.TenantID != tenantID || !slices.Contains(names, r.Name) {
+			continue
+		}
+		rt, reason := m.tenantRoute(r)
+		if reason != "" {
+			if r.Name == asked {
+				return nil, &egress.Refusal{Status: http.StatusForbidden, Reason: fmt.Sprintf("route %q: %s", r.Name, reason)}
+			}
+			continue
+		}
+		out = append(out, rt)
+	}
+	return out, nil
+}
+
+// tenantRoute is a stored tenant route as the proxy takes it, or the reason
+// it may not be used.
+func (m *Manager) tenantRoute(r store.EgressRouteDefRow) (egress.Route, string) {
+	u, err := url.Parse(r.URL)
+	if err != nil || u.Hostname() == "" {
+		return egress.Route{}, "the stored URL is not valid"
+	}
+	if p := u.Port(); p != "" && p != "443" && p != m.tenantTestPort {
+		return egress.Route{}, fmt.Sprintf("port %s is not allowed; a tenant route uses https on port 443 only", p)
+	}
+	if len(m.tenantHosts) > 0 && !slices.Contains(m.tenantHosts, strings.ToLower(u.Hostname())) {
+		return egress.Route{}, fmt.Sprintf("host %q is not on the operator's workspace.egress.tenant_hosts", strings.ToLower(u.Hostname()))
+	}
+	rt := egress.Route{Name: r.Name, URL: r.URL, Methods: slices.Clone(r.Methods), Auth: r.Auth, Header: r.Header, Tenant: true}
+	if r.Credential != "" {
+		name, ok := credential.ParseRef(r.Credential)
+		if !ok {
+			return egress.Route{}, "the stored credential is not a $cred: reference"
+		}
+		rt.Credential = name
+	}
+	return rt, ""
 }
 
 // RecordEgress writes the audit line of one request through a credentialed
