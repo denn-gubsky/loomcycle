@@ -129,9 +129,9 @@ func TestTemplate_OpensOnAWorkerThatNeverHeldIt(t *testing.T) {
 	}
 }
 
-// D-P6-24: a user template is found only for its author's runs, a tenant
-// one for every run of the tenant, neither in another tenant nor by a
-// principal; the delete lookup is held to the same, and a row of another
+// D-P6-24: a user template is found only for its author's runs (or its
+// subject's principal), a tenant one for every run of the tenant, never in
+// another tenant; the delete lookup is held to the same, and a row of another
 // tenant cannot be deleted.
 func TestTemplate_NeverCrossesATenantOrAnotherUser(t *testing.T) {
 	f := newTemplateFixture(t, Limits{MaxPerRun: 4})
@@ -169,9 +169,17 @@ func TestTemplate_NeverCrossesATenantOrAnotherUser(t *testing.T) {
 	if err := f.m.DeleteTemplate(ctx, globex, mine); !errors.Is(err, ErrTemplateNotFound) {
 		t.Errorf("another tenant deleting the row = %v, want ErrTemplateNotFound", err)
 	}
-	p := PrincipalOwner("acme", "alice", "tok")
-	if _, err := f.m.FindTemplate(ctx, p, "shared"); !errors.Is(err, ErrTemplateNotFound) {
-		t.Errorf("a principal finding a template = %v, want ErrTemplateNotFound", err)
+	// A principal (ruled 2026-11-25) is its token's tenant and subject: it
+	// finds the tenant's templates and its subject's own, never another's.
+	p := PrincipalOwner("acme", "bob", "tok")
+	if _, err := f.m.FindTemplate(ctx, p, "mine"); !errors.Is(err, ErrTemplateNotFound) {
+		t.Errorf("another subject's principal finding alice's template = %v, want ErrTemplateNotFound", err)
+	}
+	if got, err := f.m.FindTemplate(ctx, p, "shared"); err != nil || got.Scope != store.WorkspaceTemplateTenant {
+		t.Errorf("a principal finding its tenant's template = %+v, %v", got, err)
+	}
+	if _, err := f.m.FindTemplate(ctx, PrincipalOwner("globex", "alice", "tok"), "shared"); !errors.Is(err, ErrTemplateNotFound) {
+		t.Errorf("another tenant's principal finding the template = %v, want ErrTemplateNotFound", err)
 	}
 	noUser := f.run(t, "")
 	if _, err := f.m.FindTemplate(ctx, noUser, "mine"); !errors.Is(err, ErrTemplateNotFound) {

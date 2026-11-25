@@ -120,7 +120,7 @@ func templateScopeID(o Owner, scope string) (string, error) {
 // A name already held in that scope is ErrTemplateExists: a template is never
 // overwritten.
 func (m *Manager) SaveTemplate(ctx context.Context, o Owner, src store.WorkspaceRow, checkpoint, as, scope string) (store.WorkspaceTemplateRow, error) {
-	if o.IsPrincipal() || o.RunID == "" || src.OwnerRunID != o.RunID || src.TenantID != o.TenantID || src.OwnerKind != o.kind() {
+	if o.RunID == "" || src.OwnerRunID != o.RunID || src.TenantID != o.TenantID || src.OwnerKind != o.kind() {
 		return store.WorkspaceTemplateRow{}, ErrNotFound
 	}
 	if !ValidName(as) {
@@ -260,9 +260,10 @@ func (m *Manager) workerToolchains(workerID string) []string {
 
 // FindTemplate is the template name the caller may open (D-P6-24, D-P6-25):
 // its user's own first, then its tenant's; never another tenant's, never
-// another user's. A principal (a session of the MCP server) finds none.
+// another user's. A principal (a session of the MCP server) is its token's
+// tenant and subject, the subject in the user's place (ruled 2026-11-25).
 func (m *Manager) FindTemplate(ctx context.Context, o Owner, name string) (store.WorkspaceTemplateRow, error) {
-	if o.IsPrincipal() || o.RunID == "" || !ValidName(name) {
+	if o.RunID == "" || !ValidName(name) {
 		return store.WorkspaceTemplateRow{}, ErrTemplateNotFound
 	}
 	if o.UserID != "" {
@@ -284,7 +285,7 @@ func (m *Manager) FindTemplate(ctx context.Context, o Owner, name string) (store
 // GetTemplate is the template of that scope and name the caller may
 // delete: a user template only its own user's.
 func (m *Manager) GetTemplate(ctx context.Context, o Owner, scope, name string) (store.WorkspaceTemplateRow, error) {
-	if o.IsPrincipal() || o.RunID == "" {
+	if o.RunID == "" {
 		return store.WorkspaceTemplateRow{}, ErrTemplateNotFound
 	}
 	scopeID, err := templateScopeID(o, scope)
@@ -302,7 +303,7 @@ func (m *Manager) GetTemplate(ctx context.Context, o Owner, scope, name string) 
 // tenant's.
 func (m *Manager) Templates(ctx context.Context, o Owner) ([]store.WorkspaceTemplateRow, error) {
 	out := []store.WorkspaceTemplateRow{}
-	if o.IsPrincipal() || o.RunID == "" {
+	if o.RunID == "" {
 		return out, nil
 	}
 	if o.UserID != "" {

@@ -75,7 +75,7 @@ func TestWorkspaceTemplate_SavedForItsUserAndOpenedByALaterRun(t *testing.T) {
 // The grants (RFC GW §5.5, D-P6-26 to D-P6-28): saving and deleting need
 // workspace.templates, a tenant template also the tenant value in
 // memory_scopes; listing needs open or templates; opening from one needs
-// open. Over the MCP server none is offered.
+// open.
 func TestWorkspaceTemplate_Grants(t *testing.T) {
 	f, alice, ck := tplFixture(t)
 	save := `{"op":"save_template","name":"work","checkpoint":"` + ck + `","as":"t1","scope":"tenant"}`
@@ -105,14 +105,6 @@ func TestWorkspaceTemplate_Grants(t *testing.T) {
 	if c := refusalClass(f.call(t, readOnly, `{"op":"open","name":"x","template":"t1"}`)); c != "not_granted" {
 		t.Errorf("an open from a template without open = %q, want not_granted", c)
 	}
-	principal := lifecycle.WithPrincipalOwner(tools.WithRunPolicy(context.Background(), tools.RunPolicy{Workspace: tplGrant}),
-		lifecycle.PrincipalOwner("acme", "alice", "tok"))
-	for _, in := range []string{`{"op":"open","name":"x","template":"t1"}`, `{"op":"templates"}`,
-		`{"op":"save_template","name":"work","checkpoint":"` + ck + `","as":"t3","scope":"user"}`} {
-		if c := refusalClass(f.call(t, principal, in)); c != "not_over_mcp" {
-			t.Errorf("over MCP %s = %q, want not_over_mcp", in, c)
-		}
-	}
 }
 
 // Arguments are strict: a template carries its own toolchains, scope is
@@ -137,10 +129,10 @@ func TestWorkspaceTemplate_StrictArguments(t *testing.T) {
 	}
 }
 
-// D-P6-39: an isolated member (substrate:user) reaches no tenant-shared
-// data, so it neither lists nor opens a tenant template; its own user
-// templates are its.
-func TestWorkspaceTemplate_AnIsolatedMemberSeesNoTenantTemplate(t *testing.T) {
+// D-P6-39 (ruled 2026-11-25): an isolated member (substrate:user) lists and
+// opens its tenant's templates, as its own; it still cannot save or delete a
+// tenant template, which needs the tenant memory scope it is refused.
+func TestWorkspaceTemplate_AnIsolatedMemberListsAndOpensTenantTemplates(t *testing.T) {
 	f, alice, ck := tplFixture(t)
 	f.mustOK(t, withMemoryScopes(alice, "user", "tenant"), `{"op":"save_template","name":"work","checkpoint":"`+ck+`","as":"shared","scope":"tenant"}`)
 	f.mustOK(t, alice, `{"op":"save_template","name":"work","checkpoint":"`+ck+`","as":"own","scope":"user"}`)
@@ -148,13 +140,19 @@ func TestWorkspaceTemplate_AnIsolatedMemberSeesNoTenantTemplate(t *testing.T) {
 	id := tools.RunIdentity(iso)
 	id.Isolated = true
 	iso = tools.WithRunIdentity(iso, id)
-	if got := f.mustOK(t, iso, `{"op":"templates"}`).Text; strings.Contains(got, `"shared"`) || !strings.Contains(got, `"own"`) {
+	if got := f.mustOK(t, iso, `{"op":"templates"}`).Text; !strings.Contains(got, `"shared"`) || !strings.Contains(got, `"own"`) {
 		t.Errorf("an isolated member's list = %s", got)
 	}
-	if c := refusalClass(f.call(t, iso, `{"op":"open","name":"x","template":"shared"}`)); c != "template_not_found" {
-		t.Errorf("an isolated member opening a tenant template = %q, want template_not_found", c)
-	}
+	f.mustOK(t, iso, `{"op":"open","name":"x","template":"shared"}`)
 	f.mustOK(t, iso, `{"op":"open","name":"y","template":"own"}`)
+	isoTenant := withMemoryScopes(iso, "user", "tenant")
+	f.mustOK(t, isoTenant, `{"op":"open","name":"src"}`)
+	if c := refusalClass(f.call(t, isoTenant, `{"op":"delete_template","template":"shared","scope":"tenant"}`)); c != "not_granted" {
+		t.Errorf("an isolated member deleting a tenant template = %q, want not_granted", c)
+	}
+	if c := refusalClass(f.call(t, isoTenant, `{"op":"save_template","name":"x","checkpoint":"`+ck+`","as":"t9","scope":"tenant"}`)); c != "not_granted" {
+		t.Errorf("an isolated member saving a tenant template = %q, want not_granted", c)
+	}
 }
 
 // The scope report is the call's own check: a scope it refuses is refused
