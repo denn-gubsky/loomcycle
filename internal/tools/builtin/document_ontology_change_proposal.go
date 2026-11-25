@@ -90,10 +90,10 @@ func directiveSet(names ...string) map[string]bool {
 	return out
 }
 
-// wantsChange reports a propose_entity call carrying any field of a change proposal.
+// wantsChange reports a propose_entity call naming a change: change or entry. Meaning
+// and directives without either are an add proposal's structured data (RFC GQ P6.3).
 func wantsChange(in docInput) bool {
-	return strings.TrimSpace(in.Change) != "" || strings.TrimSpace(in.Entry) != "" ||
-		in.Meaning != nil || directivesGiven(in)
+	return strings.TrimSpace(in.Change) != "" || strings.TrimSpace(in.Entry) != ""
 }
 
 // directivesGiven reports whether the call carries a directive set: a literal null is
@@ -634,7 +634,7 @@ func proposalMarkIn(fields json.RawMessage) string {
 	if len(fields) == 0 || json.Unmarshal(fields, &m) != nil {
 		return ""
 	}
-	for _, k := range []string{changeProposalField, schemeProposalField, conceptProposalField} {
+	for _, k := range []string{changeProposalField, schemeProposalField, conceptProposalField, entryProposalField} {
 		if _, ok := m[k]; ok {
 			return k
 		}

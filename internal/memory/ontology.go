@@ -871,6 +871,57 @@ type OntologyProposal struct {
 	// Change is set on a proposal to change or retire an entry in force (RFC GQ P4.1):
 	// what accepting it would do to that entry. nil on every other proposal.
 	Change *ProposedChange `json:"change,omitempty"`
+	// Entry is set on a class or relation add proposal filed with structured data
+	// (RFC GQ P6.3): the signal it answers, its meaning and directives, its evidence,
+	// the plan as filed and who filed it. nil on every other proposal.
+	Entry *ProposedEntry `json:"entry,omitempty"`
+}
+
+// ProposedEntry is the structured data of a class or relation add proposal (RFC GQ
+// P6.3, D12). It is stored, as is, in the proposal chunk's fields under the
+// entry_proposal mark; nothing in it is in force. Accepting writes the entry's body
+// from Directives and Meaning only (never from the proposal's evidence text), after
+// checking them again.
+type ProposedEntry struct {
+	// Kind is class or relation, as filed; Signal the building signal it answers
+	// (undeclared_type, undeclared_kind, invalid_ends), "" when none was given.
+	Kind   string `json:"kind"`
+	Signal string `json:"signal,omitempty"`
+	// Meaning is the entry's meaning with its directive lines quoted; Directives its
+	// directive set, each checked by the section's parser.
+	Meaning    string              `json:"meaning,omitempty"`
+	Directives []ProposedDirective `json:"directives,omitempty"`
+	// Evidence is up to five quotes, each checked to occur in its chunk when filed.
+	Evidence []ProposedEvidence `json:"evidence,omitempty"`
+	// Plan is the plan computed when it was filed; the console plans it again live.
+	Plan *ProposedEntryPlan `json:"plan,omitempty"`
+	// FiledBy names the run that filed it; absent for an off-run caller.
+	FiledBy *ProposalFiler `json:"filed_by,omitempty"`
+}
+
+// ProposedEvidence is one quote an entry proposal rests on: a chunk of the tenant scope
+// and the verbatim text in it (its body, or its title when Part is "title").
+type ProposedEvidence struct {
+	ChunkID string `json:"chunk_id"`
+	Part    string `json:"part,omitempty"`
+	Quote   string `json:"quote"`
+}
+
+// ProposedEntryPlan is what an entry proposal's plan said when it was filed: the
+// fingerprint of the ontology then, the risk (an addition is always none) and how many
+// stored rows of the tenant scope already use the name and would become declared
+// (typed_documents and typed_chunks for a class, statements_of_kind for a relation).
+// User and agent scopes are not counted at filing; a live plan counts them.
+type ProposedEntryPlan struct {
+	Fingerprint  string         `json:"fingerprint"`
+	Risk         string         `json:"risk"`
+	WouldDeclare map[string]int `json:"would_declare,omitempty"`
+}
+
+// ProposalFiler is the run that filed a proposal: its agent and run id.
+type ProposalFiler struct {
+	Agent string `json:"agent,omitempty"`
+	RunID string `json:"run_id"`
 }
 
 // The operations of a change proposal (RFC GQ 4.4).
