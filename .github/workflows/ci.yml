@@ -465,6 +465,19 @@ jobs:
           grep -q -- '--- PASS: TestContainerRelay_' relay.log
           ! grep -q -- '--- SKIP' relay.log
 
+      # A workspace's updates (RFC GW P9 await): the relay in a session gets a
+      # server's post, and the worker's host cannot reach its address. Same
+      # image (python3) and the same rule: a skip fails.
+      - name: A session's update address
+        env:
+          LOOMCYCLE_REQUIRE_DOCKER: "1"
+          LOOMCYCLE_TEST_RELAY_IMAGE: ci-loomcycle-workspace
+        run: |
+          set -o pipefail
+          go test -count=1 -timeout 20m -run '^TestUpdateRelay_ContainerAddressIsTheSessionsAlone$' -v ./internal/workspace/worker/ | tee updates.log
+          grep -q -- '--- PASS: TestUpdateRelay_ContainerAddressIsTheSessionsAlone' updates.log
+          ! grep -q -- '--- SKIP' updates.log
+
   go-race:
     # The race suite, split across runners (RFC EX Phase 1). On one 4-core
     # runner it took ~15 min, set by internal/api/http and
