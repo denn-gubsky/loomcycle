@@ -102,6 +102,7 @@ var documentOpModes = map[string]opRead{
 	"list_annotations":      readOp,
 	"delete_annotation":     writeOp,
 	"describe_ontology":     readOp,
+	"ontology_signals":      readOp,
 	"node_stats":            {read: true, writes: func(in docInput) bool { return in.Mode == "compute" || in.Propose }},
 	"measure":               readOp,
 	"effective_policy":      readOp,
