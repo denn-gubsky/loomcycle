@@ -27,6 +27,9 @@ import (
 //
 // Re-invoke with the returned next_cursor while `more` is true. The pass is idempotent:
 // a chunk already indexed under its current text costs a read and no embedding call.
+// With scope=tenant it then does the same for the annotation index rows (missing
+// vector, another embed model, or changed text), reported as annotations_*; `limit`
+// counts both phases' changes.
 // sweepRequest marks r as an operator-run maintenance sweep (re-index,
 // backfill, re-embed, unit generation, image descriptions): every model call
 // made under it — an embedding, a generation, a description — queues in its
