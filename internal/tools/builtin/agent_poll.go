@@ -94,7 +94,7 @@ type bgEntry struct {
 	name, prompt, defID string
 	compaction          *config.Compaction
 	untrusted           []tools.UntrustedInput // references already resolved
-	workspaces          []tools.SpawnWorkspaceShare
+	workspaces          []tools.SpawnWorkspace
 	timeoutMs           int
 	index               int // -1 for a spawn
 }

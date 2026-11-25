@@ -41,7 +41,10 @@ conversation — so put all it needs in it.
   Workspace/share). The child names one `<name>@<your agent id>`; a share
   never lets it run commands. Needs the grant to share and the operations the
   access hands over; a workspace you do not hold fails the child before it
-  starts.
+  starts. An entry `{fork, as?}` instead gives the child its own copy of
+  your workspace `fork`, named `as` (default the same name), which it owns
+  and may run commands in as its own grant allows; your workspace is never
+  changed by it. Needs the grant to open workspaces (see Workspace/fork).
 - `result` — how the child's outcome comes back. `text` (default): its final
   answer as text, for you to read. `object`: a JSON object, for a program —
   see Returns. Not with `mode: "poll"`.
