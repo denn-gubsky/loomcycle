@@ -9,7 +9,7 @@ A **workspace** is a directory on a *workspace worker*, a process apart from the
 **What it is not, yet.** Several things are left to later phases:
 
 - **No isolation on the `host` engine.** On `host` (the default, and the only engine of `local` mode) a command runs as the worker's own OS user. It can read and write anything that user can, including the worker's token, and in `local` mode the runtime's data directory, config and secrets files and environment. It is not a sandbox. The `container` engine isolates: see "The container engine".
-- **No network routes.** On the `container` engine a session has no network at all; on `host` nothing blocks it, and a command has whatever network the worker's machine has. Package downloads through routes the operator declares come with egress, phase 4; until then, on the `container` engine, `pip install` and `npm install` of anything outside the image fail at once.
+- **No network but routes, and only on the `container` engine.** A session on the `container` engine has no network except the egress routes its workspace holds, when the worker turns egress on (see "Egress"); without it, `pip install` and `npm install` of anything outside the image fail at once. On `host` nothing blocks the network, and a command has whatever network the worker's machine has.
 - **No hard disk limit under a command.** The disk quota stops what `File` and the `Workspace` tool write before a byte is written, but a command's own writes are only measured after it ends (see "The disk quota"), on either engine. One command can pass the quota while it runs; the next step is stopped.
 - **No durable, git or shared workspaces.** Every workspace is ephemeral, empty when opened and gone when its run ends, and owned by one run. A reference into another agent's workspace (`workspace:<name>@<agent_id>:<path>`) comes with sharing, phase 8; checking a Document out into a workspace and committing it back, phase 7.
 - **Not on loomcycle's MCP server.** A workspace is pinned to a run, and an MCP session has none: the MCP `file` tool refuses a workspace reference.
@@ -139,6 +139,72 @@ agents:
 ```
 
 `exec`, `run_cell`, `reset_kernel`, `start`, `stop`, `logs` and `request` need `exec`; `write` and `edit` need `write`; `read`, `view`, `glob`, `grep`, `list` and `status` need `read`; `open` needs `open: true`. A sub-agent holds only what both it and its parent hold, before and after a resume. The grant is not per-run overridable, and an agent a tenant member authors may not set it. A grant on an agent without the tool, or while `workspace.mode` is off, does nothing; the boot log and `loomcycle doctor` name such agents.
+
+## Egress
+
+A workspace has no network of its own. What it may reach is a list of **routes**. A route is a name, an `https` upstream URL, the methods it allows (`GET` and `HEAD` unless it lists others), and optionally a stored credential that the core adds on the way out. A session asks the worker for `<base><route>/<path>`. The worker passes the request to the core over its own connection. The core decides whether to send it, builds the upstream request itself, adds the credential and streams the answer back. The worker and the session never see a route's URL list or a credential.
+
+- **Who writes routes.**
+  - The operator, in yaml, under `workspace.egress.routes`. The embedded `workspace` preset (`LOOMCYCLE_PRESETS=…,workspace`) declares `pypi`, `pypi-files` and `npm`, all read-only and without a credential.
+  - A tenant operator, with `EgressRouteDef`, when the operator sets `workspace.egress.tenant_routes: true`. Port 443 only, and only hosts on `workspace.egress.tenant_hosts` when that list is set.
+  - Never an agent: `EgressRouteDef` is not an in-run tool, so a model cannot widen its own way out.
+  - See [CONFIGURATION.md](CONFIGURATION.md) for the fields and their checks.
+- **Which routes a workspace holds.**
+  - The agent grant names them: `workspace: {ops: [...], open: true, egress: [pypi, pypi-files, npm, crm]}`.
+  - `open` takes every route the grant names, or the subset it lists in `egress`. A name outside the grant is refused `not_granted`.
+  - `status` and `list` show the routes a workspace holds.
+  - A sub-agent holds only the routes that both it and its parent hold.
+  - A workspace given no route has no egress.
+- **What a name means, at each request.**
+  - If the operator has a route of that name, the name is the operator's route, even when a tenant wrote a route of the same name.
+  - Otherwise, with tenant routes on, it is the workspace's own tenant's route of that name. It is never another tenant's.
+  - A tenant route is checked again at each request against `tenant_hosts` as the operator has it now and against the 443-only rule. Deleting it, or narrowing the list, stops it at once.
+  - A name that resolves to nothing is refused with 403: `route "<name>" is not one this workspace holds`.
+- **From a script.**
+  - `LOOMCYCLE_EGRESS` holds the base: `curl "${LOOMCYCLE_EGRESS}crm/deals?since=2026"`.
+  - The core maps the path under the route's URL, and the path never leaves it. A `.` or `..` segment, an encoded slash, a backslash and an absolute URL are refused. The one exception is the encoded slash in npm's `@scope%2fname`, allowed in the first segment only.
+  - The request's `Authorization`, `Cookie`, `Host`, `Forwarded`, `X-Forwarded-*` and hop-by-hop headers are dropped.
+  - The answer's `Set-Cookie` and authentication headers are removed, so an API cannot hand the session a token either.
+  - A redirect is relayed only when it points under another route the workspace holds, rewritten to that route. Any other redirect is refused with 502.
+- **pip and npm.**
+  - The session's environment points pip and npm at the routes:
+    - `PIP_INDEX_URL=<base>pypi/simple/` and `PIP_TRUSTED_HOST`;
+    - `npm_config_registry=<base>npm/`;
+    - npm's audit, fund and update-notifier calls turned off.
+  - pip needs both `pypi` and `pypi-files`. PyPI's index links to `files.pythonhosted.org`, and the core rewrites those links to the `pypi-files` route. It does this only on an operator route, never a tenant's.
+  - Without `pypi-files`, pip fails at once with a 403 naming the route.
+  - The hashes beside the links are not touched, so pip still checks what it downloads, and npm still checks `integrity`.
+  - Routes for Go and cargo are the operator's to add.
+- **On the `container` engine.** Egress is turned on on the worker with `LOOMCYCLE_WORKSPACE_CONTAINER_EGRESS_DIR`, and needs a Linux daemon ([WORKERS.md](WORKERS.md)).
+  - Each session gets a network of its own, with no route out. Its only other member is a gateway that answers as `egress`.
+  - No other name resolves, and a lookup fails at once.
+  - A session cannot reach another workspace, the worker or the host.
+  - The base is `http://egress/`.
+  - Without the setting, a session keeps `--network none`.
+- **On the `host` engine.** Egress is turned on with `LOOMCYCLE_WORKSPACE_HOST_EGRESS=1` on the worker; a local worker takes it from the runtime's environment.
+  - Each workspace gets a loopback port, and the base is `http://127.0.0.1:<port>/<secret>/`.
+  - The port answers only a request whose `Host` is its own address and whose path starts with the secret. The secret is a random value made each time the port opens and given to the workspace's commands only in their environment. That keeps out a web page reaching the port through DNS rebinding, and other users' processes.
+  - **It is not a boundary.** The host engine's commands have the host's network anyway. Every process of the worker's own OS user can read a command's environment, so it can send requests as the workspace through its routes, a credentialed route included. That includes other workspaces on the same host worker.
+  - Turn it on only where every agent is trusted.
+- **Credentials.**
+  - A route's credential is resolved for the workspace's run, from its agent scope, then user scope, then tenant scope.
+  - The credential must be restricted (`allowed_urls`) to URLs covering the route's URL. An unrestricted credential, or one restricted elsewhere, refuses the request.
+  - This is checked when a tenant creates the route (for the tenant credential) and again at every request (for whichever credential the run resolves).
+  - The token reaches neither the worker nor the session. The end-to-end suite searches the worker's disk, environment and log, the session's environment, the run's events, the store and the audit log for it.
+- **Limits and audit.**
+  - Each workspace may send 600 requests a minute and 4 GiB of bodies through each route. `workspace.egress.limits` changes both. Over either, the request is refused with 429. The limits are counted per replica.
+  - Every request through a credentialed or tenant-written route writes a `workspace_egress` audit line. The line holds the route, the method, the path without its query, the status and the bytes; never a header, a body or a credential.
+- **What routes do not bound.** A script is untrusted code holding the route's authority. On a route that allows `POST` it can do whatever the credential can do at that API, and it can send anything it read to any route it holds. Routes bound where data can go, not what is sent. Give a route the narrowest credential the API offers.
+
+| Answer | What it means |
+|---|---|
+| 403 `route "x" is not one this workspace holds` | The grant, `open`'s `egress`, or the routes as they are now do not hold `x`. |
+| 403 `route "x" does not allow POST` | The route lists the methods it allows. |
+| 403 `credential "c" … is not found for this run`, `… does not cover route …`, `… is not restricted to URLs` | The route's credential cannot be sent. |
+| 403 `route "x": host … is not on the operator's workspace.egress.tenant_hosts`, `… port … is not allowed` | A tenant route the operator's ceiling no longer allows. |
+| 429 | Over the route's request rate or byte budget for this workspace. |
+| 502 `route "x" redirected to <host>, which is not under a route this workspace holds` | The upstream sent the session elsewhere. |
+| 503 `egress is not linked to the core on this worker` | The worker has no way to the core for egress. |
 
 ## The tool
 
