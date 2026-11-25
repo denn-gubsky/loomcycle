@@ -6,6 +6,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
+	"net/textproto"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -96,6 +98,17 @@ func newExposureFixture(t *testing.T) *exposureFixture {
 			http.SetCookie(w, &http.Cookie{Name: "sid", Value: "s3cret"})
 			_, _ = io.WriteString(w, "<p>page</p>")
 			h.Set("X-Late", "trailer")
+			return
+		case "/early-hints":
+			// A 1xx with headers that act on the origin, then the answer.
+			h := w.Header()
+			h.Set("Link", "<https://evil.example/x.js>; rel=preload")
+			h.Set("Clear-Site-Data", `"*"`)
+			w.WriteHeader(http.StatusEarlyHints)
+			h.Del("Link")
+			h.Del("Clear-Site-Data")
+			h.Set("Content-Type", "text/plain")
+			_, _ = io.WriteString(w, "after the hints")
 			return
 		case "/away":
 			w.Header().Set("Location", "https://example.com/elsewhere")
@@ -366,4 +379,54 @@ func TestExposureRoute_ForwardsOnlyTheHeadersAPageNeeds(t *testing.T) {
 		}
 	}
 	wantSandboxed(t, "a hostile answer", w)
+}
+
+// A 1xx the application sends never reaches the client (the security review
+// of #2931): ReverseProxy relays it through its own trace, past
+// ModifyResponse, so its headers would skip the allowlist, and its clear of
+// the header map would strip the sandbox policy from the final answer.
+func TestExposureRoute_DropsAnInformationalAnswerAndKeepsThePolicy(t *testing.T) {
+	f := newExposureFixture(t)
+	w := f.as(alice, "GET", exposurePrefix+testExposureID+"/early-hints", nil)
+	if w.Code != http.StatusOK || w.Body.String() != "after the hints" {
+		t.Fatalf("= %d %q, want the final 200 and no 1xx", w.Code, w.Body.String())
+	}
+	for _, h := range []string{"Link", "Clear-Site-Data"} {
+		if v := w.Result().Header.Values(h); len(v) != 0 {
+			t.Errorf("%s from a 1xx reached the client: %v", h, v)
+		}
+	}
+	wantSandboxed(t, "the answer after a 1xx", w)
+	if w.Result().Header.Get("Cache-Control") != "private, no-store" {
+		t.Errorf("Cache-Control after a 1xx = %q", w.Result().Header.Get("Cache-Control"))
+	}
+
+	// Over a real connection, where a relayed 1xx would reach the client
+	// and its clear would strip the final answer's policy.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f.mux.ServeHTTP(w, r.WithContext(auth.WithPrincipal(r.Context(), *alice)))
+	}))
+	defer srv.Close()
+	var infos []int
+	trace := &httptrace.ClientTrace{Got1xxResponse: func(code int, _ textproto.MIMEHeader) error {
+		infos = append(infos, code)
+		return nil
+	}}
+	req, _ := http.NewRequestWithContext(httptrace.WithClientTrace(context.Background(), trace), "GET",
+		srv.URL+exposurePrefix+testExposureID+"/early-hints", nil)
+	req.Header.Set("Authorization", "Bearer lc_test")
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if len(infos) != 0 || resp.StatusCode != http.StatusOK {
+		t.Errorf("the client saw 1xx %v and final %d, want no 1xx and 200", infos, resp.StatusCode)
+	}
+	csp := resp.Header.Get("Content-Security-Policy")
+	if !strings.Contains(csp, "sandbox allow-scripts allow-forms") || resp.Header.Get("X-Content-Type-Options") != "nosniff" ||
+		resp.Header.Get("Link") != "" || resp.Header.Get("Clear-Site-Data") != "" {
+		t.Errorf("the final answer over a connection: CSP %q nosniff %q Link %q Clear-Site-Data %q", csp,
+			resp.Header.Get("X-Content-Type-Options"), resp.Header.Get("Link"), resp.Header.Get("Clear-Site-Data"))
+	}
 }
