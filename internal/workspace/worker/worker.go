@@ -320,6 +320,9 @@ type worker struct {
 	// mech is the checkpoint mechanism probed at start (RFC GW §5.4);
 	// empty copies.
 	mech string
+	// tplMu serialises the template cache: a copy out of it, a tree put
+	// into it, and an eviction (RFC GW §5.5).
+	tplMu sync.Mutex
 }
 
 func (w *worker) outgoing(ctx context.Context) context.Context {
