@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"reflect"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -44,6 +45,18 @@ const contentOntologyMD = "# Tenant Ontology\n\n" +
 // shape of an entry, the items hashed or the hash itself changes — every one of which
 // re-versions every tenant's ontology, so change it only on purpose.
 const contentOntologyVersion = "145f9ebeab60d2a2"
+
+// contentVersionRe matches the content_version field where it closes an answer
+// (describe_ontology's and a plan's both end with it).
+var contentVersionRe = regexp.MustCompile(`,\s*"content_version":\s*"[0-9a-f]*"`)
+
+// withoutContentVersion drops the field from rendered answers, for the golden tests
+// that compare a whole answer with one written before the field existed. Its value
+// hashes the chunk ids, which are random per run, so no golden can hold it; the tests
+// in this file are what pin it.
+func withoutContentVersion(s string) string {
+	return contentVersionRe.ReplaceAllString(s, "")
+}
 
 type contentFixture struct {
 	t   *testing.T

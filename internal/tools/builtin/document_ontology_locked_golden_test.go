@@ -58,7 +58,7 @@ func TestOntology_WithoutLockedReadsIdentically(t *testing.T) {
 		"== instances", string(report),
 		"== plan", string(planned),
 	}, "\n")
-	got = hexIDRe.ReplaceAllString(got, "<id>")
+	got = hexIDRe.ReplaceAllString(withoutContentVersion(got), "<id>")
 	path := filepath.Join("testdata", "ontology_without_locked.golden")
 	if *updateLockedGolden {
 		if err := os.WriteFile(path, []byte(got), 0o644); err != nil {
