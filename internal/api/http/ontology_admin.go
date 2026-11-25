@@ -106,6 +106,12 @@ type ontologyResponse struct {
 	// OntologyVersion it changes only when an entry does, not on a proposal, a review
 	// rule or a reorder. Absent when the document could not be read whole.
 	ContentVersion string `json:"content_version,omitempty"`
+	// FactContent and StatementContent split the tenant scope's facts and statements by
+	// the content version they were written under: the current one, another, or none
+	// recorded (RFC GQ P3.2). Filled beside FactVersions and StatementVersions, and only
+	// when ContentVersion is known.
+	FactContent      *builtin.ContentCount `json:"fact_content,omitempty"`
+	StatementContent *builtin.ContentCount `json:"statement_content,omitempty"`
 	// UndeclaredTypes are chunks.type values in use in the TENANT scope that no class
 	// declares (structural types excluded), with counts — what an operator would declare
 	// or map with @renamed_from. Tenant scope only: user scopes are per person and are
@@ -437,6 +443,14 @@ func (s *Server) ontologyState(ctx context.Context, tenant string) (ontologyResp
 			resp.FactVersions = usage.Versions
 			if hasRelations {
 				resp.StatementVersions = usage.StatementVersions
+			}
+			if resp.ContentVersion != "" {
+				if cu, cerr := doc.OntologyContentUsageIn(dctx, "tenant", resp.ContentVersion); cerr == nil {
+					resp.FactContent = &cu.Facts
+					if hasRelations {
+						resp.StatementContent = &cu.Statements
+					}
+				}
 			}
 			// A type that is a class's former name (@renamed_from) is declared: that is
 			// the mapping this list tells the operator to write.
