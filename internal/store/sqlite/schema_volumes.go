@@ -127,7 +127,7 @@ func volumesSection() schemaPlan {
 		// Mirrors postgres migration 0136.
 		`CREATE INDEX IF NOT EXISTS workspaces_by_owner_agent ON workspaces (tenant_id, owner_agent_id, name)`,
 		// RFC GW P12: a durable workspace is one per (tenant, user, name).
-		// Mirrors postgres migration 0144.
+		// Mirrors postgres migration 0143.
 		`CREATE UNIQUE INDEX IF NOT EXISTS workspaces_durable_name ON workspaces (tenant_id, user_id, name) WHERE lifetime = 'durable'`,
 		// RFC GW P6 — workspace templates (§5.5): one row per template, its
 		// archive under the data directory. scope_id is the author's user id

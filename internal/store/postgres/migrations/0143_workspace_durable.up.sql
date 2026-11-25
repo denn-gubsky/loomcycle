@@ -1,4 +1,4 @@
--- 0144_workspace_durable.up.sql — RFC GW P12: durable workspaces.
+-- 0143_workspace_durable.up.sql — RFC GW P12: durable workspaces.
 --
 -- A durable workspace is kept under its tenant, its user and its name past
 -- the run that opened it (RFC GW §4.2), so the name is one per (tenant,
