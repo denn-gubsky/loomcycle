@@ -30,6 +30,11 @@ All optional; with none you get the first 100 chunks of the scope.
   then by its own fact dates. The same test `search` and `related` apply, so
   this lists the editions in force on a date without a text query.
 - `limit` — rows to return, default 100. A value over 1000 is treated as 100.
+- `with_summary` — add each chunk's OWN annotation as `summary {level, brief,
+  stale?}`: a section's branch annotation, the root's document annotation.
+  Only the brief, never the abstract, and never one inherited from a section
+  above — a chunk with no annotation of its own has no `summary`. Use it to
+  label a document's outline in one call.
 - `sql` — a single read-only `SELECT` (or `WITH … SELECT`) run as-is. Tables:
   `documents`, `chunks` (id, document_id, parent_id, position, type, status,
   title, revision, created_at, updated_at, valid_at, invalid_at), `chunk_edges` (from_id, to_id,
@@ -74,6 +79,21 @@ The open tasks in one document:
 {"chunks": [{"id": "9a3e7c1f2b4d4a6e8c0f1a2b3c4d5e6f", "document_id": "b4407b522dc11495d3de371311db17f0",
   "parent_id": "5f1c9e2a7b3d4e6f8a9b0c1d2e3f4a5b", "title": "Migrate the database", "type": "task",
   "status": "open", "position": 0, "revision": 3}]}
+```
+
+A document's outline, each annotated section labelled with its brief:
+
+```json
+{"op": "query_chunks", "scope": "tenant", "document_id": "b4407b522dc11495d3de371311db17f0", "limit": 1000, "with_summary": true}
+```
+
+```json result
+{"chunks": [{"id": "5f1c9e2a7b3d4e6f8a9b0c1d2e3f4a5b", "document_id": "b4407b522dc11495d3de371311db17f0",
+  "title": "Migration guide", "position": 0, "revision": 2,
+  "summary": {"level": "document", "brief": "How to move the service to the new database."}},
+  {"id": "9a3e7c1f2b4d4a6e8c0f1a2b3c4d5e6f", "document_id": "b4407b522dc11495d3de371311db17f0",
+  "parent_id": "5f1c9e2a7b3d4e6f8a9b0c1d2e3f4a5b", "title": "Rollback", "position": 1, "revision": 1,
+  "summary": {"level": "branch", "brief": "Undoing a migration that failed half way.", "stale": true}}]}
 ```
 
 Everything tagged under `billing` in the documents below `/docs`:

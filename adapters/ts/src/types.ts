@@ -64,6 +64,11 @@ export type EventType =
   // the source, the engine, the units and tokens spent and the cost, never the
   // text. The payload rides `AgentEvent.transcription`.
   | "transcription"
+  // A page the run exposed from its workspace (RFC GW D24), and its close
+  // (unexposed, released or idle). On the run's own stream only. The payload
+  // rides `AgentEvent.surface`.
+  | "surface"
+  | "surface_closed"
   // RFC DC per-run overrides. `override` = a server-generated notice that the
   // RUN's own configuration changed while it was running, because an operator
   // retuned it. Distinct from a provider fallback on purpose: a fallback means
@@ -761,6 +766,24 @@ export interface FileCapturedInfo {
   run_id?: string;
 }
 
+/** Payload on `event: surface` / `event: surface_closed` (RFC GW D24): a page
+ *  the run exposed from its workspace. Never a bearer, a ticket or a host path;
+ *  open it with the caller's own credential under `base_path`. */
+export interface SurfaceInfo {
+  exposure_id: string;
+  /** On `surface`: the workspace's name in its run. */
+  workspace?: string;
+  title?: string;
+  /** `page` or `panel`: how the chat shows it. */
+  kind?: string;
+  /** The exposure route's prefix the page is served under. */
+  base_path?: string;
+  /** The idle deadline when told (RFC 3339); every use moves it on. */
+  expires_at?: string;
+  /** On `surface_closed`: `unexposed`, `released` or `idle`. */
+  reason?: string;
+}
+
 /** Payload on `event: transcription`: one OCR or speech-to-text pass a File
  *  tool call made over an inbox file. Never the transcribed text. */
 export interface TranscriptionInfo {
@@ -1039,6 +1062,9 @@ export interface AgentEvent {
   /** Payload on `event: transcription` — one OCR or speech-to-text pass a
    *  File tool call made. Nil on all other event types. */
   transcription?: TranscriptionInfo;
+  /** Payload on `event: surface` / `event: surface_closed` — a page the run
+   *  exposed from its workspace. Nil on all other event types. */
+  surface?: SurfaceInfo;
   /** Payload on `event: queued` (why the run waits, and its place) and
    *  `event: admitted` (how long it waited), and on `event: call_queued` /
    *  `event: call_admitted` (the same for one model call, with its provider
@@ -4458,6 +4484,24 @@ export type PathToolInput = {
   with_summary?: boolean;
   /** ls with_summary: the most abstract characters the page carries (default 2000). */
   summary_chars?: number;
+  /** ls (one level, RFC HA): add `documents` to each directory entry, and to a
+   *  document entry with names below it — how many documents the caller may read
+   *  are named at or under it, each once, not counting the entry's own document.
+   *  Exact up to 10,000; above that `documents: 10000` with `documents_capped: true`.
+   *  With a filter, the number that match. Absent (never 0) where the scope's
+   *  documents cannot be counted. Not taken with `recursive`. */
+  with_counts?: boolean;
+  /** ls (one level, RFC HA): keep only entries with a matching document at or
+   *  under them — one whose Path name or title contains this text, ignoring case
+   *  (`%` and `_` are literal). A folder's own name is not matched. A filtered
+   *  answer echoes what it applied as `filters`, and a document entry that
+   *  matches itself carries `matched: true`. At most 256 characters. */
+  name_contains?: string;
+  /** ls (one level, RFC HA): filter by the document's type, including its
+   *  subtypes (`type_expanded_to` reports the widening). */
+  type?: string;
+  /** ls (one level, RFC HA): filter by the document's exact status. */
+  status?: string;
   [extra: string]: unknown;
 };
 
@@ -4912,7 +4956,10 @@ export type DocumentToolInput = {
   /** get_document / get_chunk / search / related / graph_recall / documents_summary /
    *  query_documents: add each row's nearest annotation as `summary`
    *  ({level, brief, abstract?, stale?, chunk_id?}); a row that is a taxonomy node
-   *  (tenant scope) also gets `series`, its latest count, share and trend. */
+   *  (tenant scope) also gets `series`, its latest count, share and trend.
+   *  query_chunks (a document's chunk list, RFC HA): each chunk's OWN annotation
+   *  only, as `summary` ({level, brief, stale?}) — never the abstract, never one
+   *  inherited from above; a chunk with none has no `summary`. */
   with_summary?: boolean;
   /** with_summary: the most abstract characters a response carries (default 2000, max 8000). */
   summary_chars?: number;

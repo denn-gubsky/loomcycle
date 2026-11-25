@@ -199,6 +199,21 @@ class FileCapturedInfo:
 
 
 @dataclass(frozen=True)
+class SurfaceInfo:
+    """Structured payload on ``surface`` and ``surface_closed`` events: a page
+    the run exposed from its workspace (RFC GW D24). Never a bearer, a ticket
+    or a host path. Mirrors ``providers.SurfaceInfo`` on the Go side."""
+
+    exposure_id: str
+    workspace: str = ""  # surface: the workspace's name in its run
+    title: str = ""
+    kind: str = ""  # page | panel
+    base_path: str = ""  # the exposure route's prefix
+    expires_at: str = ""  # RFC 3339 idle deadline when told; moves with use
+    reason: str = ""  # surface_closed: unexposed | released | idle
+
+
+@dataclass(frozen=True)
 class TranscriptionInfo:
     """Structured payload on ``transcription`` events: one OCR or
     speech-to-text pass a File tool call made over an inbox file — the
@@ -413,6 +428,7 @@ class AgentEvent:
     limit: Optional[LimitInfo] = None
     file: Optional[FileCapturedInfo] = None
     transcription: Optional[TranscriptionInfo] = None
+    surface: Optional[SurfaceInfo] = None
     admission: Optional[AdmissionInfo] = None
     capability_inert: Optional[CapabilityInertInfo] = None
     override: Optional[OverrideInfo] = None
@@ -552,6 +568,18 @@ class AgentEvent:
                 origin=ev.file.origin,
                 run_id=ev.file.run_id,
             )
+        sf: Optional[SurfaceInfo] = None
+        if ev.HasField("surface"):
+            s = ev.surface
+            sf = SurfaceInfo(
+                exposure_id=s.exposure_id,
+                workspace=s.workspace,
+                title=s.title,
+                kind=s.kind,
+                base_path=s.base_path,
+                expires_at=s.expires_at.ToJsonString() if s.HasField("expires_at") else "",
+                reason=s.reason,
+            )
         tr: Optional[TranscriptionInfo] = None
         if ev.HasField("transcription"):
             t = ev.transcription
@@ -618,6 +646,7 @@ class AgentEvent:
             limit=li,
             file=fc,
             transcription=tr,
+            surface=sf,
             admission=adm,
             capability_inert=ci,
             override=ov,

@@ -101,6 +101,9 @@ type Manager struct {
 	audit audit.Sink
 	// expose is workspace.expose (SetExpose): off until set.
 	expose ExposeLimits
+	// surfaceClosed tells a run one of its pages went (SetSurfaceNotifier);
+	// nil tells no one.
+	surfaceClosed SurfaceNotifier
 	// proxy and routes are the way out and the operator's routes by name
 	// (SetEgress); a nil proxy refuses every request out.
 	proxy  *egress.Proxy
