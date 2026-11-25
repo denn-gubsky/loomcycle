@@ -43,6 +43,30 @@ run can open (the default `user` needs a user id; otherwise pass `agent`).
   For a new scheme, its meaning.
 - `scope` — see above.
 
+## A new class or relation kind with its data
+
+A class or relation add (no `change`) may carry structured data beside its
+evidence. Any of these makes it one:
+
+- `meaning` — the new entry's meaning; any `@` line stays quoted text.
+- `directives` — the new entry's directives, an object as for an edit. Only a
+  relation kind's `domain` and `range` may be proposed; a class takes none.
+  Every other directive (`locked`, `acl`, `retention`, `memory_scope`,
+  `auto_assert`, `identity` …) is refused by name: an operator adds it after
+  accepting.
+- `evidence` — up to 5 quotes, each `{chunk_id, quote, part?}` naming a chunk of
+  the tenant scope; a quote that does not occur in its chunk is refused.
+- `signal` — the building signal the proposal answers: `undeclared_type`,
+  `undeclared_kind` or `invalid_ends`.
+
+They travel in the proposal's fields (`entry_proposal`), never in its text,
+with a plan computed when it is filed (the ontology's fingerprint and the
+tenant-scope rows already using the name) and the run that filed it. The answer
+adds `risk` (always `none` for an addition). Accepting writes the entry's text
+from the directives and the meaning, checked again — not from `body`, which
+stays the evidence the reviewer read. A run may hold at most 10 such open
+proposals; the eleventh is refused with `proposal_cap`.
+
 ## Changing or retiring an entry
 
 With `change`, the proposal is about an entry ALREADY in force — a class,
@@ -123,7 +147,10 @@ has no Schemes section yet.
 - `propose_entity: already_proposed: ...` — an open proposal of the same kind
   exists for the entry; an operator decides.
 - `propose_entity: directives: ...` — a directive the section does not take, a
-  value its parser cannot use, or `locked`.
+  value its parser cannot use, or `locked`; on an add, any directive but a
+  relation's `domain` and `range`.
+- `propose_entity: proposal_cap: ...` — this run already has 10 open proposals
+  carrying data; stop and let an operator review them.
 
 ## Examples
 
@@ -141,6 +168,16 @@ A relation kind, narrower than one the tenant already declares:
 
 ```json
 {"op": "propose_entity", "section": "relations", "name": "supervises", "parent": "manages", "body": "6 facts say one person supervises another's thesis."}
+```
+
+A relation kind with its meaning, domain and range, and a quote it rests on:
+
+```json
+{"op": "propose_entity", "section": "relations", "name": "approves", "signal": "undeclared_kind", "meaning": "One party approves another's document.", "directives": {"domain": "person", "range": "Policy"}, "evidence": [{"chunk_id": "9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e", "quote": "the board approves the policy"}], "body": "14 proposed statements use the kind."}
+```
+
+```json result
+{"proposed": "approves", "chunk_id": "7a6b5c4d3e2f10a9b8c7d6e5f4a3b2c1", "parent_id": "2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f", "risk": "none", "note": "Filed as a suggestion, not in force. ..."}
 ```
 
 A concept, narrower than one a topic scheme already has:
