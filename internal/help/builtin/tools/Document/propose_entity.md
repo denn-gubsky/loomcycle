@@ -42,24 +42,24 @@ run can open (the default `user` needs a user id; otherwise pass `agent`).
 - `body` — your evidence: counts and a few example facts, at most 4000 bytes.
   For a new scheme, its meaning.
 - `scope` — see above.
+- `meaning` — a class or relation add's meaning (see below); any `@` line stays
+  quoted text. With `change: edit`, the entry's new meaning.
+- `directives` — a class or relation add's directives, an object as for an
+  edit. Only a relation kind's `domain` and `range` may be proposed; a class
+  takes none. Every other directive (`locked`, `acl`, `retention`,
+  `memory_scope`, `auto_assert`, `identity` …) is refused by name: an operator
+  adds it after accepting. With `change: edit`, see below.
+- `evidence` — a class or relation add: up to 5 quotes, each
+  `{chunk_id, quote, part?}` naming a chunk of the tenant scope; a quote that
+  does not occur in its chunk is refused.
+- `signal` — a class or relation add: the building signal it answers,
+  `undeclared_type`, `undeclared_kind` or `invalid_ends`.
 
 ## A new class or relation kind with its data
 
-A class or relation add (no `change`) may carry structured data beside its
-evidence. Any of these makes it one:
-
-- `meaning` — the new entry's meaning; any `@` line stays quoted text.
-- `directives` — the new entry's directives, an object as for an edit. Only a
-  relation kind's `domain` and `range` may be proposed; a class takes none.
-  Every other directive (`locked`, `acl`, `retention`, `memory_scope`,
-  `auto_assert`, `identity` …) is refused by name: an operator adds it after
-  accepting.
-- `evidence` — up to 5 quotes, each `{chunk_id, quote, part?}` naming a chunk of
-  the tenant scope; a quote that does not occur in its chunk is refused.
-- `signal` — the building signal the proposal answers: `undeclared_type`,
-  `undeclared_kind` or `invalid_ends`.
-
-They travel in the proposal's fields (`entry_proposal`), never in its text,
+A class or relation add (no `change`) that carries any of `meaning`,
+`directives`, `evidence` or `signal` files that data in the proposal's fields
+(`entry_proposal`), never in its text. They travel in the proposal's fields (`entry_proposal`), never in its text,
 with a plan computed when it is filed (the ontology's fingerprint and the
 tenant-scope rows already using the name) and the run that filed it. The answer
 adds `risk` (always `none` for an addition). Accepting writes the entry's text
