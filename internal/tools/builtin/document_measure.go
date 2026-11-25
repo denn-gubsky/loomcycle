@@ -100,7 +100,9 @@ const (
 // declared measures' (P8); a built-in row writes 0. Section 6A.5's
 // ontology_version column is left out (owner, 2026-11-18): the root chunk's
 // revision does not change when an entry is edited (RFC GQ problem 4), so it says
-// nothing about what a row was computed from — inputs_sha256 does.
+// nothing about what a row was computed from — inputs_sha256 does. The content
+// version (ontology_content, RFC GQ P3.2) does say what the ontology declared, and is
+// added by migrateOntologyContent.
 const measurePointsDDL = `CREATE TABLE IF NOT EXISTS measure_points (
 		measure TEXT NOT NULL, node_id TEXT NOT NULL, subject_id TEXT NOT NULL DEFAULT '',
 		period_start BIGINT NOT NULL, period TEXT NOT NULL,
@@ -787,6 +789,9 @@ func (d *Document) writeMeasurePoints(ctx context.Context, key sqlmem.ScopeKey, 
 	if len(rows) == 0 {
 		return nil
 	}
+	// Before the transaction: the ontology is read on the tenant scope, which may be
+	// this one, and a SQLite scope has one connection.
+	content := d.ontologyContentArg(ctx)
 	return d.withSqlTxn(ctx, key, func(txnID string) error {
 		for _, r := range rows {
 			value, members, basis, fb := r.value, r.members, r.basis, r.fallback
@@ -794,10 +799,10 @@ func (d *Document) writeMeasurePoints(ctx context.Context, key sqlmem.ScopeKey, 
 				value, members, basis, fb = 0, 0, 0, 0
 			}
 			if err := d.execTxn(ctx, txnID, `INSERT INTO measure_points (measure, node_id, subject_id, period_start, period,
-				value_sum, members, groups, sources, basis, fallback_share, inputs_sha256, members_sha256, computed_at)
-				VALUES (?, ?, '', ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?)
+				value_sum, members, groups, sources, basis, fallback_share, inputs_sha256, members_sha256, computed_at, ontology_content)
+				VALUES (?, ?, '', ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?)
 				ON CONFLICT (measure, node_id, subject_id, period_start, computed_at) DO NOTHING`,
-				r.measure, r.node, r.start, r.period, value, members, basis, fb, r.inputs, r.readSH, now); err != nil {
+				r.measure, r.node, r.start, r.period, value, members, basis, fb, r.inputs, r.readSH, now, content); err != nil {
 				return fmt.Errorf("measure_points %s %s %d: %w", r.measure, r.node, r.start, err)
 			}
 		}

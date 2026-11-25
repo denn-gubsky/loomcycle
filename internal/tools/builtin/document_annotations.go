@@ -952,13 +952,15 @@ func (d *Document) setAnnotation(ctx context.Context, key sqlmem.ScopeKey, mscop
 		model = in.Model
 	}
 	if err := d.exec(ctx, key, `INSERT INTO chunk_annotations (chunk_id, level, brief, abstract, language, class,
-		ontology_version, inputs_sha256, prompt_version, model, manual, written_at, written_by)
-		VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)
+		ontology_version, ontology_content, inputs_sha256, prompt_version, model, manual, written_at, written_by)
+		VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (chunk_id, level) DO UPDATE SET brief = excluded.brief, abstract = excluded.abstract,
 		language = excluded.language, class = excluded.class, ontology_version = excluded.ontology_version,
+		ontology_content = excluded.ontology_content,
 		inputs_sha256 = excluded.inputs_sha256, prompt_version = excluded.prompt_version, model = excluded.model,
 		manual = excluded.manual, written_at = excluded.written_at, written_by = excluded.written_by`,
-		t.chunk.ID, t.level, brief, abstract, language, class, cur.InputsSHA256, in.PromptVersion, model, manual, now, annotationWriter(ctx)); err != nil {
+		t.chunk.ID, t.level, brief, abstract, language, class, d.ontologyContentArg(ctx),
+		cur.InputsSHA256, in.PromptVersion, model, manual, now, annotationWriter(ctx)); err != nil {
 		return errFrom(op+": "+err.Error(), err), nil
 	}
 	recs, err := d.annotationRecordsFor(ctx, key, []string{t.chunk.ID}, t.level)

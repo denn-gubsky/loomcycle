@@ -683,16 +683,17 @@ func (d *Document) writeStatement(ctx context.Context, key sqlmem.ScopeKey, msco
 		if v := d.ontologyVersion(ctx); v > 0 {
 			ov = v
 		}
+		content := d.ontologyContentArg(ctx)
 		auto := 0
 		if w.method == edgeMethodWikilink {
 			auto = 1
 		}
 		err := d.exec(ctx, key, `INSERT INTO chunk_edges
 			(id, from_id, to_id, kind, created_at, auto, status, method, confidence, valid_at, invalid_at,
-			 actor, run_id, ontology_version, discriminator, attributes)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			 actor, run_id, ontology_version, ontology_content, discriminator, attributes)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			id, w.from, w.to, w.kind, now, auto, status, w.method, confidence, w.validAt, w.invalidAt,
-			nullIfEmpty(actor), nullIfEmpty(tools.RunID(ctx)), ov, disc, attrsArg)
+			nullIfEmpty(actor), nullIfEmpty(tools.RunID(ctx)), ov, content, disc, attrsArg)
 		if err != nil {
 			// A concurrent writer may have made the same statement; its row is ours.
 			again, gerr := d.statementByKey(ctx, key, w.from, w.to, w.kind, w.validAt, discriminator)

@@ -125,3 +125,39 @@ func TestValidateStatementMethods_RefusesAnUnknownOrRepeatedMethod(t *testing.T)
 		}
 	}
 }
+
+// TestStatementMethods_OntologyIsCodeOnly — ontology (RFC GQ P6.2) lets a run read
+// every scope's ontology signals and hold the ontologist lease, so only a code-js
+// definition may hold it: refused on a model agent and on one with no provider.
+func TestStatementMethods_OntologyIsCodeOnly(t *testing.T) {
+	if !StatementMethodKnown("ontology") || !StatementMethodCodeOnly("ontology") {
+		t.Fatalf("ontology: known=%v code-only=%v, want both", StatementMethodKnown("ontology"), StatementMethodCodeOnly("ontology"))
+	}
+	for _, tc := range []struct {
+		provider string
+		in       []string
+		ok       bool
+	}{
+		{"code-js", []string{"ontology"}, true},
+		{"code-js", []string{"ontology", "annotate"}, true},
+		{"code-js", []string{"ontology", "ontology"}, false},
+		{"code-js", []string{"Ontology"}, false},
+		{"anthropic", []string{"ontology"}, false},
+		{"", []string{"ontology"}, false},
+		{"anthropic", []string{"link", "ontology"}, false},
+	} {
+		if err := ValidateStatementMethods(tc.provider, tc.in); (err == nil) != tc.ok {
+			t.Errorf("ValidateStatementMethods(%q, %v) = %v, want ok=%v", tc.provider, tc.in, err, tc.ok)
+		}
+	}
+	if _, err := loadYAMLString(t, statementMethodsModelHead+"    statement_methods: [ontology]\n"); err == nil || !strings.Contains(err.Error(), "code-js") {
+		t.Errorf("a model agent granted ontology loaded: %v", err)
+	}
+	cfg, err := loadYAMLString(t, statementMethodsCodeJSHead+"    statement_methods: [ontology]\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(cfg.Agents["linker"].StatementMethods, ","); got != "ontology" {
+		t.Errorf("StatementMethods = %q, want ontology", got)
+	}
+}

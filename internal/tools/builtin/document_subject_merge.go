@@ -502,6 +502,9 @@ func (d *Document) copyMergedStatement(ctx context.Context, tx string, p mergePl
 		s.VerifiedAt, s.JudgedAt, nullIfEmpty(s.JudgeReason), nullIfEmpty(s.JudgedBy), s.VerdictConfidence, s.OperatorRuledAt, nullIfEmpty(s.RuledBy)); err != nil {
 		return err
 	}
+	if err := d.carryOntologyContent(ctx, tx, s.ID, copyID); err != nil {
+		return err
+	}
 	for _, e := range evidence {
 		var start, end any
 		if e.CharStart != nil {

@@ -1,6 +1,6 @@
 ---
 name: Document/ontology_signals
-description: "Document op=ontology_signals — what the tenant's corpus uses and the ontology does not declare: types on documents, chunks and facts that no class declares, relation kinds no relation declares, and statements of a declared kind marked ontology_valid:false, grouped by kind and the two ends' types. Counts over every scope of the tenant, sample ids from the tenant scope, never a title or a body. An operator's read; it writes nothing."
+description: "Document op=ontology_signals — what the tenant's corpus uses and the ontology does not declare: types on documents, chunks and facts that no class declares, relation kinds no relation declares, and statements of a declared kind marked ontology_valid:false, grouped by kind and the two ends' types. Counts over every scope of the tenant, sample ids from the tenant scope, never a title or a body. An operator's read, or a code agent's granted ontology; it writes nothing."
 ---
 `ontology_signals` reports where the stored data and the tenant ontology
 disagree. It is the material an ontology is built or extended from: each row is
@@ -11,8 +11,13 @@ It always works on the tenant, so pass `scope: "tenant"` or no scope; any other
 scope is refused. It **writes nothing and provisions nothing**: no scope is
 created or migrated, and reading a scope does not count as a use of it.
 
-**Who may call it.** An operator only. The counts cover every user's and every
-agent's scope of the tenant, so a member and an agent run are refused.
+**Who may call it.** An operator, or a run of a `provider: code-js` agent
+granted `statement_methods: [ontology]`. The counts cover every user's and every
+agent's scope of the tenant, so a member and any other agent run are refused.
+A granted run must also hold the tenant scope (`memory_scopes` and `sql_scopes`)
+and read every document of it: a run whose access-control rules hide any tenant
+document is refused. The grant also holds the `ontologist` lease and no other;
+it allows no write.
 
 ## Arguments
 

@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
@@ -580,15 +581,22 @@ func assertSignalsWriteNothing(t *testing.T, d *Document, base context.Context, 
 	// The operator of the same tenant, as a subject with no scope of its own: the
 	// call's default scope is that subject's user scope, which must not be made.
 	caller := tools.WithRunIdentity(f.op, tools.RunIdentityValue{AgentID: "a", UserID: "nobody", TenantID: f.tenantID})
-	s, _ := f.signals(caller, &Document{Store: d.Store, SqlMem: fresh, Bus: d.Bus}, nil)
-	if now := traces(); now != wasTraces {
-		t.Errorf("the read left a trace on the scopes (a last-use stamp or provisioning DDL):\nbefore %s\nafter  %s", wasTraces, now)
-	}
-	if now := snapshot(); now != was {
-		t.Errorf("the read wrote:\nbefore %s\nafter  %s", was, now)
-	}
-	if !s.Complete || s.ScopesCounted != 2 || signalKind(s, "supervises") == nil {
-		t.Errorf("the read counted %d scopes, complete %v, kinds %+v; want both scopes read", s.ScopesCounted, s.Complete, s.UndeclaredKinds)
+	// A run granted ontology (RFC GQ P6.2) is asked more than the operator — its tenant
+	// scope grant and its access-control list — and those questions provision nothing either.
+	granted := tools.WithRunID(tools.WithRunPolicy(caller, tools.RunPolicy{Tools: []string{"*"},
+		Memory: tools.MemoryPolicyValue{AllowedScopes: []string{"tenant"}}, SqlMem: tools.SqlMemPolicyValue{AllowedScopes: []string{"tenant"}},
+		StatementMethods: []string{"ontology"}}), "run-ontologist")
+	for name, c := range map[string]context.Context{"operator": caller, "granted run": granted} {
+		s, _ := f.signals(c, &Document{Store: d.Store, SqlMem: fresh, Bus: d.Bus}, nil)
+		if now := traces(); now != wasTraces {
+			t.Errorf("%s: the read left a trace on the scopes (a last-use stamp or provisioning DDL):\nbefore %s\nafter  %s", name, wasTraces, now)
+		}
+		if now := snapshot(); now != was {
+			t.Errorf("%s: the read wrote:\nbefore %s\nafter  %s", name, was, now)
+		}
+		if !s.Complete || s.ScopesCounted != 2 || signalKind(s, "supervises") == nil {
+			t.Errorf("%s: the read counted %d scopes, complete %v, kinds %+v; want both scopes read", name, s.ScopesCounted, s.Complete, s.UndeclaredKinds)
+		}
 	}
 }
 
@@ -608,6 +616,65 @@ func TestOntologySignals_MemberIsRefused(t *testing.T) {
 		out, r := docExec(t, d, caller, `{"op":"ontology_signals","scope":"tenant"}`)
 		if !r.IsError || !strings.Contains(r.Text, "permission") || out != nil || strings.Contains(r.Text, "supervises") {
 			t.Errorf("%s: %q, want a permission refusal that names nothing", name, r.Text)
+		}
+	}
+}
+
+// TestOntologySignals_GrantedRunReadsAndUngrantedIsRefused — a run of a code agent
+// granted ontology in statement_methods (RFC GQ P6.2) reads what the operator reads.
+// The grant alone is not enough: the run must hold the tenant scope and read every
+// document of it, as a granted node_stats pass must, because the samples name tenant
+// documents and the counts cover them. Without the grant, with another grant, off a
+// run, without the tenant scope or with a document hidden, the call is refused and
+// names nothing. A granted run of another tenant reads its own tenant only.
+func TestOntologySignals_GrantedRunReadsAndUngrantedIsRefused(t *testing.T) {
+	d, ctx, _ := documentFixture(t)
+	f := newSignalsFixture(t, d, ctx)
+	f.exec(f.op, map[string]any{"op": "create_document", "scope": "tenant", "title": signalsTitleMark + " apart", "type": "memo", "path": "/kb/apart"})
+	want := f.read()
+	run := func(sm []string, eff *authz.Effective, scopes ...string) context.Context {
+		return tools.WithRunID(tools.WithRunPolicy(f.user, tools.RunPolicy{
+			Tools:            []string{"*"},
+			Memory:           tools.MemoryPolicyValue{AllowedScopes: scopes},
+			SqlMem:           tools.SqlMemPolicyValue{AllowedScopes: scopes},
+			StatementMethods: sm, ACL: eff,
+		}), "run-ontologist")
+	}
+	granted := run([]string{"ontology"}, nil, "tenant")
+	got, _ := f.signals(granted, d, nil)
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("the granted run's read differs from the operator's:\ngot  %+v\nwant %+v", got, want)
+	}
+
+	hide := aclSet(t, authz.Rule{Effect: authz.Deny, Actions: []string{"read"}, Resources: []string{"document:tenant:/kb/apart"}})
+	offRun := tools.WithCallerTier(tools.WithRunPolicy(f.user, tools.RunPolicy{Tools: []string{"*"},
+		Memory: tools.MemoryPolicyValue{AllowedScopes: []string{"tenant"}}, SqlMem: tools.SqlMemPolicyValue{AllowedScopes: []string{"tenant"}},
+		StatementMethods: []string{"ontology"}}), tools.TierMember)
+	for name, caller := range map[string]context.Context{
+		"no grant":                 run(nil, nil, "tenant"),
+		"rule and extractor":       run([]string{"rule", "extractor"}, nil, "tenant"),
+		"annotate":                 run([]string{annotationGrant}, nil, "tenant"),
+		"judge, link and remember": run([]string{"judge", "link", "remember"}, nil, "tenant"),
+		"granted, no tenant scope": run([]string{"ontology"}, nil, "user", "agent"),
+		"granted, half the scope":  tools.UpdateRunPolicy(granted, func(rp *tools.RunPolicy) { rp.SqlMem.AllowedScopes = []string{"user"} }),
+		"granted, a document hid":  run([]string{"ontology"}, hide, "tenant"),
+		"granted member, off run":  offRun,
+	} {
+		out, r := docExec(t, d, caller, `{"op":"ontology_signals","scope":"tenant"}`)
+		if !r.IsError || !strings.Contains(r.Text, "permission") || out != nil || strings.Contains(r.Text, "supervises") || strings.Contains(r.Text, "memo") {
+			t.Errorf("%s: %q, want a permission refusal that names nothing", name, r.Text)
+		}
+	}
+
+	// The same grant in another tenant: answered from that tenant, never this one's.
+	other := tools.WithRunIdentity(granted, tools.RunIdentityValue{AgentID: "a", UserID: "u9", TenantID: "other-tenant"})
+	s, text := f.signals(other, d, nil)
+	if len(s.UndeclaredTypes) != 0 || len(s.UndeclaredKinds) != 0 || len(s.InvalidEnds) != 0 || strings.Contains(text, "supervises") || strings.Contains(text, "memo") {
+		t.Errorf("a granted run of another tenant read this tenant's signals: %s", text)
+	}
+	for id := range f.tenantDocs {
+		if strings.Contains(text, id) {
+			t.Errorf("a granted run of another tenant was shown document %s of this tenant", id)
 		}
 	}
 }
