@@ -33,6 +33,12 @@ type Path struct {
 	// Annotations, when set, answers ls with_summary from the documents'
 	// annotations. Nil in a deployment without SQL Memory.
 	Annotations PathAnnotations
+	// Documents, when set, answers ls with_counts and the listing filters from
+	// the documents' metadata (RFC HA). Nil, or a scope whose documents cannot
+	// be queried, leaves counts out and refuses the filters.
+	Documents PathDocumentSource
+	// listingBudget overrides lsListingBudget when positive (tests only).
+	listingBudget int
 }
 
 // PathAnnotations is what ls asks of the Document tool for with_summary: the
@@ -89,7 +95,11 @@ const pathInputSchema = `{
 		"cursor":        {"type": "string", "description": "ls: continue a truncated listing — pass the next_cursor from the previous response. Opaque: its encoding is not part of the contract, so do not construct one."},
 		"resource_too":  {"type": "boolean", "description": "rm: also delete the backing resource. NOT supported in v1 (dirent-only removal)."},
 		"with_summary":  {"type": "boolean", "description": "ls (tenant scope): add each entry's annotation as summary — a document's {brief, stale?}, a folder's {brief, abstract, stale?} from its _annotation document. An entry with none has no summary."},
-		"summary_chars": {"type": "integer", "description": "ls with_summary: the most abstract characters the page carries (default 2000, at most 8000)."}
+		"summary_chars": {"type": "integer", "description": "ls with_summary: the most abstract characters the page carries (default 2000, at most 8000)."},
+		"with_counts":   {"type": "boolean", "description": "ls (one level): add documents to each directory entry, and to a document entry with names below it — how many documents you may read are named at or under it, each once, not counting the entry's own document. Exact up to 10000; above that documents is 10000 with documents_capped:true. With a filter, how many match. Absent where the scope's documents cannot be counted."},
+		"name_contains": {"type": "string", "description": "ls (one level): keep only the entries with a matching document at or under them — one whose Path name or title contains this text, ignoring case (% and _ are literal). A folder's own name is not matched. The answer echoes the filters it applied as filters."},
+		"type":          {"type": "string", "description": "ls (one level): filter as name_contains does, by the document's type, including its subtypes."},
+		"status":        {"type": "string", "description": "ls (one level): filter as name_contains does, by the document's exact status."}
 	},
 	"required": ["op"]
 }`
@@ -108,6 +118,11 @@ type pathInput struct {
 	Cursor       string `json:"cursor"`
 	WithSummary  bool   `json:"with_summary"`
 	SummaryChars int    `json:"summary_chars"`
+	// RFC HA: ls counts and filters (pathtool_listing.go).
+	WithCounts   bool   `json:"with_counts"`
+	NameContains string `json:"name_contains"`
+	Type         string `json:"type"`
+	Status       string `json:"status"`
 }
 
 func (p *Path) Execute(ctx context.Context, raw json.RawMessage) (tools.Result, error) {
@@ -243,6 +258,14 @@ type pathEntry struct {
 	// Summary / FolderSummary are the entry's annotation (ls with_summary).
 	Summary       map[string]any `json:"summary,omitempty"`
 	FolderSummary map[string]any `json:"folder_summary,omitempty"`
+	// Documents is the count under the entry (ls with_counts): a pointer, so a
+	// folder holding nothing readable says 0 while an entry with no count says
+	// nothing. DocumentsCapped marks it as the cap, not the exact number.
+	Documents       *int `json:"documents,omitempty"`
+	DocumentsCapped bool `json:"documents_capped,omitempty"`
+	// Matched marks, in a filtered listing, a document entry that matches the
+	// filters itself; one kept only for what is below it does not carry it.
+	Matched bool `json:"matched,omitempty"`
 }
 
 func (p *Path) resolve(ctx context.Context, tenantID, scope, scopeID string, in pathInput) (tools.Result, error) {
@@ -274,6 +297,9 @@ func (p *Path) ls(ctx context.Context, tenantID, scope, scopeID string, in pathI
 		return errValidation(err.Error(), "Pass an absolute path such as /notes/today, with segments of letters, digits, . _ -."), nil
 	}
 	prefix := dirPrefix(canonical)
+	if r := validateListing(in); r != nil {
+		return *r, nil
+	}
 
 	// Recursive ls returns every descendant dirent, flat (full paths).
 	if in.Recursive {
@@ -352,6 +378,9 @@ func (p *Path) ls(ctx context.Context, tenantID, scope, scopeID string, in pathI
 		}
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
+	if in.listingAsked() {
+		return p.lsListing(ctx, canonical, scope, entries, implicit, in)
+	}
 	return lsPage(canonical, entries, in, func(e pathEntry) string { return e.Name }, p.summarize(ctx, scope, in))
 }
 
