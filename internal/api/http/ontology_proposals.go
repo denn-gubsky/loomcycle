@@ -197,6 +197,28 @@ func (s *Server) handleOntologyProposal(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
+	// A class or relation add carrying structured data (RFC GQ P6.3) accepts with its
+	// mark checked again and its body written from the mark's directives and meaning,
+	// not from the evidence the proposal's body holds. One without the mark accepts as
+	// before.
+	if action == "accept" {
+		handled, aerr := doc.AcceptEntryProposal(dctx, "tenant", chunkID)
+		switch {
+		case handled && errors.Is(aerr, builtin.ErrEntryProposalInvalid):
+			writeJSONError(w, http.StatusUnprocessableEntity, "invalid_proposal", aerr.Error())
+			return
+		case handled && errors.Is(aerr, builtin.ErrEntryRetired):
+			writeJSONError(w, http.StatusConflict, "entry_retired", aerr.Error())
+			return
+		case aerr != nil:
+			writeJSONError(w, http.StatusInternalServerError, "ontology_write_failed", aerr.Error())
+			return
+		case handled:
+			s.writeOntologyState(w, r.Context(), tenant)
+			return
+		}
+	}
+
 	newStatus := meminject.OntologyStatusRejected
 	if action == "accept" {
 		newStatus = "" // in force, in place

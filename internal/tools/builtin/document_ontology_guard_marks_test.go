@@ -17,7 +17,7 @@ func TestOntologyGuard_AnAgentCannotWriteAProposalMark(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{changeProposalField, schemeProposalField, conceptProposalField} {
+	for _, key := range []string{changeProposalField, schemeProposalField, conceptProposalField, entryProposalField} {
 		fields := map[string]any{key: map[string]any{"op": "retire", "target": "x"}}
 		for _, op := range []string{"create_chunk", "upsert_chunk"} {
 			req, _ := json.Marshal(map[string]any{"op": op, "scope": "tenant", "document_id": read.DocumentID,
