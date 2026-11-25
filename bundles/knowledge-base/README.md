@@ -16,6 +16,8 @@ corpora, those were almost never right, so they are reported and not filed.
 | `kb/annotate` | your `middle` tier | none (`tools: []`, `skills: [-*]`, `disable_context: true`) | one part in, `{brief, abstract, language}` out |
 | `kb/taxonomist` | `code-js` | `Document`, `Agent`; tenant scope; no `statement_methods` | proposes taxonomies (concept schemes) from the document briefs, filed as one inert proposal (see [Taxonomies](#taxonomies)) |
 | `kb/taxonomy-writer` | your `middle` tier, `effort: low`, `max_tokens: 32768`, `max_context_tokens: 131072` | none (`tools: []`, `skills: [-*]`, `disable_context: true`) | one domains, generate, update, align or review request in, one JSON object out |
+| `kb/ontologist` | `code-js` | `Document` (read mode); tenant scope; `statement_methods: [ontology]` | reports which entity types and relation kinds the corpus uses and the ontology does not declare, ranked as a propose pass would file them; report mode only in this release, no model call and no write (see [Building the ontology](#building-the-ontology)) |
+| `kb/ontology-writer` | your `middle` tier, `effort: low`, `max_tokens: 4096` | none (`tools: []`, `skills: [-*]`, `disable_context: true`) | one class or relation candidate in, `{verdict, parent, meaning}` out; shipped for the propose mode to come, not called yet |
 | `kb/ask` | `code-js` | `Decision`, `Agent`, `Document` (read; `describe_ontology` only, no scopes) | the entry point for a question about the tenant knowledge base. A question bounded by a date or a version ("since v1.0", "since 9 November", "opened after 2026-11-09", "in the last 10 days") goes straight to `kb/walker` with no classifier asked and a fixed note to list the documents by creation date (`query_documents` `created_after`), which the survey's searches cannot filter by; it reports `CLASSIFIER: dated`. "since" with no date or version after it ("since when", "since the tool is read-only") does not count. So does a question naming a period by both ends ("in November 2026", "during March", "in 2026", "between 1 May and 1 June 2026"), with a note to bound both ends (`created_after` the start, `created_before` the first instant after the period), a month with no year read as the latest such month that has begun (the walker says which year it took), and a `TODAY: <date> (UTC).` line, the run's own date, after it; a month or a year alone needs "in" or "during" before it and the end of the clause after it, so "what may change", "the march of versions" and "in May release notes" do not count. A question asking to list the documents of a kind by stored status ("which of our RFCs are still drafts", "which RFCs are confirmed but not done", "the draft plans", or with the status as a verb after a subject: "which RFCs has the owner confirmed", "which plans have we finished", "which design notes are not yet marked done") or every document of a kind ("which implementation plans do we have", "list all design notes", or by what we wrote: "which plans have we written", "which RFCs did we draft", "which guides have been published", never with another subject: "which plans has the owner written" does not count) also goes to `kb/walker`, reported as `CLASSIFIER: listing`, with a fixed note to list with `query_documents` by status (one call per status asked, named on a `STATUS: <statuses>.` line: "not done" is every other status, and "confirmed but not done" is `confirmed` alone) or by type, `limit` 1000, to list every class of the kind the ontology declares (the type filter includes subtypes, never a sibling class), and to name every row. The kinds are the tenant ontology's document classes, read with one `describe_ontology` call and only for a question that starts a clause with a question word or a list verb: each class's name said as words (`DesignNote` is "design note", plural "design notes"; `Rfc` is "rfc") and each of its `@alt` names ("playbook" for a `Runbook`). A kind resolves to its class and to every class whose name ends with it ("research" is `Research` and `TechnicalResearch`), less a class whose ancestor is also named, and the note ends with a `CLASSES: <names>.` line naming them, to pass to `type` exactly as written. The root `Document` class and the operational types (`SourceStub`, `SyncReport`, `Annotation`) never make a listing. With no confirmed ontology, a failed read, or no document class but the root, kb/ask uses a fixed list instead (RFCs, design notes, designs, implementation plans, research, guides, how-tos, runbooks, specs, proposals, measurements, reports, papers, publications, notes) and the note names no class. A kind narrowed by a topic ("which design notes cover the scheduler", "which plans do we have for speech"), the status of one document, and "what do we hold on X" do not count. A question that is both dated and a listing is one walk with both notes, reported as `CLASSIFIER: dated+listing`. Depth `quick` on a listing shortens each line, never the list. Otherwise it asks whether the question wants an overview. A question asking for *the* overview, guide, walkthrough or full picture of one thing ("give me the full picture of how X is put together") is a known item and goes to `kb/search` with no classifier asked, unless it also asks for the list ("everything", "all", "documents", "what do we hold"); its partial search answer stays with search. Otherwise a Decision call first (0.5 or more: yes; 0.1 or less: no), then `kb/classify` for a score in between or a failed call (run metadata `classifier: agent` asks `kb/classify` only). An overview runs `kb/survey`, anything else `kb/search`; a `COVERAGE: partial` search goes on to `kb/walker` with the ids found, unless the Decision score was 0.1 or less or `kb/classify` said no with no Decision score beside it, and so does a search that did not complete. A question given as untrusted input is passed to each child by reference, still untrusted. A walker's answer (the dated or listing route, or the walk after a search) is returned without its `MOVES:`, `MISSING:` and `COMPOSE:` lines or any sentence about them, the same strip `kb/survey` applies. Optional run metadata `depth` (`quick`, `standard`, `deep`; see [Retrieval depth](#retrieval-depth)) says how much to retrieve. Ends with `ROUTE: … \| SCORE: … \| CLASSIFIER: … \| RUNS: …`, then `\| DEPTH: <depth> (caller\|wording)` when the depth is not standard |
 | `kb/classify` | your `low` tier | none (`tools: []`, `skills: [-*]`, `disable_context: true`) | one question in, `YES` or `NO` out; an unreadable answer counts as an overview |
 | `kb/search` | your `middle` tier | `Document`; tenant scope | flat search with summaries; ends with `COVERAGE: complete` or `COVERAGE: partial` |
@@ -886,6 +888,68 @@ method. `kb/taxonomy-writer` holds no grant at all.
 {"mode": "generate", "scheme": "subjects", "domain": "What the work is about, for finding the documents on one subject."}
 ```
 
+## Building the ontology
+
+`kb/ontologist` reads what the tenant's corpus already uses and the ontology
+does not declare (`Document` op `ontology_signals`): the types on documents,
+chunks and facts that no class declares, and the relation kinds no relation
+declares, counted over every scope of the tenant. Its report says which of
+them a propose pass would suggest as new classes and relation kinds. This
+release runs **report mode only**: it calls no model and writes nothing.
+Propose mode (each candidate judged twice by `kb/ontology-writer`, filed with
+`propose_entity` only when both answers agree) follows a measurement of the
+report on a real tenant.
+
+**What it drops**, each counted under `dropped`:
+
+| reason | a candidate that |
+|---|---|
+| `rejected` | an operator rejected a proposal of the same name |
+| `proposed` | already has an open proposal of the same name |
+| `below_floor` | a type on fewer than 3 rows or in fewer than 2 documents; a kind with fewer than 3 statements that are neither rejected nor expired |
+| `bad_name` | is not one line of at most 80 characters |
+| `cap` | is past the ten largest (at most ten proposals a pass) |
+
+Types the runtime owns (`root`, `section`, `image`, `mermaid`, `canvas`) and
+the operational document types (`SourceStub`, `SyncReport`, `Annotation`) are
+left out by `ontology_signals` itself, as are declared, retired and renamed
+names. A type's populations (document, chunk, fact) count as one candidate;
+its `documents` is the largest population's count, a lower bound.
+
+**What it reports**, per candidate: `section` (`classes` or `relations`), the
+stored `name`, the `signal`, the counts (`rows` and `documents` for a type;
+`statements` and `live` for a kind; `tenant_scope` and `other_scopes`), and
+the `directives` the code would attach. A relation gets a `domain` and a
+`range` only when one pair of end types holds at least 80% of its statements
+and both are classes in force; otherwise none, with `directives_note`
+`no_dominant_pair` or `ends_not_declared`. The 80% is a starting value, not a
+measured one. A class gets no directive. The model never chooses a name or a
+directive.
+
+The report also carries `backlog.open`, the open proposals `kb/ontologist`
+filed (a propose pass stops at 30), `next_pass` (`propose`, `backlog` or
+`nothing`: what a propose pass would do now), `signals` (whether every scope
+was counted, the lists cut at their limit, and the statements of declared
+kinds whose ends the kind does not admit, which this agent does not propose),
+and no title, body or quote.
+
+**Grants.** The signals count every user's scope of the tenant, so the runtime
+answers them only to a code agent granted `statement_methods: [ontology]`
+that holds both tenant scopes and whose access-control rules hide no tenant
+document; otherwise the report is `status: unreadable` with the refusal. The
+bundle ships these grants. `Document` is held in read mode: its code calls
+`describe_ontology`, `ontology_signals`, `query_chunks` and `get_chunk` (to
+count the backlog), and the runtime refuses any write op.
+`kb/ontology-writer` holds no grant at all.
+
+```json
+{"mode": "report"}
+```
+
+Nothing is scheduled. Run it by hand, read the report, and propose what you
+agree with yourself (`propose_entity`, or the Ontology page) until propose
+mode ships.
+
 ## Scope
 
 `scope: user` works with the bundle as shipped. A tenant pass (which L3 needs
@@ -915,4 +979,5 @@ estimate before you spend it. `kb/taxonomist` spends one `kb/taxonomy-writer`
 call (tier `middle`) per request: one in `domains`, `runs_used` x batches + 1
 (review) + 1 (align, when `runs_used` is 2 or more) in `generate` (6 for 379
 briefs at the defaults: two batches, so two runs), capped by `max_calls`; `report`
-prints the plan first. Nothing is scheduled unless you add a schedule.
+prints the plan first. `kb/ontologist` makes no model call in this release.
+Nothing is scheduled unless you add a schedule.

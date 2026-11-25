@@ -80,6 +80,14 @@ fit is filed marked for review. Missing a class, a relation kind, a concept or
 an instance? Suggest it with `propose_entity` (`section: relations`, `schemes`
 or `instances`). An agent never edits the ontology document itself.
 
+To see what the corpus already uses and the ontology does not declare, an
+operator reads `ontology_signals`, or runs the knowledge-base bundle's
+`kb/ontologist` with `{"mode": "report"}`: it ranks the undeclared types and
+relation kinds a propose pass would suggest (at most ten, each on at least 3
+rows in 2 documents, or 3 live statements), drops names already proposed or
+rejected, and computes a relation's `domain` and `range` from its ends. It
+calls no model and writes nothing; the operator proposes what they agree with.
+
 ## Facts and subjects
 
 A fact is one claim, written with `upsert_chunk` under a `natural_key` so a
