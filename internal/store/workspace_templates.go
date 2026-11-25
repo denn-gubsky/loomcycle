@@ -46,6 +46,10 @@ type WorkspaceTemplateStore interface {
 	// WorkspaceTemplateList returns the tenant's templates of one scope (and
 	// scope id), ordered by name.
 	WorkspaceTemplateList(ctx context.Context, tenantID, scope, scopeID string) ([]WorkspaceTemplateRow, error)
+	// WorkspaceTemplateListTenant returns every template of the tenant, both
+	// scopes and every user's, ordered by scope, scope id and name: a tenant
+	// operator's listing (D-P6-48).
+	WorkspaceTemplateListTenant(ctx context.Context, tenantID string) ([]WorkspaceTemplateRow, error)
 	// WorkspaceTemplateCount counts the tenant's templates, both scopes.
 	WorkspaceTemplateCount(ctx context.Context, tenantID string) (int, error)
 	// WorkspaceTemplateDelete removes the row of that id in the tenant;

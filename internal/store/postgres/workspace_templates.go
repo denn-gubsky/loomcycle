@@ -22,6 +22,10 @@ func (s *Store) WorkspaceTemplateList(ctx context.Context, tenantID, scope, scop
 	return sqlshared.WorkspaceTemplateList(ctx, s.shared(), tenantID, scope, scopeID)
 }
 
+func (s *Store) WorkspaceTemplateListTenant(ctx context.Context, tenantID string) ([]store.WorkspaceTemplateRow, error) {
+	return sqlshared.WorkspaceTemplateListTenant(ctx, s.shared(), tenantID)
+}
+
 func (s *Store) WorkspaceTemplateCount(ctx context.Context, tenantID string) (int, error) {
 	return sqlshared.WorkspaceTemplateCount(ctx, s.shared(), tenantID)
 }
