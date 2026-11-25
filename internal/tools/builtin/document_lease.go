@@ -123,6 +123,12 @@ func documentLeaseInput(op string, ctx context.Context, key sqlmem.ScopeKey, in 
 		r := errValidation(op+": name must be 1–64 characters of a-z 0-9 _ . : / -", "")
 		return "", &r
 	}
+	// The runtime holds this one while it carries a class rename (RFC GQ P5.3); a
+	// caller holding it could hold every rename off the tenant.
+	if name == ontologyRenameLeaseName {
+		r := errValidation(op+": the lease "+strconv.Quote(name)+" is reserved for the runtime's class-rename job", "Choose another name.")
+		return "", &r
+	}
 	// The runtime serialises subject bindings on these names; a caller holding one
 	// could stall every bind, clear and erasure in the scope.
 	if strings.HasPrefix(name, principalLeasePrefix) {

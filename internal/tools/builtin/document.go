@@ -124,6 +124,13 @@ type Document struct {
 	// ontologyPlanScopeBudget. A test shortens it.
 	planScopeBudget time.Duration
 
+	// renameJobBudget bounds one slice of the class-rename job; zero is renameJobSlice.
+	// renameJobStop, when set, is asked after each step of the job and stops the slice
+	// when it answers true, as an interruption would. A test sets both; nil in
+	// production.
+	renameJobBudget time.Duration
+	renameJobStop   func(step string) bool
+
 	// beforeMoveWrite, when set, runs in move_chunk after its checks and before its
 	// write. A test moves the chunk there to prove the write is conditional on the
 	// parent the checks read. Nil in production.
@@ -1000,6 +1007,12 @@ var docSchemaDDL = []string{
 	// document_measure.go).
 	measurePointsDDL,
 	measurePointsIndexDDL,
+	// ontology_jobs: the class-rename job's row, and subject_key_aliases: the subject
+	// keys it rewrote, each pointing at the key it became (RFC GQ P5.3,
+	// document_ontology_rename_job.go).
+	ontologyJobsDDL,
+	subjectKeyAliasesDDL,
+	subjectKeyAliasesToDDL,
 }
 
 // maxChunkDepth caps the ancestor walk in move_chunk (cycle detection) so a
@@ -4011,9 +4024,46 @@ func (d *Document) updateChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 	}
 	// RFC GQ P2.4: a rename, retire or re-declaration of an entry something rests on
 	// needs a plan's fingerprint; after the locks, so a locked entry answers entry_locked.
-	if refused := d.ontologyUpdatePlanRefusal(ctx, key, mscope, row, in, present); refused != nil {
+	var rename *renameJobStart
+	if refused := d.ontologyUpdatePlanRefusal(ctx, key, mscope, row, in, present, &rename); refused != nil {
 		return *refused, nil
 	}
+	if rename != nil {
+		// A class rename the rename job carries (document_ontology_rename_job.go): the same
+		// write records the old name, so the rows not yet moved read as the class, and
+		// the job row exists before the write, so an interruption leaves it to resume.
+		defer rename.release(ctx, d, key)
+		body := in.Body
+		if _, has := present["body"]; !has {
+			stored, rerr := d.readBody(ctx, mscope, key, in.ID)
+			if rerr != nil {
+				return errFrom("update_chunk: body: "+rerr.Error(), rerr), nil
+			}
+			body = stored.Body
+		}
+		in.Body = withRenamedFrom(body, rename.oldName)
+		if present == nil {
+			present = map[string]json.RawMessage{}
+		}
+		present["body"] = json.RawMessage(`""`)
+		if err := d.createRenameJob(ctx, key, rename); err != nil {
+			return errFrom("update_chunk: could not record the rename job, so nothing was changed: "+err.Error(), err), nil
+		}
+		// A failed write leaves the job pending: the next rename resumes it when the new
+		// name reached the ontology and abandons it otherwise (continueOntologyJob).
+		res, err := d.writeChunkUpdate(ctx, key, mscope, row, in, present, retype, retiring, retireSubtree, effValid, effInvalid, hasValidAt, hasInvalidAt)
+		if err != nil || res.IsError {
+			return res, err
+		}
+		return withRenameJob(res, d.startRenameJob(ctx, key, mscope, rename)), nil
+	}
+	return d.writeChunkUpdate(ctx, key, mscope, row, in, present, retype, retiring, retireSubtree, effValid, effInvalid, hasValidAt, hasInvalidAt)
+}
+
+// writeChunkUpdate is update_chunk's write, once every check has passed.
+func (d *Document) writeChunkUpdate(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, row chunkRow, in docInput,
+	present map[string]json.RawMessage, retype *subjectRetype, retiring bool, retireSubtree []string,
+	effValid, effInvalid *int64, hasValidAt, hasInvalidAt bool) (tools.Result, error) {
 	// Claim the update ATOMICALLY first: the guarded bump only matches if the
 	// revision is still what we read. If a concurrent writer raced us, it
 	// matches 0 rows → conflict, and we bail BEFORE clobbering the body (the

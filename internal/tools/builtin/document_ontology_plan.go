@@ -220,6 +220,16 @@ func (d *Document) planOntologyAt(ctx context.Context, key sqlmem.ScopeKey, msco
 		}
 		p := planned[next]
 		ch := p.result()
+		if p.in.Op == connector.OntologyPlanRename && p.entry.Kind == planKindClass && (ch.Risk != connector.OntologyRiskNone || !out.Complete) {
+			// Something rests on the class: say what the rename job would do (RFC GQ P5.3).
+			if ch.Job, err = d.renameJobPlan(ctx, key, before, p, ch, out.Complete, out.ScopesSkipped); err != nil {
+				return out, planReadErr(err)
+			}
+			if ch.Job.CollisionsTotal > 0 {
+				ch.Notes = append(ch.Notes[:len(ch.Notes):len(ch.Notes)], renameCollisionCode+": "+strconv.Itoa(ch.Job.CollisionsTotal)+
+					" stored keys would collide under the new name (job.collisions), so the rename would be refused")
+			}
+		}
 		if p.in.Op == connector.OntologyPlanEdit && p.editRenames && p.entry.Kind == planKindClass {
 			// The body's heading renames an untitled class: update_chunk plans that as a
 			// rename, so the plan says whether the rename job would refuse it.
