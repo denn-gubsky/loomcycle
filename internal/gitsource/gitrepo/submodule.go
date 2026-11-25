@@ -228,6 +228,9 @@ func (r *Repo) openSubmodule(p string) (*Repo, error) {
 // The checkout is detached, and refused (ErrWorktreeDirty) when the
 // submodule has local changes. Not recursive.
 func (r *Repo) SubmoduleUpdate(ctx context.Context, name string, n Network) (_ SubmoduleInfo, err error) {
+	if r.workspace {
+		return SubmoduleInfo{}, errWorkspaceNetwork
+	}
 	m, tree, err := r.gitmodules()
 	if err != nil {
 		return SubmoduleInfo{}, err
