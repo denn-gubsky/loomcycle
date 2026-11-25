@@ -4660,7 +4660,16 @@ workspace:
     idle_release_s: 3600   # released after this long without an op; 1 to 2592000
     max_lifetime_s: 86400  # released this long after it opened; 1 to 2592000
     egress: []             # operator routes a session's workspace may use; empty = none
+  expose:                  # RFC GW §5.3: a workspace's server shown to its user as a page
+    enabled: false         # off unless set; an agent also needs workspace.expose: true
+    max_per_workspace: 2   # ports one workspace may expose at once; 1 to 16
+    max_connections: 32    # requests open at once to one workspace's pages, per replica; 1 to 1024
+    idle_timeout_s: 900    # a page no request used for this long closes; 1 to 86400
+    requests_per_second: 20  # requests started per workspace, per replica (burst twice that); 1 to 10000
+    bytes_per_second: 8388608 # answer bytes per workspace, per replica; 1 to 1073741824
 ```
+
+**Pages from a workspace** (RFC GW §5.3, P9). With `workspace.expose.enabled`, an agent whose `workspace` grant holds `expose: true` may publish a port its server listens on (`Workspace op=expose`). The page is served at `/v1/workspaces/exposures/<id>/…` to the workspace's own user alone: the bearer in the `Authorization` header (no cookie, no token in the address) of a principal whose tenant and subject are the workspace's. Every other caller, an admin, the legacy token and open mode included, gets the answer an unknown id gets. Every answer carries `Content-Security-Policy: sandbox allow-scripts allow-forms; connect-src 'self'` and `X-Content-Type-Options: nosniff`; `Set-Cookie` is dropped, `Authorization` and `Cookie` never reach the application, and a redirect is rewritten under the prefix. WebSocket is not served yet. Turning the switch off closes every page at its next request.
 
 **Egress routes** (RFC GW P4). A workspace has no network of its own; it reaches only the routes its agent's `workspace.egress` names, each an upstream URL and optionally a credential the core adds on the way out. A route name is a lowercase letter then up to 62 lowercase letters, digits or `-`. Its `url` is `https`, with no user, query, fragment, percent-encoding, backslash or `.`/`..` segment, written in canonical form (lowercase host, no `:443`, no doubled slash) and ending in `/`. `methods` come from `GET HEAD POST PUT PATCH DELETE OPTIONS`, each once. `credential` is a `"$cred:<name>"` reference, resolved for the run; `auth` needs one, and `header` names the header with `auth: header` (not a hop-by-hop header, `Host`, `Cookie`, `Forwarded`, `X-Forwarded-*`, `Proxy-*` or `Content-Length`). The credential must carry `allowed_urls` covering the route's URL; credentials live in the store, so that is checked when the route is used, not at load. `tenant_hosts` lists bare host names and needs `tenant_routes: true`. The embedded `workspace` preset (`LOOMCYCLE_PRESETS=…,workspace`) declares `pypi`, `pypi-files` and `npm`, read-only and without a credential, and turns nothing else on. An agent naming a route that is no operator route while `tenant_routes` is off is warned about at startup.
 

@@ -138,7 +138,7 @@ agents:
       engine: host               # least isolating engine it accepts; unset = any
 ```
 
-`exec`, `run_cell`, `reset_kernel`, `start`, `stop`, `logs` and `request` need `exec`; `write` and `edit` need `write`; `read`, `view`, `glob`, `grep`, `list` and `status` need `read`; `open` needs `open: true`. A sub-agent holds only what both it and its parent hold, before and after a resume. The grant is not per-run overridable, and an agent a tenant member authors may not set it. A grant on an agent without the tool, or while `workspace.mode` is off, does nothing; the boot log and `loomcycle doctor` name such agents.
+`exec`, `run_cell`, `reset_kernel`, `start`, `stop`, `logs` and `request` need `exec`; `write` and `edit` need `write`; `read`, `view`, `glob`, `grep`, `list` and `status` need `read`; `open` needs `open: true`; `expose` and `unexpose` need `expose: true`. A sub-agent holds only what both it and its parent hold, before and after a resume. The grant is not per-run overridable, and an agent a tenant member authors may not set it. A grant on an agent without the tool, or while `workspace.mode` is off, does nothing; the boot log and `loomcycle doctor` name such agents.
 
 ## The tool
 
@@ -159,6 +159,7 @@ One tool, `Workspace`, with an `op`:
 | `stop` | end a server and what it started | `name`, `server` |
 | `logs` | a server's latest output, or the list of servers | `name`, `server`, `tail_bytes` |
 | `request` | send one HTTP request to a port a running server declared (see Sending a request to a server) | `name`, `port`, `method`, `path`, `headers`, `body` |
+| `expose`, `unexpose` | show a server's port to the run's user as a page, and withdraw it (see Showing a page to the user) | `name`, `port`, `title`, `kind` |
 | `read`, `write`, `edit`, `glob`, `grep` | the file tools' operations, relative to the workspace | as the Read, Write, Edit, Glob and Grep tools, without `volume` |
 
 `..`, an absolute path elsewhere and a symlink out of the workspace are refused, on the worker. An argument an op does not take is refused.
@@ -271,6 +272,24 @@ The read returns `144`. When the run ends, the workspace is deleted. A command t
 - **What comes back.** `status`, `headers` (several values joined by `, `), and `body` when it is text, otherwise `body_base64`; a body over 1 MiB is cut there with `truncated: true`. A redirect is returned, not followed. The answer is untrusted tool output.
 - **Time.** The call waits as long as a command does by default (`workspace.exec.default_timeout_s`), then answers `timeout`.
 - **How it travels.** The core opens a tunnel down one of the worker's idle op streams, carrying bytes both ways at once. On the `container` engine the worker starts a small relay inside the session (`python3`, which the session image must have) that connects to `127.0.0.1:<port>` there: the session keeps the network it had (none, unless egress gave it its own) and the worker never dials into it. On the `host` engine the worker dials `127.0.0.1:<port>` itself, which is a check, not isolation: every workspace of a host worker shares one loopback, so a port two workspaces' servers both declare is refused.
+
+## Showing a page to the user
+
+`expose` publishes a port a server of the workspace listens on to the run's user: loomboard shows it in the chat as a page or a panel (RFC GW §5.3, D21–D24). It needs the agent's `workspace.expose: true` grant and the operator's `workspace.expose.enabled`; both are off unless set, since a page is model-written active content put in front of a person.
+
+```json
+{"op": "expose", "name": "site", "port": 8000, "title": "Sales by region"}
+```
+```json
+{"name": "site", "exposure_id": "4f1c0a9e2b7d3c5e6a8b9d0f", "port": 8000, "title": "Sales by region", "kind": "page", "base_path": "/v1/workspaces/exposures/4f1c0a9e2b7d3c5e6a8b9d0f/"}
+```
+
+- **Who opens it.** `/v1/workspaces/exposures/<id>/…` (every method) serves it to one person: a bearer in the `Authorization` header whose tenant and subject are the workspace's tenant and user. Anyone else, an admin, the legacy token, open mode and a token limited to certain agents included, gets the answer an unknown id gets, so an id cannot be probed. A Web UI cookie, a token in the address and a request with no `Authorization` header are refused, so a browser sent to the address runs nothing.
+- **What reaches the application.** The prefix is removed (the application receives `/…`); `Host` and `Origin` arrive as the client sent them; `Authorization`, `Proxy-Authorization` and `Cookie` are removed. Each request travels down its own tunnel to the worker, which reaches the port only while a running server of the workspace declared it and, on the `host` engine, its own processes listen on it; anything else is a `502`.
+- **What reaches the client.** Every answer, errors included, carries `Content-Security-Policy: sandbox allow-scripts allow-forms; connect-src 'self'` (in place of the application's own) and `X-Content-Type-Options: nosniff`; `Set-Cookie` is dropped; a redirect to `/x` is rewritten under the prefix. Links inside a page are the application's: make them relative, or start them with `base_path`.
+- **When it closes.** With `unexpose {name, port}`, with the workspace's release and the owning run's end, when no request used it for `workspace.expose.idle_timeout_s` (default 15 minutes), and, all at once, when the operator turns `workspace.expose` off. A server that stops leaves the page answering `502` until a server listens on the port again.
+- **Limits.** Per workspace: `max_per_workspace` ports (default 2), `max_connections` requests open at once (32), `requests_per_second` (20, burst twice that) and `bytes_per_second` (8 MiB), the last three kept per replica. Over a bound the route answers `429`.
+- **Not yet.** WebSocket (an upgrade is answered `501`), the `surface` event that tells loomboard of a page, `await`, and a peer's `connect` arrive in later P9 PRs. `expose` is a run's: a workspace opened over the MCP server and a shared one take none.
 
 ## Looking at a picture
 
