@@ -33,6 +33,9 @@ relative (`data.json`, not `/data.json`) or start them with `base_path`.
 - It runs scripts and forms in a sandbox: it cannot read the chat's storage,
   fetch another site, open popups or navigate away. No cookie reaches it or
   leaves it; keep state in the page or its address.
+- It may open a WebSocket to your application on its own address: messages
+  cross both ways, at most 16 MiB each. The socket closes after 15 minutes
+  with no message, after 4 hours, and when the page closes.
 - Nothing a user does in the page enters your run. Read what happened with
   `request` to your own application, or the files it writes.
 

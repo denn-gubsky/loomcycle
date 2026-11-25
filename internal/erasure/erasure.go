@@ -99,6 +99,12 @@ type Service struct {
 	BoundSubjects      func(ctx context.Context, tenant, subject string) ([]BoundSubject, error)
 	ClearBoundSubjects func(ctx context.Context, tenant, subject string) ([]BoundSubject, error)
 	AnnounceErased     func(ctx context.Context, tenant string, subjects []BoundSubject) string
+	// TemplateArchive returns where the archive of workspace template id is
+	// kept (RFC GW §5.5). The transport owns it: the archive folder and its
+	// naming are the workspace layer's, above this one. nil: the rows of the
+	// subject's user templates are still deleted, their archives are not,
+	// and the result says so.
+	TemplateArchive func(id string) (string, error)
 }
 
 // BoundSubject is one tenant subject bound to the erased principal. An erasure
@@ -571,6 +577,17 @@ func (s *Service) Report(ctx context.Context, tenant, subject string) (Report, e
 	} else {
 		rep.Tier1.set("path_entries", int64(len(rows)))
 	}
+	var keptTemplates int
+	if rows, err := s.userTemplates(ctx, tenant, subject); err != nil {
+		fail(templatesPlane, err)
+	} else {
+		rep.Tier1.set(templatesPlane, int64(len(rows)))
+	}
+	if n, err := s.tenantTemplatesBy(ctx, tenant, subject); err != nil {
+		fail(templatesPlane, err)
+	} else {
+		keptTemplates = n
+	}
 
 	// ---- tier 2 ----
 	if counts, err := s.Store.AuthSubjectCount(ctx, tenant, subject); err != nil {
@@ -667,6 +684,9 @@ func (s *Service) Report(ctx context.Context, tenant, subject string) (Report, e
 		"counts are live rows: expired and superseded rows are excluded, because they are invisible to every read and counting them would overstate what is held.",
 	}
 	rep.Notes = append(rep.Notes, aclNotes...)
+	if keptTemplates > 0 {
+		rep.Notes = append(rep.Notes, keptTenantTemplates(keptTemplates))
+	}
 	if line, err := s.telemetryContentResidue(ctx, tenant); err != nil {
 		fail("tenant_telemetry_content", err)
 	} else if line != "" {
@@ -737,7 +757,7 @@ func (s *Service) Execute(ctx context.Context, req ExecuteRequest) (Result, erro
 		Access: emptyAccess(), BoundSubjects: []BoundSubject{},
 	}
 	for _, plane := range append([]string{
-		"chats", "memory_rows", "path_entries",
+		"chats", "memory_rows", "path_entries", templatesPlane,
 		"acl_memberships", "acl_bindings", "acl_token_bindings",
 		"credentials", "token_limits", "usage_carry", "interrupts",
 	}, store.AuthSubjectFamilies()...) {
@@ -961,6 +981,8 @@ func (s *Service) Execute(ctx context.Context, req ExecuteRequest) (Result, erro
 			}
 		}
 	}
+
+	s.eraseTemplates(ctx, tenant, subject, req.DryRun, &res, fail)
 
 	// ---- chats LAST ----
 	if req.DryRun {

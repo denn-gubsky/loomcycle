@@ -429,6 +429,12 @@ func (s *Server) authenticateRequest(r *http.Request) (auth.Principal, *uiAuth, 
 			p, ok := s.redeemClientToolsTicket(r, t)
 			return p, nil, ok
 		}
+		// A page socket's ticket (RFC GW P9, D-P9-42 as ruled), in every
+		// mode, as the client-tools ticket.
+		if t, id, ok := exposureTicketOf(r); ok {
+			p, ok := s.redeemExposureTicket(r, t, id)
+			return p, nil, ok
+		}
 	}
 	if bearer, ok := extractBearer(r, strict); ok {
 		p, ok := s.resolvePrincipal(ctx, bearer)
@@ -465,6 +471,9 @@ func (s *Server) credentialPresented(r *http.Request) bool {
 		return true
 	}
 	if _, ok := clientToolsTicketOf(r); ok {
+		return true
+	}
+	if _, _, ok := exposureTicketOf(r); ok {
 		return true
 	}
 	if c, err := r.Cookie(s.sessionCookieName(r)); err == nil && c.Value != "" {
@@ -504,11 +513,12 @@ func extractBearer(r *http.Request, strict bool) (string, bool) {
 	// WebSocket) carry the bearer as a Sec-WebSocket-Protocol entry of the form
 	// "bearer.<token>" (RFC BC). The app subprotocol is negotiated separately in
 	// the /v1/client-tools handler; this entry is never echoed back. Read only on
-	// a WebSocket upgrade to that route (RFC ES #5): elsewhere the header would be
-	// a second credential channel that proxies and logs do not treat as one.
-	// Strict mode does not read it (RFC FA §4): a browser there authenticates
-	// by its session.
-	if strict || !isClientToolsUpgrade(r) {
+	// a WebSocket upgrade to that route, or to a workspace's exposed page (RFC
+	// GW §5.3, which names this same channel) (RFC ES #5): elsewhere the header
+	// would be a second credential channel that proxies and logs do not treat
+	// as one. Strict mode does not read it (RFC FA §4): a browser there
+	// authenticates by its session.
+	if strict || !(isClientToolsUpgrade(r) || isExposureSocketUpgrade(r)) {
 		return "", false
 	}
 	if protos := r.Header.Get("Sec-WebSocket-Protocol"); protos != "" {

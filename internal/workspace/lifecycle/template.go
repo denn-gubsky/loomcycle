@@ -75,13 +75,20 @@ func validTemplateID(id string) bool {
 func (m *Manager) SetTemplateDir(dir string) { m.templateDir = dir }
 
 func (m *Manager) templatePath(id string) (string, error) {
-	if m.templateDir == "" {
+	return TemplateArchivePath(m.templateDir, id)
+}
+
+// TemplateArchivePath is where the archive of template id is kept in dir:
+// what SaveTemplate writes and a subject's erasure removes. id must be one
+// newTemplateID makes, so the path never leaves dir.
+func TemplateArchivePath(dir, id string) (string, error) {
+	if dir == "" {
 		return "", ErrTemplatesOff
 	}
 	if !validTemplateID(id) {
 		return "", fmt.Errorf("template %q: not a template id", id)
 	}
-	return filepath.Join(m.templateDir, id+".tar.gz"), nil
+	return filepath.Join(dir, id+".tar.gz"), nil
 }
 
 func (m *Manager) templateMaxBytes() int64 {

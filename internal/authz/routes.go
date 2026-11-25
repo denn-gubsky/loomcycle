@@ -577,4 +577,6 @@ var httpRoutes = []Route{
 	// Off the run plane, so a token limited to certain agents reaches no
 	// page (P9 plan D-P9-26).
 	row("/v1/workspaces/exposures/{id}/{path...}", ScopeRunsRead, false, q("read", "run", "*")),
+	// Its socket's one-time ticket (D-P9-42 as ruled): gated as the page.
+	row("POST /v1/workspaces/exposure-tickets/{id}", ScopeRunsRead, false, q("read", "run", "*")),
 }

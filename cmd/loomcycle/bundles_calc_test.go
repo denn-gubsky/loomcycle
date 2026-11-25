@@ -21,6 +21,7 @@ var bundledCalc = map[string]map[string]bool{
 	"knowledge-base": {
 		"kb/linker": false, "kb/verdict": false, "kb/judge": false, "kb/judge-verdict": false,
 		"kb/annotator": false, "kb/annotate": false, "kb/taxonomist": false, "kb/taxonomy-writer": false,
+		"kb/ontologist": false, "kb/ontology-writer": false,
 		"kb/classify": false, "kb/screen": false,
 		"kb/ask": true, "kb/survey": true, "kb/search": true, "kb/walker": true,
 	},
