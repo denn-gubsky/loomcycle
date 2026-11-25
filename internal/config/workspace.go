@@ -70,6 +70,18 @@ type WorkspaceConfig struct {
 	MCP WorkspaceMCPConfig `yaml:"mcp,omitempty"`
 	// Checkpoint bounds a workspace's checkpoints (RFC GW §5.4).
 	Checkpoint WorkspaceCheckpointConfig `yaml:"checkpoint,omitempty"`
+	// Template bounds workspace templates (RFC GW §5.5).
+	Template WorkspaceTemplateConfig `yaml:"template,omitempty"`
+}
+
+// WorkspaceTemplateConfig is `workspace.template`: the size of one template's
+// archive and how many a tenant holds (RFC GW §5.5).
+type WorkspaceTemplateConfig struct {
+	// MaxMB bounds one template's archive, in MiB. Default 1024.
+	MaxMB int64 `yaml:"max_mb,omitempty"`
+	// MaxPerTenant bounds the templates a tenant holds, user and tenant
+	// ones together. Default 20.
+	MaxPerTenant int `yaml:"max_per_tenant,omitempty"`
 }
 
 // WorkspaceCheckpointConfig is `workspace.checkpoint`. A checkpoint's size
@@ -174,6 +186,12 @@ const (
 	DefaultWorkspaceCheckoutBytes  = 256 << 20
 	DefaultWorkspaceKernelGraceS   = 5
 	DefaultWorkspaceCheckpoints    = 8
+	DefaultWorkspaceTemplateMaxMB  = 1024
+	DefaultWorkspaceTemplates      = 20
+	// maxWorkspaceTemplateMB bounds workspace.template.max_mb (64 GiB), and
+	// maxWorkspaceTemplates workspace.template.max_per_tenant.
+	maxWorkspaceTemplateMB = 64 << 10
+	maxWorkspaceTemplates  = 1000
 	// maxWorkspaceCheckpoints bounds workspace.checkpoint.max_per_workspace.
 	maxWorkspaceCheckpoints = 100
 	// maxWorkspaceKernelGraceS bounds workspace.kernel.interrupt_grace_seconds.
@@ -232,6 +250,12 @@ func (w WorkspaceConfig) Resolved() WorkspaceConfig {
 	}
 	if w.Checkpoint.MaxPerWorkspace == 0 {
 		w.Checkpoint.MaxPerWorkspace = DefaultWorkspaceCheckpoints
+	}
+	if w.Template.MaxMB == 0 {
+		w.Template.MaxMB = DefaultWorkspaceTemplateMaxMB
+	}
+	if w.Template.MaxPerTenant == 0 {
+		w.Template.MaxPerTenant = DefaultWorkspaceTemplates
 	}
 	w.Egress = w.Egress.Resolved()
 	if len(w.MCP.Ops) == 0 {
@@ -309,6 +333,12 @@ func (c *Config) WorkspaceLocalRoot() string {
 	return filepath.Join(c.Env.DataDir, "workspaces")
 }
 
+// WorkspaceTemplateDir is where the core keeps template archives (RFC GW
+// §5.5): a directory of the data dir.
+func (c *Config) WorkspaceTemplateDir() string {
+	return filepath.Join(c.Env.DataDir, "workspace-templates")
+}
+
 // validateWorkspace refuses a mode it does not know, a remote mode with no
 // worker endpoint, a local block for a mode that starts no local worker, and
 // values out of range. The endpoint's own values are validateConversion's,
@@ -353,6 +383,12 @@ func validateWorkspace(c *Config) error {
 	}
 	if c := w.Checkpoint.MaxPerWorkspace; c < 0 || c > maxWorkspaceCheckpoints {
 		return fmt.Errorf("workspace.checkpoint.max_per_workspace: %d is out of range (1 to %d)", c, maxWorkspaceCheckpoints)
+	}
+	if m := w.Template.MaxMB; m < 0 || m > maxWorkspaceTemplateMB {
+		return fmt.Errorf("workspace.template.max_mb: %d is out of range (1 to %d)", m, maxWorkspaceTemplateMB)
+	}
+	if c := w.Template.MaxPerTenant; c < 0 || c > maxWorkspaceTemplates {
+		return fmt.Errorf("workspace.template.max_per_tenant: %d is out of range (1 to %d)", c, maxWorkspaceTemplates)
 	}
 	for _, op := range w.MCP.Ops {
 		switch op {
@@ -425,6 +461,9 @@ func (w *WorkspaceConfig) UnmarshalYAML(n *yaml.Node) error {
 		return err
 	}
 	if err := strictKeys(valueOf(n, "checkpoint"), "workspace.checkpoint", nil, reflect.TypeOf(WorkspaceCheckpointConfig{})); err != nil {
+		return err
+	}
+	if err := strictKeys(valueOf(n, "template"), "workspace.template", nil, reflect.TypeOf(WorkspaceTemplateConfig{})); err != nil {
 		return err
 	}
 	if err := strictKeys(valueOf(n, "mcp"), "workspace.mcp", nil, reflect.TypeOf(WorkspaceMCPConfig{})); err != nil {

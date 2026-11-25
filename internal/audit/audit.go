@@ -289,6 +289,18 @@ type Event struct {
 	// WorkspaceOp is a use's operation and tool, e.g. "read via File".
 	WorkspaceOp string `json:"workspace_op,omitempty"`
 
+	// --- Workspace templates (RFC GW P6; Action = "workspace_template_save"
+	// | "workspace_template_delete") ---
+	//
+	// A template saved from a checkpoint, or deleted: its name in TargetName
+	// (`workspace_template:<name>`), its tenant in TargetTenant, the run in
+	// WorkspaceOwnerRunID/AgentID, for a save the workspace it was made from
+	// in WorkspaceID. Never a file's content.
+	WorkspaceTemplateID     string `json:"workspace_template_id,omitempty"`
+	WorkspaceTemplateScope  string `json:"workspace_template_scope,omitempty"`
+	WorkspaceTemplateDigest string `json:"workspace_template_digest,omitempty"`
+	WorkspaceTemplateBytes  int64  `json:"workspace_template_bytes,omitempty"`
+
 	// --- Workspace egress (RFC GW P4; Action = "workspace_egress") ---
 	//
 	// One request a workspace's session sent out through a credentialed or

@@ -31,6 +31,7 @@ import (
 // for the run-end release's pause check and a share's runs.
 type Store interface {
 	store.WorkspaceStore
+	store.WorkspaceTemplateStore
 	GetRun(ctx context.Context, runID string) (store.Run, error)
 	// GetRunByAgentID resolves the run a share names (RFC GW P8).
 	GetRunByAgentID(ctx context.Context, agentID string) (store.Run, error)
@@ -60,6 +61,12 @@ type Limits struct {
 	// (workspace.checkpoint.max_per_workspace); zero is the worker's
 	// default, workspace.DefaultMaxCheckpoints.
 	MaxCheckpoints int
+	// TemplateMaxBytes bounds one template's archive
+	// (workspace.template.max_mb), MaxTemplates a tenant's templates
+	// (workspace.template.max_per_tenant); zero is DefaultTemplateMaxBytes
+	// and DefaultMaxTemplates.
+	TemplateMaxBytes int64
+	MaxTemplates     int
 	// ConvertQuarantine is how long a file that crashed a worker's
 	// conversion child is refused for its workspace
 	// (conversion.quarantine_ttl_s); zero is DefaultConvertQuarantine.
@@ -107,6 +114,9 @@ type Manager struct {
 	// name: set only by this package's tests, whose upstreams cannot listen
 	// on 443.
 	tenantTestPort string
+	// templateDir is where template archives are kept (SetTemplateDir);
+	// empty keeps none.
+	templateDir string
 }
 
 // New builds a manager. A zero MaxPerRun is 1: a run that may open
@@ -239,6 +249,9 @@ type OpenRequest struct {
 	// recorded on its row (RFC GW §6.3). The caller has checked them
 	// against the run's grant; none is no way out.
 	Egress []string
+	// Template, when set, is the template the workspace starts as a copy
+	// of (RFC GW §5.5), found by FindTemplate. Toolchains are then its.
+	Template *store.WorkspaceTemplateRow
 }
 
 // Open opens a workspace named req.Name for the run. A ready workspace of
@@ -257,6 +270,14 @@ func (m *Manager) Open(ctx context.Context, o Owner, req OpenRequest) (store.Wor
 		return store.WorkspaceRow{}, fmt.Errorf("%w: %q is %s", ErrNotReady, req.Name, r.State)
 	} else if !errors.Is(err, ErrNotFound) {
 		return store.WorkspaceRow{}, err
+	}
+	if req.Template != nil {
+		if req.Template.TenantID != o.TenantID {
+			return store.WorkspaceRow{}, ErrTemplateNotFound
+		}
+		// A template is refused on a worker without its toolchains
+		// (RFC GW §5.5).
+		req.Toolchains = req.Template.Toolchains
 	}
 	cands, err := m.disp.Place(ctx, dispatch.PlaceRequest{TenantID: o.TenantID, UserID: o.UserID, Toolchains: req.Toolchains, Engine: req.Engine})
 	if err != nil {
@@ -286,6 +307,9 @@ func (m *Manager) Open(ctx context.Context, o Owner, req OpenRequest) (store.Wor
 // be refused, never both admitted).
 func (m *Manager) openOn(ctx context.Context, o Owner, req OpenRequest, workerID, engine string) (store.WorkspaceRow, error) {
 	return m.makeOn(ctx, o, req.Name, req.Egress, workerID, engine, func(id string) error {
+		if req.Template != nil {
+			return m.openFromTemplate(ctx, o, *req.Template, workerID, id)
+		}
 		return m.disp.OpenWith(ctx, o.TenantID, workerID, id, workspace.OpenArgs{DiskQuotaBytes: m.limits.DiskQuotaBytes})
 	})
 }
