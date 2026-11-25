@@ -13,6 +13,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/credential"
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/workspace"
 	"github.com/denn-gubsky/loomcycle/internal/workspace/egress"
 )
 
@@ -118,6 +119,13 @@ func (m *Manager) Egress(ctx context.Context, row store.WorkspaceRow, req egress
 			return nil, &egress.Refusal{Status: http.StatusForbidden, Reason: "the workspace's run cannot be read to resolve a route's credential; try again"}
 		}
 		g.AgentName = run.Agent
+	}
+	if row.Engine == workspace.EngineHost {
+		// The host engine's session reaches its routes at a loopback port
+		// and secret of its worker's making (engine.Host), which the core
+		// does not know: links it rewrites and redirects it relays point at
+		// the route relative to the page the session asked.
+		g.RelativeBase = true
 	}
 	return m.proxy.Do(ctx, g, req)
 }

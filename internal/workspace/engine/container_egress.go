@@ -59,16 +59,7 @@ const (
 // hold one of them is refused by the core with the route's name.
 func egressSessionArgs() []string {
 	a := []string{"--dns", "127.0.0.1"}
-	for _, kv := range []string{
-		"LOOMCYCLE_EGRESS=http://" + EgressHost + "/",
-		"PIP_INDEX_URL=http://" + EgressHost + "/pypi/simple/",
-		"PIP_TRUSTED_HOST=" + EgressHost,
-		"npm_config_registry=http://" + EgressHost + "/npm/",
-		// Else every install also POSTs to the audit endpoint (spike C).
-		"npm_config_audit=false",
-		"npm_config_fund=false",
-		"npm_config_update_notifier=false",
-	} {
+	for _, kv := range egressEnv("http://"+EgressHost+"/", EgressHost) {
 		a = append(a, "--env", kv)
 	}
 	return a

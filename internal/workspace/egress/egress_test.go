@@ -671,3 +671,43 @@ func TestProxy_PassesAnNpmScopedNameOnlyInItsOwnForm(t *testing.T) {
 		t.Fatalf("a refused path reached upstream")
 	}
 }
+
+// A grant with RelativeBase gets its rewritten links and relayed redirects
+// relative to the page asked for: a host-engine workspace reaches its routes
+// at http://127.0.0.1:<port>/<secret>/, an address the core does not know,
+// so a link climbs from the page back to that base and down into the other
+// route. The climb counts the page's own segments under the base: the route
+// and each "/" of its path (an npm scope's %2f is no separator).
+func TestProxy_ARelativeBaseGrantGetsLinksAndRedirectsRelativeToThePage(t *testing.T) {
+	p, _ := pypiProxy(t)
+	g := grantOf(Route{Name: "pypi", URL: "https://pypi.org/"}, Route{Name: "pypi-files", URL: "https://files.pythonhosted.org/"})
+	g.RelativeBase = true
+	resp, err := do(t, p, g, Request{Route: "pypi", Path: "simple/pkg/?format=json"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body, want := readAll(t, resp), `<a href="../../../pypi-files/packages/ab/cd/pkg-1.0.tar.gz#sha256=0123">pkg-1.0.tar.gz</a>`; body != want {
+		t.Fatalf("body = %q, want %q", body, want)
+	}
+
+	other := newUpstream(t, nil)
+	up := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, other.routeURL("dl/pkg.tgz?sig=1"), http.StatusFound)
+	})
+	rp, _ := newTestProxy(t, nil, nil)
+	rg := grantOf(Route{Name: "a", URL: up.routeURL("")}, Route{Name: "files", URL: other.routeURL("dl/")})
+	rg.RelativeBase = true
+	for path, want := range map[string]string{
+		"x":            "../files/pkg.tgz?sig=1",
+		"@scope%2fpkg": "../files/pkg.tgz?sig=1",
+		"a/b/c":        "../../../files/pkg.tgz?sig=1",
+	} {
+		resp, err = do(t, rp, rg, Request{Route: "a", Path: path})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := resp.Header.Get("Location"); got != want {
+			t.Errorf("from %s: Location = %q, want %q", path, got, want)
+		}
+	}
+}

@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -80,6 +81,14 @@ type Options struct {
 	// Container configures the container engine. The worker fills its
 	// user (its own uid:gid), worker key and commands.
 	Container engine.ContainerOptions
+	// HostEgress gives each workspace of a host worker a loopback port its
+	// commands reach their routes at (LOOMCYCLE_WORKSPACE_HOST_EGRESS; RFC
+	// GW P4 plan O13). Not a boundary: the port takes a per-workspace
+	// secret, which this user's own processes can read (engine.Host).
+	HostEgress bool
+	// hostEgress is the handler a host workspace's port serves, set by
+	// wireEgress.
+	hostEgress func(workspace string) http.Handler
 	// Capacity is the workspaces held at most; default DefaultCapacity.
 	Capacity int
 	// IdleStreams is the idle Op streams kept open; default 16, at most 32.
@@ -241,7 +250,7 @@ func newEngine(ctx context.Context, opt *Options, log *slog.Logger) (engine.Engi
 		if opt.Toolchains == nil {
 			opt.Toolchains = DetectToolchains()
 		}
-		return &engine.Host{Commands: opt.Commands}, nil
+		return &engine.Host{Commands: opt.Commands, Egress: opt.hostEgress}, nil
 	}
 	co := opt.Container
 	// The session runs as this process's user: files the worker writes and

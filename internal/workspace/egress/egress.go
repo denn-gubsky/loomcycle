@@ -75,6 +75,11 @@ type Grant struct {
 	RunID       string
 	WorkspaceID string
 	Routes      []Route
+	// RelativeBase makes rewritten links and relayed redirects relative to
+	// the page asked for, in place of the proxy's base: for a workspace that
+	// reaches its routes at an address the core does not know (the host
+	// engine's loopback port and secret).
+	RelativeBase bool
 }
 
 // Request is the request the worker described, after the route's name.
@@ -301,7 +306,8 @@ func (p *Proxy) do(ctx context.Context, g Grant, rt Route, r Request, a *auditor
 		req.ContentLength = r.ContentLength
 	}
 	req.Header = requestHeader(r.Header, rt)
-	rewrite := p.rewriteFor(g, rt)
+	base := p.baseFor(g, r.Path)
+	rewrite := p.rewriteFor(g, rt, base)
 	if rewrite != nil {
 		// Let the transport ask for and undo compression, so the body
 		// the rewrite reads is plain text.
@@ -316,7 +322,7 @@ func (p *Proxy) do(ctx context.Context, g Grant, rt Route, r Request, a *auditor
 		return nil, transportError(rt, err)
 	}
 	if loc := resp.Header.Get("Location"); isRedirect(resp.StatusCode) && loc != "" {
-		to, ok := p.redirect(g, req.URL, loc)
+		to, ok := p.redirect(g, req.URL, loc, base)
 		if !ok {
 			_ = resp.Body.Close()
 			return nil, refuse(http.StatusBadGateway, "route %q redirected to %s, which is not under a route this workspace holds", rt.Name, hostOf(req.URL, loc))
@@ -387,6 +393,19 @@ func transportError(rt Route, err error) error {
 	return fmt.Errorf("egress: route %q: upstream request failed: %s", rt.Name, msg)
 }
 
+// baseFor is where a link in the answer to a request for path (under its
+// route) reaches the routes: the proxy's base, or for a RelativeBase grant
+// the climb from the page back to the base, one "../" for the route's
+// segment and one for each "/" of the path before its query. A "%2f" is no
+// separator to the session's client, so it is not counted either.
+func (p *Proxy) baseFor(g Grant, path string) string {
+	if !g.RelativeBase {
+		return p.base
+	}
+	path, _, _ = strings.Cut(path, "?")
+	return strings.Repeat("../", strings.Count(path, "/")+1)
+}
+
 func findRoute(routes []Route, name string) (Route, bool) {
 	for _, r := range routes {
 		if r.Name == name {
@@ -407,7 +426,7 @@ func isRedirect(status int) bool {
 // redirect maps a redirect's Location onto a route the workspace holds: the
 // session's client then follows it through the proxy, with that route's own
 // credential or none. ok is false for a target under no held route.
-func (p *Proxy) redirect(g Grant, from *url.URL, loc string) (string, bool) {
+func (p *Proxy) redirect(g Grant, from *url.URL, loc, linkBase string) (string, bool) {
 	to, err := from.Parse(loc)
 	if err != nil || to.Scheme != "https" || to.User != nil {
 		return "", false
@@ -424,7 +443,7 @@ func (p *Proxy) redirect(g Grant, from *url.URL, loc string) (string, bool) {
 		if _, err := joinPath(base, rest); err != nil {
 			continue
 		}
-		out := p.base + rt.Name + "/" + rest
+		out := linkBase + rt.Name + "/" + rest
 		if to.RawQuery != "" {
 			out += "?" + to.RawQuery
 		}
