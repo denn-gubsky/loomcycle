@@ -299,3 +299,20 @@ func TestUpdates_RemovalClosesTheAddress(t *testing.T) {
 		t.Errorf("after removal = %+v, want nothing queued", a)
 	}
 }
+
+// Parking a workspace (RFC GW P12) ends its servers, so it closes their
+// update address too and drops what waited, as removal does.
+func TestUpdates_ParkClosesTheAddress(t *testing.T) {
+	w, _ := newTestWorker(t)
+	t.Cleanup(w.servers.Close)
+	u, _ := hostUpdateURL(t, w, "ws1")
+	post(t, u.String(), []byte("before"))
+	mustOK(t, park(w, "ws1"), "park")
+	if resp, err := http.Post(u.String(), "text/plain", strings.NewReader("after")); err == nil {
+		resp.Body.Close()
+		t.Errorf("a post after park = %d, want the address closed", resp.StatusCode)
+	}
+	if a := awaitUpdate(t, w, "ws1", 100*time.Millisecond); !a.TimedOut {
+		t.Errorf("after park = %+v, want nothing queued", a)
+	}
+}
