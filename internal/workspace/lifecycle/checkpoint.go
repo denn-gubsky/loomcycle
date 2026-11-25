@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/denn-gubsky/loomcycle/internal/audit"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/workspace"
 	"github.com/denn-gubsky/loomcycle/internal/workspace/dispatch"
@@ -91,13 +92,20 @@ func (m *Manager) Fork(ctx context.Context, o Owner, src store.WorkspaceRow, as,
 	}
 	// A fork may send requests out through the routes its source may: the
 	// same owner opened the source within its grant (RFC GW §6.3).
-	return m.fork(ctx, o, src, as, checkpoint, src.Egress)
+	return m.fork(ctx, o, src, as, checkpoint, src.Egress, forkInRun)
 }
 
+// The paths a fork is made by, as its audit line names them.
+const (
+	forkInRun   = "fork"
+	forkAtSpawn = "fork at spawn"
+)
+
 // fork makes dst's workspace as, a copy of src (a checkpoint of it, or its
-// present files), with egress for its routes. The caller has checked that
-// src is the source owner's and that dst may hold the copy.
-func (m *Manager) fork(ctx context.Context, dst Owner, src store.WorkspaceRow, as, checkpoint string, egress []string) (store.WorkspaceRow, workspace.ForkAnswer, error) {
+// present files), with egress for its routes, and writes its audit line
+// (D-P6-22) once the copy is ready. The caller has checked that src is the
+// source owner's and that dst may hold the copy; path names the caller.
+func (m *Manager) fork(ctx context.Context, dst Owner, src store.WorkspaceRow, as, checkpoint string, egress []string, path string) (store.WorkspaceRow, workspace.ForkAnswer, error) {
 	var out workspace.ForkAnswer
 	if src.State != store.WorkspaceReady {
 		return store.WorkspaceRow{}, out, fmt.Errorf("%w: %q is %s", ErrNotReady, src.Name, src.State)
@@ -124,5 +132,21 @@ func (m *Manager) fork(ctx context.Context, dst Owner, src store.WorkspaceRow, a
 	if err != nil {
 		return store.WorkspaceRow{}, workspace.ForkAnswer{}, err
 	}
+	m.recordFork(src, row, path)
 	return row, out, nil
+}
+
+// recordFork writes the audit line of one fork made: the source workspace
+// and its run, the copy and the run that owns it. Never a file's content.
+func (m *Manager) recordFork(src, fork store.WorkspaceRow, path string) {
+	if m.audit == nil {
+		return
+	}
+	_ = m.audit.Record(audit.Event{
+		Action: "workspace_fork", ActorTenant: src.TenantID, ActorSubject: src.UserID,
+		TargetTenant: src.TenantID, TargetName: "workspace:" + src.Name,
+		WorkspaceID: src.ID, WorkspaceOwnerRunID: src.OwnerRunID, WorkspaceOwnerAgentID: src.OwnerAgentID,
+		WorkspacePeerRunID: fork.OwnerRunID, WorkspacePeerAgentID: fork.OwnerAgentID, WorkspaceOp: path,
+		WorkspaceForkID: fork.ID, WorkspaceForkName: fork.Name,
+	}) // best effort, as for shares: a sink that fails does not undo the fork
 }

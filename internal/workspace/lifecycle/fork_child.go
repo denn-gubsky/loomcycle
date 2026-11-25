@@ -65,6 +65,6 @@ func (m *Manager) ForkForChild(ctx context.Context, parent Owner, f ChildFork) (
 			egress = append(egress, r)
 		}
 	}
-	row, _, err := m.fork(ctx, c, src, as, "", egress)
+	row, _, err := m.fork(ctx, c, src, as, "", egress, forkAtSpawn)
 	return row, err
 }
