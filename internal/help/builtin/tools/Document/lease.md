@@ -15,7 +15,7 @@ run, the person who called — and a caller cannot name another holder.
 
 Only the operator, or a driver agent granted statement methods, may hold a
 lease (a driver granted only `annotate` holds the `annotator` lease and no
-other); outside a run, a member who is not an operator may lease only its own
+other, and one granted only `ontology` the `ontologist` lease); outside a run, a member who is not an operator may lease only its own
 user scope.
 
 ## Arguments

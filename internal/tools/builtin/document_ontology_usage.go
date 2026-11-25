@@ -80,6 +80,65 @@ func (d *Document) OntologyUsageIn(ctx context.Context, scope string) (OntologyU
 	return u, nil
 }
 
+// ContentCount splits one table's rows by the content version they were written under
+// (RFC GQ P3.2): the current one, another one, and none recorded — written before the
+// column existed or with no ontology document. Unknown is never counted as older: what a
+// row was written under then cannot be reconstructed. Which "other" is older is a
+// question for the releases (P3.3), not for the hash.
+type ContentCount struct {
+	Current int `json:"current"`
+	Other   int `json:"other"`
+	Unknown int `json:"unknown"`
+}
+
+// OntologyContentUsage is the content-version census of one scope's facts and statements.
+type OntologyContentUsage struct {
+	Facts      ContentCount
+	Statements ContentCount
+}
+
+// OntologyContentUsageIn counts one scope's facts and statements against current, the
+// content version in force. Read-only and no ensureSchema, as OntologyUsageIn. current
+// must be a version: with "" (no ontology, or a partial read) no row can be called
+// current, so nothing is counted and an error says why.
+func (d *Document) OntologyContentUsageIn(ctx context.Context, scope, current string) (OntologyContentUsage, error) {
+	if current == "" {
+		return OntologyContentUsage{}, fmt.Errorf("ontology content usage: no content version to count against")
+	}
+	if d.Store == nil || d.SqlMem == nil {
+		return OntologyContentUsage{}, fmt.Errorf("ontology content usage: requires SQL Memory")
+	}
+	key, _, err := d.resolveScope(ctx, scope)
+	if err != nil {
+		return OntologyContentUsage{}, err
+	}
+	var u OntologyContentUsage
+	for _, t := range []struct {
+		table string
+		into  *ContentCount
+	}{{"chunk_memory_meta", &u.Facts}, {"chunk_edges", &u.Statements}} {
+		res, err := d.query(ctx, key, `SELECT CASE WHEN ontology_content IS NULL THEN 'unknown'
+			WHEN ontology_content = ? THEN 'current' ELSE 'other' END, count(*) FROM `+t.table+` GROUP BY 1`, current)
+		if err != nil {
+			continue // no schema yet: nothing written
+		}
+		for _, row := range res.Rows {
+			if len(row) < 2 {
+				continue
+			}
+			switch n := asInt(row[1]); asStr(row[0]) {
+			case "current":
+				t.into.Current = n
+			case "other":
+				t.into.Other = n
+			default:
+				t.into.Unknown = n
+			}
+		}
+	}
+	return u, nil
+}
+
 // UndatedStatementsIn counts the asserted, live statements of the given kinds that carry
 // no valid_at — for a kind declared @dated, statements the panel flags as missing the
 // date the kind's meaning depends on. 0 for no kinds.
