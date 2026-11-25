@@ -1,6 +1,6 @@
 //go:build unix
 
-package builtin
+package rootbilly
 
 import (
 	"crypto/rand"
@@ -62,11 +62,11 @@ var (
 	_ billy.Capable    = (*volumeBilly)(nil)
 )
 
-// newVolumeBilly returns a billy.Filesystem whose root is the directory rel
+// New returns a billy.Filesystem whose root is the directory rel
 // names inside v (rel: a clean, symlink-free path relative to the volume
 // root; "" or "." = the volume root). v must stay open while the returned
 // filesystem is in use; the caller closes v. The directory must exist.
-func newVolumeBilly(v *fsops.VolumeFS, rel string) (billy.Filesystem, error) {
+func New(v *fsops.VolumeFS, rel string) (billy.Filesystem, error) {
 	if filepath.IsAbs(rel) {
 		return nil, fmt.Errorf("repository path %q must be relative to the volume root", rel)
 	}

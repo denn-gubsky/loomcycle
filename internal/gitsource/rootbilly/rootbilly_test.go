@@ -1,6 +1,6 @@
 //go:build linux || darwin
 
-package builtin
+package rootbilly
 
 import (
 	"errors"
@@ -18,18 +18,20 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/cache"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/storage/filesystem"
+
+	"github.com/denn-gubsky/loomcycle/internal/fsops"
 )
 
 // billyAt opens the volume at root (with fence, "" for none) and returns a
 // billy filesystem on the directory rel names inside it.
 func billyAt(t *testing.T, root, fence, rel string) billy.Filesystem {
 	t.Helper()
-	v, err := openVolumeFS(root, fence)
+	v, err := fsops.OpenVolumeFS(root, fence)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { v.Close() })
-	b, err := newVolumeBilly(v, rel)
+	b, err := New(v, rel)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -475,19 +477,19 @@ func TestVolumeBilly_ChangeMethodsActOnTheEntry(t *testing.T) {
 
 func TestVolumeBilly_NewRefusesMissingEscapingOrAbsoluteRoot(t *testing.T) {
 	root := realDir(t)
-	v, err := openVolumeFS(root, "")
+	v, err := fsops.OpenVolumeFS(root, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer v.Close()
 	for _, rel := range []string{"missing", "../x", "/abs"} {
-		if _, err := newVolumeBilly(v, rel); err == nil {
-			t.Errorf("newVolumeBilly(%q) succeeded", rel)
+		if _, err := New(v, rel); err == nil {
+			t.Errorf("New(%q) succeeded", rel)
 		}
 	}
 	for _, rel := range []string{"", "."} {
-		if _, err := newVolumeBilly(v, rel); err != nil {
-			t.Errorf("newVolumeBilly(%q): %v", rel, err)
+		if _, err := New(v, rel); err != nil {
+			t.Errorf("New(%q): %v", rel, err)
 		}
 	}
 }
@@ -659,7 +661,7 @@ func TestVolumeBilly_FenceRefused(t *testing.T) {
 	checks["Chmod"] = c.Chmod("dynamic", 0o777)
 	checks["Lchown"] = c.Lchown("dynamic", os.Getuid(), os.Getgid())
 	for op, err := range checks {
-		if !errors.Is(err, errInFence) {
+		if !errors.Is(err, fsops.ErrInFence) {
 			t.Errorf("%s on the fence: err = %v, want fence refusal", op, err)
 		}
 	}
