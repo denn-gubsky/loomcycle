@@ -484,7 +484,14 @@ func ParseClassBody(body string) ClassDecl {
 				}
 			}
 		case "renamed_from":
-			d.RenamedFrom = firstWord(dir.Value)
+			// The whole value, as @alt: a class name may hold spaces ("Internal
+			// Policy"), and a former name cut to its first word would resolve nothing.
+			// Prose after a dash is a comment, as in the bullet spelling.
+			v := dir.Value
+			if k := strings.Index(v, " — "); k >= 0 {
+				v = v[:k]
+			}
+			d.RenamedFrom = strings.TrimSpace(v)
 		case "alt":
 			// The whole value, as on a concept: a name may hold spaces ("design
 			// note"). An empty line says nothing and is reported.

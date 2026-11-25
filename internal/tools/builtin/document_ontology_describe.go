@@ -197,6 +197,8 @@ func (d *Document) describeCounts(ctx context.Context, key sqlmem.ScopeKey, acl 
 	if err == nil {
 		counts, err = d.countOntologyMembers(ctx, key, schemes, list)
 	}
+	// A document still typed with a class's former name is counted as the class's.
+	counts.foldFormerTypes(memrank.TenantClassAliases(read.Terms, read.Confirmed))
 	if err != nil {
 		out.Partial = true
 		out.Issues = append(out.Issues, "with_counts: the member counts could not be read; read again")

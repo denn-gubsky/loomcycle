@@ -346,6 +346,7 @@ func (s *annotationScope) classOf(ctx context.Context, name string) (meaning, sl
 	if onto == nil || name == "" {
 		return "", ""
 	}
+	name = memrank.TenantClassAliases(onto.Terms, onto.Confirmed).Resolve(name) // a former name is the class
 	for _, t := range memrank.EffectiveClasses(onto.Terms, onto.Confirmed) {
 		if strings.EqualFold(t.Name, name) {
 			return t.Meaning, memrank.EffectiveDirective(t, "annotate")
