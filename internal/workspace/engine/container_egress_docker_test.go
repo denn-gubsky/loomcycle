@@ -190,6 +190,20 @@ func TestContainerEgress_ASessionReachesTheWorkerThroughEgressAsItself(t *testin
 	if env != "http://egress/pypi/simple/ http://egress/npm/ http://egress/" {
 		t.Errorf("the session's package managers are set up as %q", env)
 	}
+	// cargo's source replacement is readable at the session's root and
+	// cannot be changed from inside it (RFC GW P11).
+	cargo := s.run("ws1", `
+
+body = open("/.cargo/config.toml").read()
+try:
+    open("/.cargo/config.toml", "a").write("x")
+    print("writable")
+except OSError:
+    print("ok" if 'registry = "sparse+http://egress/crates/"' in body else "content: " + body)
+`)
+	if cargo != "ok" {
+		t.Errorf("cargo's config in the session: %q", cargo)
+	}
 }
 
 // A session has no route out: only its own network's subnet, no default
@@ -264,9 +278,20 @@ func TestContainerEgress_ASessionCannotReachAnotherWorkspace(t *testing.T) {
 	if strings.Contains(mounts, s.root) {
 		t.Errorf("ws1's gateway mounts the worker's root: %s", mounts)
 	}
-	sessionMounts := s.inspect("{{range .Mounts}}{{.Source}} {{end}}", s.name("ws1"))
-	if strings.Contains(sessionMounts, s.dir) {
-		t.Errorf("ws1's session mounts the egress directory: %s", sessionMounts)
+	// The session sees nothing of the egress directory (no socket, its own or
+	// another's) but cargo's config, one regular file, read-only (RFC GW P11).
+	for _, m := range strings.Fields(s.inspect("{{range .Mounts}}{{.Source}}|{{.RW}} {{end}}", s.name("ws1"))) {
+		src, rw, _ := strings.Cut(m, "|")
+		if !strings.HasPrefix(src, s.dir) {
+			continue
+		}
+		if filepath.Base(src) != "cargo-config.toml" || rw != "false" {
+			t.Errorf("ws1's session mounts the egress directory: %s", m)
+			continue
+		}
+		if fi, err := os.Lstat(src); err != nil || !fi.Mode().IsRegular() {
+			t.Errorf("ws1's session mounts %s, which is not a regular file (%v)", src, err)
+		}
 	}
 }
 

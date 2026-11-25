@@ -269,8 +269,8 @@ func (c *Container) gatewayArgs(workspace string) []string {
 }
 
 // writeStatic writes the files every session and gateway of this worker
-// mounts: the forwarder, and cargo's source replacement (readable by any
-// user: it holds no secret, and the session's user may not be the worker's).
+// mounts: the forwarder and cargo's source replacement. Both 0400, as the
+// forwarder has always been: a session and a gateway run as one user.
 func (e *egress) writeStatic() error {
 	if err := os.MkdirAll(e.dir, 0o700); err != nil {
 		return err
@@ -278,7 +278,7 @@ func (e *egress) writeStatic() error {
 	if err := os.WriteFile(filepath.Join(e.dir, gatewayFile), []byte(gatewayPy), 0o400); err != nil && !errors.Is(err, os.ErrPermission) {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(e.dir, cargoConfigFile), []byte(cargoConfig), 0o444); err != nil && !errors.Is(err, os.ErrPermission) {
+	if err := os.WriteFile(filepath.Join(e.dir, cargoConfigFile), []byte(cargoConfig), 0o400); err != nil && !errors.Is(err, os.ErrPermission) {
 		return err
 	}
 	return nil
