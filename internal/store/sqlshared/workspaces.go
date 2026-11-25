@@ -172,8 +172,18 @@ func WorkspaceSetState(ctx context.Context, q Querier, tenantID, id string, from
 	return n > 0, nil
 }
 
-func WorkspaceDelete(ctx context.Context, q Querier, tenantID, id string) (bool, error) {
-	n, err := q.Exec(ctx, `DELETE FROM workspaces WHERE tenant_id = ? AND id = ?`, tenantID, id)
+// WorkspaceDelete removes the row and its exposures in one transaction: an
+// exposure never outlives its workspace (RFC GW §5.3).
+func WorkspaceDelete(ctx context.Context, db DB, tenantID, id string) (bool, error) {
+	var n int64
+	err := db.InTx(ctx, func(tx Querier) error {
+		if _, err := tx.Exec(ctx, `DELETE FROM workspace_exposures WHERE tenant_id = ? AND workspace_id = ?`, tenantID, id); err != nil {
+			return err
+		}
+		var err error
+		n, err = tx.Exec(ctx, `DELETE FROM workspaces WHERE tenant_id = ? AND id = ?`, tenantID, id)
+		return err
+	})
 	if err != nil {
 		return false, fmt.Errorf("workspace delete: %w", err)
 	}

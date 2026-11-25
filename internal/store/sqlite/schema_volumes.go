@@ -145,6 +145,23 @@ func volumesSection() schemaPlan {
 			created_at  INTEGER NOT NULL,
 			PRIMARY KEY (tenant_id, scope, scope_id, name)
 		)`,
+		// RFC GW P9 PR 4: a workspace's exposed ports (§5.3). Who may open
+		// one is read from its workspace's row on every request. Mirrors
+		// postgres migration 0141.
+		`CREATE TABLE IF NOT EXISTS workspace_exposures (
+			id           TEXT PRIMARY KEY,
+			tenant_id    TEXT NOT NULL DEFAULT '',
+			user_id      TEXT NOT NULL DEFAULT '',
+			workspace_id TEXT NOT NULL,
+			port         INTEGER NOT NULL,
+			title        TEXT NOT NULL DEFAULT '',
+			kind         TEXT NOT NULL DEFAULT 'page',
+			created_at   INTEGER NOT NULL,
+			last_used_at INTEGER NOT NULL,
+			UNIQUE (workspace_id, port)
+		)`,
+		`CREATE INDEX IF NOT EXISTS workspace_exposures_by_workspace ON workspace_exposures (tenant_id, workspace_id)`,
+		`CREATE INDEX IF NOT EXISTS workspace_exposures_by_last_used ON workspace_exposures (last_used_at)`,
 		// RFC L OSS multi-tenant authorization — bearer tokens bound to
 		// an authoritative principal (tenant_id + subject + allowed_scopes).
 		// NOT versioned/forkable: no version, no active pointer, no parent.

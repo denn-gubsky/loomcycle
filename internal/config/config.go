@@ -8739,7 +8739,7 @@ func workspaceFromDiscovered(w *agents.AgentWorkspace) *AgentWorkspace {
 	if w == nil {
 		return nil
 	}
-	return &AgentWorkspace{Ops: append([]string(nil), w.Ops...), Open: w.Open, Share: w.Share, Templates: w.Templates,
+	return &AgentWorkspace{Ops: append([]string(nil), w.Ops...), Open: w.Open, Share: w.Share, Expose: w.Expose, Templates: w.Templates,
 		Egress: append([]string(nil), w.Egress...), Engine: w.Engine}
 }
 

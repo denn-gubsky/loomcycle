@@ -1847,6 +1847,7 @@ type Store interface {
 	EphemeralVolumeStore
 	WorkspaceStore
 	WorkspaceTemplateStore
+	WorkspaceExposureStore
 	ScheduleDefStore
 	ScheduleRunStateStore
 	A2ADefStore

@@ -22,8 +22,8 @@ import (
 // and is held to the stricter engine requirement. Not per-run overridable.
 // Authority, not content: not part of content_sha256.
 //
-// Only the keys built so far exist (P1's, P8's share, P4's egress and P6's
-// templates). The keys later phases add (expose, connect) are refused as unknown,
+// Only the keys built so far exist (P1's, P8's share, P4's egress, P9's
+// expose and P6's templates). The key a later phase adds (connect) is refused as unknown,
 // in yaml and in JSON, so no stored grant can name something that does
 // nothing yet.
 type AgentWorkspace struct {
@@ -35,6 +35,10 @@ type AgentWorkspace struct {
 	// the same user (RFC GW §5.2). It hands over only operations the agent
 	// holds itself, and never commands.
 	Share bool `json:"share,omitempty" yaml:"share,omitempty"`
+	// Expose lets the agent publish a port of a workspace it owns to its
+	// user (RFC GW §5.3, §7): model-written active content in front of a
+	// person, so the grant to give sparingly. It needs workspace.expose on.
+	Expose bool `json:"expose,omitempty" yaml:"expose,omitempty"`
 	// Templates lets the agent save and delete workspace templates (RFC GW
 	// §5.5); a tenant-scoped one also needs the tenant value in its
 	// memory_scopes. Opening a workspace from a template needs only Open.

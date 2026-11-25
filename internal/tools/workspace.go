@@ -18,6 +18,9 @@ type WorkspacePolicyValue struct {
 	// Share lets the run share a workspace it owns with another run of its
 	// user (RFC GW §5.2), handing over no more than it holds itself.
 	Share bool
+	// Expose lets the run publish a port of a workspace it owns to its user
+	// (RFC GW §5.3).
+	Expose bool
 	// Templates lets the run save and delete workspace templates (RFC GW
 	// §5.5).
 	Templates bool
@@ -53,7 +56,7 @@ func WorkspaceFor(w *config.AgentWorkspace) WorkspacePolicyValue {
 	if !w.Grants() {
 		return WorkspacePolicyValue{}
 	}
-	v := WorkspacePolicyValue{Open: w.Open, Share: w.Share, Templates: w.Templates, Engine: w.Engine, Egress: slices.Clone(w.Egress)}
+	v := WorkspacePolicyValue{Open: w.Open, Share: w.Share, Expose: w.Expose, Templates: w.Templates, Engine: w.Engine, Egress: slices.Clone(w.Egress)}
 	for _, op := range w.Ops {
 		switch op {
 		case config.WorkspaceOpRead:
@@ -109,11 +112,12 @@ func (v WorkspacePolicyValue) AcceptsEngineRequirement(requirement string) bool 
 // the child nothing.
 func NarrowWorkspace(parent, own WorkspacePolicyValue) WorkspacePolicyValue {
 	out := WorkspacePolicyValue{
-		Read:  parent.Read && own.Read,
-		Write: parent.Write && own.Write,
-		Exec:  parent.Exec && own.Exec,
-		Open:  parent.Open && own.Open,
-		Share: parent.Share && own.Share,
+		Read:   parent.Read && own.Read,
+		Write:  parent.Write && own.Write,
+		Exec:   parent.Exec && own.Exec,
+		Open:   parent.Open && own.Open,
+		Share:  parent.Share && own.Share,
+		Expose: parent.Expose && own.Expose,
 		// Templates: only when both may (RFC GW §7).
 		Templates: parent.Templates && own.Templates,
 	}
@@ -155,14 +159,14 @@ func (v WorkspacePolicyValue) Grant() *config.AgentWorkspace {
 	if !v.Grants() {
 		return nil
 	}
-	return &config.AgentWorkspace{Ops: v.Ops(), Open: v.Open, Share: v.Share, Templates: v.Templates, Egress: slices.Clone(v.Egress), Engine: v.Engine}
+	return &config.AgentWorkspace{Ops: v.Ops(), Open: v.Open, Share: v.Share, Expose: v.Expose, Templates: v.Templates, Egress: slices.Clone(v.Egress), Engine: v.Engine}
 }
 
 // Report is the policy for Context op=self. Always present: ops [] and open
 // false is the answer "no workspace access", and egress [] no routes.
 func (v WorkspacePolicyValue) Report() map[string]any {
 	egress := append([]string{}, v.Egress...)
-	return map[string]any{"ops": v.Ops(), "open": v.Open, "share": v.Share, "templates": v.Templates, "egress": egress, "engine": v.Engine}
+	return map[string]any{"ops": v.Ops(), "open": v.Open, "share": v.Share, "expose": v.Expose, "templates": v.Templates, "egress": egress, "engine": v.Engine}
 }
 
 // SpawnWorkspace is one of a spawn's `workspaces`: a workspace of the parent

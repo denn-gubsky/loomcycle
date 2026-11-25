@@ -317,6 +317,13 @@ var tableCoverageMap = map[string]tableCoverage{
 		Reason: "RFC GW P6 D-P6-36: template rows stay with their archives under the data directory; durable workspace state is P12"},
 	"workspaces": {Kind: coverOmitted, Backends: onBoth,
 		Reason: "RFC GW P1 ruling Q5: workspace rows (the pin) join snapshots in P12; the files on a worker never do"},
+	// A workspace's exposed ports (RFC GW P9): each names a port a server
+	// on a worker serves now, and goes with its workspace's row, which is
+	// not carried either. A restore must not bring back a page that points
+	// at nothing. No secret is in them (the id opens nothing without the
+	// user's own bearer), so omitted, not never; idle ones expire.
+	"workspace_exposures": {Kind: coverOmitted, Backends: onBoth,
+		Reason: "RFC GW P9: an exposure is a live page of a server on a worker; it goes with its workspace row (not carried before P12) and expires when idle"},
 	// interrupts: a pending ask blocks inside tool dispatch, and a pause parks a
 	// run only at an iteration boundary, so a paused run cannot be waiting on
 	// one; everything else in the table is audit. Capture checks the

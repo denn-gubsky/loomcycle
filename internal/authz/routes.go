@@ -572,4 +572,9 @@ var httpRoutes = []Route{
 	rowFn("POST /v1/users/{user_id}/channels/{name}/publish", ScopeChannelPublish, false, userChannelAsk("publish")),
 	rowFn("POST /v1/users/{user_id}/channels/{name}/subscribe", ScopeChannelPublish, false, userChannelAsk("subscribe")),
 	row("GET /v1/users/{user_id}/interrupts", ScopeRunsRead, true, q("read", "run", "*")),
+	// A workspace's exposed port (RFC GW §5.3), every method: reading what a
+	// run made. The handler admits the workspace's own user alone (D22).
+	// Off the run plane, so a token limited to certain agents reaches no
+	// page (P9 plan D-P9-26).
+	row("/v1/workspaces/exposures/{id}/{path...}", ScopeRunsRead, false, q("read", "run", "*")),
 }

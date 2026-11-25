@@ -318,6 +318,8 @@ func (b *boot) bindStoreToTools() {
 		}, slog.Default())
 		// RFC GW §5.5: template archives rest under the data directory.
 		b.workspaces.SetTemplateDir(b.cfg.WorkspaceTemplateDir())
+		b.workspaces.SetExpose(lifecycle.ExposeLimits{Enabled: ws.Expose.Enabled, MaxPerWorkspace: ws.Expose.MaxPerWorkspace,
+			IdleTimeout: time.Duration(ws.Expose.IdleTimeoutS) * time.Second})
 		b.workspaceTool.Manager = b.workspaces
 		b.wireWorkspaceEgress()
 		// File reaches workspaces by reference (RFC GW P2) through the same

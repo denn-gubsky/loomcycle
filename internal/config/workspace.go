@@ -68,6 +68,9 @@ type WorkspaceConfig struct {
 	// MCP configures Workspace on loomcycle's MCP server (RFC GW D35): off
 	// unless enabled.
 	MCP WorkspaceMCPConfig `yaml:"mcp,omitempty"`
+	// Expose is `workspace.expose`: serving a workspace's port to its user
+	// through the API (RFC GW §5.3). Off unless enabled.
+	Expose WorkspaceExposeConfig `yaml:"expose,omitempty"`
 	// Checkpoint bounds a workspace's checkpoints (RFC GW §5.4).
 	Checkpoint WorkspaceCheckpointConfig `yaml:"checkpoint,omitempty"`
 	// Template bounds workspace templates (RFC GW §5.5).
@@ -115,6 +118,41 @@ const (
 	DefaultWorkspaceMCPIdleReleaseS = 3600
 	DefaultWorkspaceMCPMaxLifetimeS = 86400
 	maxWorkspaceMCPSeconds          = 30 * 86400
+)
+
+// WorkspaceExposeConfig is `workspace.expose`: a workspace's server served
+// to its user at /v1/workspaces/exposures/{id}/… (RFC GW §5.3, P9 plan
+// §3.3). Every bound is per workspace; the connection and rate bounds are
+// kept per replica.
+type WorkspaceExposeConfig struct {
+	// Enabled lets an agent with the expose grant publish a port. Off by
+	// default.
+	Enabled bool `yaml:"enabled,omitempty"`
+	// MaxPerWorkspace is how many ports one workspace may expose at once.
+	MaxPerWorkspace int `yaml:"max_per_workspace,omitempty"`
+	// MaxConnections is how many requests to one workspace's exposures may
+	// be open at once.
+	MaxConnections int `yaml:"max_connections,omitempty"`
+	// IdleTimeoutS closes an exposure no request used for this long.
+	IdleTimeoutS int `yaml:"idle_timeout_s,omitempty"`
+	// RequestsPerSecond and BytesPerSecond bound one workspace's exposures:
+	// requests started, and response bytes sent.
+	RequestsPerSecond int   `yaml:"requests_per_second,omitempty"`
+	BytesPerSecond    int64 `yaml:"bytes_per_second,omitempty"`
+}
+
+// The workspace.expose defaults and bounds.
+const (
+	DefaultWorkspaceExposeMaxPerWorkspace = 2
+	DefaultWorkspaceExposeMaxConnections  = 32
+	DefaultWorkspaceExposeIdleTimeoutS    = 900
+	DefaultWorkspaceExposeRequestsPerS    = 20
+	DefaultWorkspaceExposeBytesPerS       = 8 << 20
+	maxWorkspaceExposePerWorkspace        = 16
+	maxWorkspaceExposeConnections         = 1024
+	maxWorkspaceExposeIdleTimeoutS        = 86400
+	maxWorkspaceExposeRequestsPerS        = 10000
+	maxWorkspaceExposeBytesPerS           = 1 << 30
 )
 
 // WorkspaceKernelConfig is `workspace.kernel`.
@@ -258,6 +296,21 @@ func (w WorkspaceConfig) Resolved() WorkspaceConfig {
 		w.Template.MaxPerTenant = DefaultWorkspaceTemplates
 	}
 	w.Egress = w.Egress.Resolved()
+	if w.Expose.MaxPerWorkspace == 0 {
+		w.Expose.MaxPerWorkspace = DefaultWorkspaceExposeMaxPerWorkspace
+	}
+	if w.Expose.MaxConnections == 0 {
+		w.Expose.MaxConnections = DefaultWorkspaceExposeMaxConnections
+	}
+	if w.Expose.IdleTimeoutS == 0 {
+		w.Expose.IdleTimeoutS = DefaultWorkspaceExposeIdleTimeoutS
+	}
+	if w.Expose.RequestsPerSecond == 0 {
+		w.Expose.RequestsPerSecond = DefaultWorkspaceExposeRequestsPerS
+	}
+	if w.Expose.BytesPerSecond == 0 {
+		w.Expose.BytesPerSecond = DefaultWorkspaceExposeBytesPerS
+	}
 	if len(w.MCP.Ops) == 0 {
 		w.MCP.Ops = []string{WorkspaceOpRead, WorkspaceOpWrite}
 	}
@@ -397,6 +450,9 @@ func validateWorkspace(c *Config) error {
 			return fmt.Errorf("workspace.mcp.ops: %q is not read, write or exec", op)
 		}
 	}
+	if err := validateWorkspaceExpose(w.Expose); err != nil {
+		return err
+	}
 	if v := w.MCP.IdleReleaseS; v < 0 || v > maxWorkspaceMCPSeconds {
 		return fmt.Errorf("workspace.mcp.idle_release_s: %d is out of range (1 to %d)", v, maxWorkspaceMCPSeconds)
 	}
@@ -469,6 +525,29 @@ func (w *WorkspaceConfig) UnmarshalYAML(n *yaml.Node) error {
 	if err := strictKeys(valueOf(n, "mcp"), "workspace.mcp", nil, reflect.TypeOf(WorkspaceMCPConfig{})); err != nil {
 		return err
 	}
+	if err := strictKeys(valueOf(n, "expose"), "workspace.expose", nil, reflect.TypeOf(WorkspaceExposeConfig{})); err != nil {
+		return err
+	}
 	type plain WorkspaceConfig
 	return n.Decode((*plain)(w))
+}
+
+// validateWorkspaceExpose refuses a workspace.expose bound out of range. Zero
+// is the default.
+func validateWorkspaceExpose(e WorkspaceExposeConfig) error {
+	for _, b := range []struct {
+		name   string
+		v, max int64
+	}{
+		{"max_per_workspace", int64(e.MaxPerWorkspace), maxWorkspaceExposePerWorkspace},
+		{"max_connections", int64(e.MaxConnections), maxWorkspaceExposeConnections},
+		{"idle_timeout_s", int64(e.IdleTimeoutS), maxWorkspaceExposeIdleTimeoutS},
+		{"requests_per_second", int64(e.RequestsPerSecond), maxWorkspaceExposeRequestsPerS},
+		{"bytes_per_second", e.BytesPerSecond, maxWorkspaceExposeBytesPerS},
+	} {
+		if b.v < 0 || b.v > b.max {
+			return fmt.Errorf("workspace.expose.%s: %d is out of range (1 to %d)", b.name, b.v, b.max)
+		}
+	}
+	return nil
 }
