@@ -435,6 +435,21 @@ jobs:
           grep -q -- '--- PASS: TestContainerEgress_' egress.log
           ! grep -q -- '--- SKIP' egress.log
 
+      # The tunnel to a session's port (RFC GW P9 PR 3): a relay started in
+      # the session reaches its own loopback and nothing else, and the
+      # session keeps --network none. The relay needs python3, so the test
+      # runs with the session image built above. A skip fails, and so does a
+      # run in which no relay test passed.
+      - name: Reach a session's port
+        env:
+          LOOMCYCLE_REQUIRE_DOCKER: "1"
+          LOOMCYCLE_TEST_RELAY_IMAGE: ci-loomcycle-workspace
+        run: |
+          set -o pipefail
+          go test -count=1 -timeout 20m -run '^TestContainerRelay_' -v ./internal/workspace/engine/ | tee relay.log
+          grep -q -- '--- PASS: TestContainerRelay_' relay.log
+          ! grep -q -- '--- SKIP' relay.log
+
   go-race:
     # The race suite, split across runners (RFC EX Phase 1). On one 4-core
     # runner it took ~15 min, set by internal/api/http and

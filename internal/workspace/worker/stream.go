@@ -14,13 +14,12 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/workspace/workspacepb"
 )
 
-// streamOp reports whether op carries a file's bytes on the stream itself
-// (get and the conversions as their output, put as its input) and so is
-// served by serveStream,
-// which never holds the file whole: serveOne would read all of the input
-// first and collect all of the output.
+// streamOp reports whether op carries bytes on the stream itself (get and
+// the conversions as their output, put as its input, a tunnel both ways at
+// once) and so is served by serveStream, which never holds them whole:
+// serveOne would read all of the input first and collect all of the output.
 func streamOp(op string) bool {
-	return op == workspace.OpGet || op == workspace.OpPut || isConvertOp(op)
+	return op == workspace.OpGet || op == workspace.OpPut || op == workspace.OpTunnel || isConvertOp(op)
 }
 
 // serveStream runs a get or a put on its stream. A put reads its input
@@ -30,6 +29,10 @@ func streamOp(op string) bool {
 func (w *worker) serveStream(ctx, sctx context.Context, cancel context.CancelFunc, stream workspacepb.WorkspaceService_OpClient, start *workspacepb.OpStart) error {
 	id := start.GetWorkspaceId()
 	dir, real, a := w.workspaceDir(id)
+	if a.class == "" && start.GetOp() == workspace.OpTunnel {
+		t, done := w.tunnelOp(sctx, cancel, id, real, start, stream)
+		return finish(ctx, stream, hidePaths(t, false, real, dir, w.opt.Root), done)
+	}
 	if a.class == "" && start.GetOp() == workspace.OpPut {
 		a = w.putOp(sctx, id, real, start, stream)
 	}
