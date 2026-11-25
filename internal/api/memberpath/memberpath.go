@@ -79,6 +79,10 @@ func CarvedOut(method, path string) bool {
 	// scope of the tenant, other users' included (RFC GQ 7): the operator's.
 	case path == "/v1/_ontology/plan":
 		return true
+	// Releases keep the ontology's text after an edit or an erasure removed it
+	// (RFC GQ P3.4): the operator's to read.
+	case path == "/v1/_ontology/releases" || strings.HasPrefix(path, "/v1/_ontology/releases/"):
+		return true
 	case path == "/v1/_limits" && (method == http.MethodPut || method == http.MethodDelete):
 		return true
 	// RFC EY: who may do what is the operator's to write and to read; a
