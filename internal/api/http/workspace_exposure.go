@@ -43,6 +43,11 @@ const (
 	// scripts and forms in an opaque origin, may fetch only its own origin,
 	// and cannot navigate the top window or open popups (the sandbox grants
 	// neither allow-top-navigation nor allow-popups).
+	//
+	// Dropping sandbox, or adding allow-same-origin, reopens CodeQL
+	// go/reflected-xss alerts 422 and 423, which were dismissed on this
+	// basis: a page served from the API's origin runs in an opaque origin.
+	// TestExposure_EveryAnswerIsSandboxedWithoutSameOrigin pins it.
 	exposurePolicy = "sandbox allow-scripts allow-forms; connect-src 'self'"
 	// exposureHeaderBytes bounds an application's answer's headers.
 	exposureHeaderBytes = 64 << 10
@@ -286,12 +291,34 @@ func setExposureHeaders(h http.Header) {
 
 // underPrefix rewrites a redirect the application sends to a path of its
 // own back under the route's prefix. A redirect to another site, or to a
-// scheme-relative address, is left as it is: it leaves the page.
+// scheme-relative address, is left as it is: it leaves the page. "/\\x" is
+// scheme-relative too (browsers read a backslash as a slash), and so is a
+// location holding a control character (browsers strip tabs and line
+// breaks, so "/\t/x" is "//x"): neither is a path of the application's own
+// (CodeQL go/bad-redirect-check).
 func underPrefix(loc, prefix string) string {
-	if strings.HasPrefix(loc, "/") && !strings.HasPrefix(loc, "//") {
+	if ownPath(loc) {
 		return prefix + loc
 	}
 	return loc
+}
+
+// ownPath reports whether loc is a path on the application's own origin:
+// one slash, then anything but a second slash or a backslash, and no
+// control character anywhere.
+func ownPath(loc string) bool {
+	if len(loc) == 0 || loc[0] != '/' {
+		return false
+	}
+	if len(loc) > 1 && (loc[1] == '/' || loc[1] == '\\') {
+		return false
+	}
+	for i := 0; i < len(loc); i++ {
+		if c := loc[i]; c < 0x20 || c == 0x7f {
+			return false
+		}
+	}
+	return true
 }
 
 func isUpgrade(r *http.Request) bool {
