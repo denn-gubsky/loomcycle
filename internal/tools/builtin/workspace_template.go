@@ -22,15 +22,31 @@ func tenantTemplatesAllowed(ctx context.Context) bool {
 		tools.ConfineIsolatedScope(ctx, store.MemoryScopeTenant) == nil
 }
 
-// checkTemplateScope refuses a missing or unknown scope, and a tenant one the
-// run may not write.
-func checkTemplateScope(ctx context.Context, scope string) (tools.Result, bool) {
+// errTenantTemplateScope is a tenant template the run may not write.
+var errTenantTemplateScope = errors.New("a tenant template needs the tenant value in this agent's memory_scopes")
+
+// templateScopeGranted is the grant check of a template scope the run names:
+// the one checkTemplateScope applies and ScopeGrants reports.
+// op is the operation, named in the refusal as Execute's grant check names it.
+func templateScopeGranted(ctx context.Context, op, scope string) error {
+	switch {
+	case !tools.PolicyOf(ctx).Workspace.Templates:
+		return fmt.Errorf("this agent's workspace grant does not allow %s", op)
+	case scope == store.WorkspaceTemplateUser && tools.RunIdentity(ctx).UserID == "":
+		return errors.New("a user template belongs to a user, and this run has none")
+	case scope == store.WorkspaceTemplateTenant && !tenantTemplatesAllowed(ctx):
+		return errTenantTemplateScope
+	}
+	return nil
+}
+
+// checkTemplateScope refuses a missing or unknown scope, and one the run may
+// not write.
+func checkTemplateScope(ctx context.Context, op, scope string) (tools.Result, bool) {
 	switch scope {
-	case store.WorkspaceTemplateUser:
-		return tools.Result{}, true
-	case store.WorkspaceTemplateTenant:
-		if !tenantTemplatesAllowed(ctx) {
-			return workspaceRefusal("not_granted", "a tenant template needs the tenant value in this agent's memory_scopes"), false
+	case store.WorkspaceTemplateUser, store.WorkspaceTemplateTenant:
+		if err := templateScopeGranted(ctx, op, scope); err != nil {
+			return workspaceRefusal("not_granted", err.Error()), false
 		}
 		return tools.Result{}, true
 	case "":
@@ -39,13 +55,22 @@ func checkTemplateScope(ctx context.Context, scope string) (tools.Result, bool) 
 	return workspaceRefusal("invalid_argument", fmt.Sprintf("scope %q: want user or tenant", scope)), false
 }
 
+// ScopeGrants implements tools.ScopedTool: save_template and delete_template
+// take a scope, judged by the same check a call is (templateScopeGranted).
+func (w *Workspace) ScopeGrants(ctx context.Context) []tools.ScopeField {
+	field := func(op string) tools.ScopeField {
+		return tools.ScopeField{Applies: op, Grants: scopeGrants(w.InputSchema(), func(s string) error { return templateScopeGranted(ctx, op, s) })}
+	}
+	return []tools.ScopeField{field("save_template"), field("delete_template")}
+}
+
 // saveTemplate saves a checkpoint of the run's own workspace row as a
 // template (D-P6-26).
 func (w *Workspace) saveTemplate(ctx context.Context, o lifecycle.Owner, row store.WorkspaceRow, in workspaceInput) tools.Result {
 	if in.Checkpoint == "" || in.As == "" {
 		return workspaceRefusal("invalid_argument", "save_template needs checkpoint (checkpoints lists them) and as, the template's name")
 	}
-	if r, ok := checkTemplateScope(ctx, in.Scope); !ok {
+	if r, ok := checkTemplateScope(ctx, in.Op, in.Scope); !ok {
 		return r
 	}
 	t, err := w.Manager.SaveTemplate(ctx, o, row, in.Checkpoint, in.As, in.Scope)
@@ -64,7 +89,7 @@ func (w *Workspace) deleteTemplate(ctx context.Context, o lifecycle.Owner, in wo
 	if in.Template == "" {
 		return workspaceRefusal("invalid_argument", "delete_template needs template, the template's name")
 	}
-	if r, ok := checkTemplateScope(ctx, in.Scope); !ok {
+	if r, ok := checkTemplateScope(ctx, in.Op, in.Scope); !ok {
 		return r
 	}
 	t, err := w.Manager.GetTemplate(ctx, o, in.Scope, in.Template)

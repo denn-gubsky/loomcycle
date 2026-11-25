@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -154,4 +155,24 @@ func TestWorkspaceTemplate_AnIsolatedMemberSeesNoTenantTemplate(t *testing.T) {
 		t.Errorf("an isolated member opening a tenant template = %q, want template_not_found", c)
 	}
 	f.mustOK(t, iso, `{"op":"open","name":"y","template":"own"}`)
+}
+
+// The scope report is the call's own check: a scope it refuses is refused
+// by save_template with the same reason, and one it grants gets past it.
+func TestWorkspaceTemplate_ScopeGrantsAgreeWithTheCall(t *testing.T) {
+	f, alice, ck := tplFixture(t)
+	n := 0
+	for _, ctx := range []context.Context{alice, withMemoryScopes(alice, "user", "tenant"),
+		tools.UpdateRunPolicy(alice, func(rp *tools.RunPolicy) { rp.Workspace.Templates = false })} {
+		for _, g := range f.tool.ScopeGrants(ctx)[0].Grants {
+			n++
+			res := f.call(t, ctx, `{"op":"save_template","name":"work","checkpoint":"`+ck+`","as":"g`+strconv.Itoa(n)+`","scope":"`+g.Scope+`"}`)
+			if g.Granted == res.IsError {
+				t.Errorf("scope %s: report granted=%v, call %s", g.Scope, g.Granted, res.Text)
+			}
+			if !g.Granted && !strings.Contains(res.Text, g.Reason) {
+				t.Errorf("scope %s: reason %q, call %s", g.Scope, g.Reason, res.Text)
+			}
+		}
+	}
 }
