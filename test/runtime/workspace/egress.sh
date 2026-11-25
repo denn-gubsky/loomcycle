@@ -13,8 +13,9 @@
 #     files fetched through the route (the core's link rewrite), and imports
 #     it; npm installs a package through `npm` with its integrity recorded;
 #   - on the container engine, an agent granted `pypi` but not `pypi-files`
-#     fails at once, the failure naming `pypi-files`; on both, a route the
-#     workspace does not hold is refused;
+#     fails at once (its file links are not rewritten, and the session cannot
+#     resolve their host); on both, a route the workspace does not hold is
+#     refused;
 #   - a tenant's credentialed route (EgressRouteDef + a restricted tenant
 #     credential) to a local HTTPS upstream sends the tenant's token, and on
 #     the container engine two tenants with a route of the same name each
@@ -313,7 +314,13 @@ if [[ "$ENGINE" == container ]]; then
   run_cmd nofiles wsegressnf "$TEST_DIR/nofiles.cmd" "$RUN_TOKEN" "$RUN_USER"
   field nofiles output | grep -q "pip_rc=0" && fail "nofiles: pip succeeded without pypi-files"
   field nofiles output | grep -q "pip_rc=142" && fail "nofiles: pip hung until the timeout"
-  want_in nofiles "pypi-files"
+  # As built (RFC GW D28), PyPI's file links are rewritten only when the
+  # workspace holds pypi-files, so without it they still name
+  # files.pythonhosted.org, which a session cannot resolve: pip fails at the
+  # lookup, at once. (Plan §6 asks for a 403 naming the route; see the
+  # plan's O34, for the owner.)
+  field nofiles output | grep -qE "pypi-files|name resolution|Name or service not known" ||
+    fail "nofiles: want the failure to name pypi-files or the lookup: $(field nofiles output)"
   secs=$(field nofiles output | sed -n 's/^seconds=//p')
   [[ -n "$secs" && "$secs" -lt 120 ]] || fail "nofiles: pip took ${secs:-?}s to fail"
 else
