@@ -31,6 +31,7 @@ import (
 // for the run-end release's pause check and a share's runs.
 type Store interface {
 	store.WorkspaceStore
+	store.WorkspaceExposureStore
 	GetRun(ctx context.Context, runID string) (store.Run, error)
 	// GetRunByAgentID resolves the run a share names (RFC GW P8).
 	GetRunByAgentID(ctx context.Context, agentID string) (store.Run, error)
@@ -91,6 +92,8 @@ type Manager struct {
 	// audit records shares and uses through them (SetAudit); nil records
 	// nothing.
 	audit audit.Sink
+	// expose is workspace.expose (SetExpose): off until set.
+	expose ExposeLimits
 	// proxy and routes are the way out and the operator's routes by name
 	// (SetEgress); a nil proxy refuses every request out.
 	proxy  *egress.Proxy
@@ -439,6 +442,11 @@ func (m *Manager) Release(ctx context.Context, r store.WorkspaceRow) error {
 	// Its checkouts go with it, whatever the release's outcome: no commit
 	// can be asked of a workspace being released.
 	m.checkouts.forget(r.ID)
+	// Its exposures close first: the route already refuses a workspace that
+	// is not ready, and the rows go with the workspace's in one transaction
+	// at the end; dropping them now closes them on every replica at once,
+	// even when the worker is away and the row stays releasing.
+	m.dropExposures(ctx, r)
 	// So are the proxy's counts for it: an id is never reused.
 	m.forgetEgress(r.ID)
 	if r.State != store.WorkspaceReleasing {

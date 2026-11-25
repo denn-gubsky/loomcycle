@@ -315,6 +315,8 @@ func (b *boot) bindStoreToTools() {
 			CheckoutMaxDocuments: ws.Checkout.MaxDocuments, CheckoutMaxBytes: ws.Checkout.MaxBytes, MaxCheckpoints: ws.Checkpoint.MaxPerWorkspace,
 			ConvertQuarantine: time.Duration(b.cfg.Conversion.Resolved().QuarantineTTLS) * time.Second,
 		}, slog.Default())
+		b.workspaces.SetExpose(lifecycle.ExposeLimits{Enabled: ws.Expose.Enabled, MaxPerWorkspace: ws.Expose.MaxPerWorkspace,
+			IdleTimeout: time.Duration(ws.Expose.IdleTimeoutS) * time.Second})
 		b.workspaceTool.Manager = b.workspaces
 		b.wireWorkspaceEgress()
 		// File reaches workspaces by reference (RFC GW P2) through the same

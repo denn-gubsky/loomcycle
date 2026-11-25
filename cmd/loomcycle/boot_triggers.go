@@ -636,6 +636,13 @@ func sweepWorkspaces(ctx context.Context, m *lifecycle.Manager, rule lifecycle.P
 	if _, err := m.MarkLost(ctx); err != nil {
 		slog.Error("workspaces sweep: lost check failed", "err", err)
 	}
+	// Exposures no request used for workspace.expose.idle_timeout_s (RFC
+	// GW §5.3). The route also refuses one past it, so this only tidies.
+	if n, err := m.SweepExposures(ctx); err != nil {
+		slog.Error("workspaces sweep: list idle exposures failed", "err", err)
+	} else if n > 0 {
+		slog.Info("workspaces sweep: closed idle exposures", "count", n)
+	}
 }
 
 // resumeOrphanedPausedRuns is one tick of the cluster resume sweep: unless the
