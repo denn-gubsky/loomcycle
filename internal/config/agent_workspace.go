@@ -43,6 +43,10 @@ type AgentWorkspace struct {
 	// §5.5); a tenant-scoped one also needs the tenant value in its
 	// memory_scopes. Opening a workspace from a template needs only Open.
 	Templates bool `json:"templates,omitempty" yaml:"templates,omitempty"`
+	// Connect lets the agent send HTTP requests to the ports a peer
+	// exposed, through a share made with connect (RFC GW §5.2, §7), and
+	// hand connect over in a share of its own.
+	Connect bool `json:"connect,omitempty" yaml:"connect,omitempty"`
 	// Egress names the routes (workspace.egress.routes, or a tenant's) a
 	// workspace this agent opens may reach the network through (RFC GW
 	// §6.3). A sub-agent holds only the names both it and its parent list.
