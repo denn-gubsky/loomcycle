@@ -374,7 +374,10 @@ func (f *fakeWorker) stream(id string) workspacepb.WorkspaceService_OpClient {
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	if err := s.Send(&workspacepb.OpFromWorker{Msg: &workspacepb.OpFromWorker_Ready{Ready: &workspacepb.Ready{WorkerId: id}}}); err != nil {
+	// io.EOF from Send is the core having ended the stream already (a token
+	// it refused before it read the Ready); the caller's Recv returns the
+	// status. Failing here reported a refused stream as a bare "EOF".
+	if err := s.Send(&workspacepb.OpFromWorker{Msg: &workspacepb.OpFromWorker_Ready{Ready: &workspacepb.Ready{WorkerId: id}}}); err != nil && !errors.Is(err, io.EOF) {
 		f.t.Fatal(err)
 	}
 	return s
