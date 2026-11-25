@@ -457,6 +457,9 @@ func (w *Workspace) open(ctx context.Context, o lifecycle.Owner, pol tools.Works
 		if err != nil {
 			return templateError(err)
 		}
+		if !templateReachable(ctx, t) {
+			return templateError(lifecycle.ErrTemplateNotFound)
+		}
 		req.Template = &t
 		return w.finishOpen(ctx, o, req)
 	}

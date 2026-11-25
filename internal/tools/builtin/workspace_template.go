@@ -85,9 +85,18 @@ func (w *Workspace) templates(ctx context.Context, o lifecycle.Owner) tools.Resu
 	}
 	out := make([]map[string]any, 0, len(list))
 	for _, t := range list {
-		out = append(out, templateView(t))
+		if templateReachable(ctx, t) {
+			out = append(out, templateView(t))
+		}
 	}
 	return workspaceOK(map[string]any{"templates": out})
+}
+
+// templateReachable reports whether the run may use t: an isolated member
+// (substrate:user) reaches no tenant-shared data, so no tenant template
+// (D-P6-39).
+func templateReachable(ctx context.Context, t store.WorkspaceTemplateRow) bool {
+	return t.Scope != store.WorkspaceTemplateTenant || tools.ConfineIsolatedScope(ctx, store.MemoryScopeTenant) == nil
 }
 
 // templateView is a template as the model sees it: never its id, digest,

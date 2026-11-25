@@ -135,3 +135,23 @@ func TestWorkspaceTemplate_StrictArguments(t *testing.T) {
 		t.Error("a save from a shared name was accepted")
 	}
 }
+
+// D-P6-39: an isolated member (substrate:user) reaches no tenant-shared
+// data, so it neither lists nor opens a tenant template; its own user
+// templates are its.
+func TestWorkspaceTemplate_AnIsolatedMemberSeesNoTenantTemplate(t *testing.T) {
+	f, alice, ck := tplFixture(t)
+	f.mustOK(t, withMemoryScopes(alice, "user", "tenant"), `{"op":"save_template","name":"work","checkpoint":"`+ck+`","as":"shared","scope":"tenant"}`)
+	f.mustOK(t, alice, `{"op":"save_template","name":"work","checkpoint":"`+ck+`","as":"own","scope":"user"}`)
+	iso := f.runCtx(t, "alice", "", tplGrant)
+	id := tools.RunIdentity(iso)
+	id.Isolated = true
+	iso = tools.WithRunIdentity(iso, id)
+	if got := f.mustOK(t, iso, `{"op":"templates"}`).Text; strings.Contains(got, `"shared"`) || !strings.Contains(got, `"own"`) {
+		t.Errorf("an isolated member's list = %s", got)
+	}
+	if c := refusalClass(f.call(t, iso, `{"op":"open","name":"x","template":"shared"}`)); c != "template_not_found" {
+		t.Errorf("an isolated member opening a tenant template = %q, want template_not_found", c)
+	}
+	f.mustOK(t, iso, `{"op":"open","name":"y","template":"own"}`)
+}
