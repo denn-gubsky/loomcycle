@@ -1,0 +1,316 @@
+package http
+
+import (
+	"context"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/store"
+	storesqlite "github.com/denn-gubsky/loomcycle/internal/store/sqlite"
+	"github.com/denn-gubsky/loomcycle/internal/workspace"
+	"github.com/denn-gubsky/loomcycle/internal/workspace/dispatch"
+	"github.com/denn-gubsky/loomcycle/internal/workspace/lifecycle"
+)
+
+// RFC GW §5.3, P9 plan §3.3: the exposure route. The decision is the
+// lifecycle's (OpenExposure, real, on a SQLite store); the dial goes to a
+// test server standing for the workspace's application.
+
+const testExposureID = "0123456789abcdef01234567"
+
+// seenRequest is what the application received.
+type seenRequest struct {
+	Path, Host, Origin, Auth, Cookie, Proto string
+	Header                                  http.Header
+}
+
+type exposureFixture struct {
+	st   store.Store
+	m    *lifecycle.Manager
+	app  *httptest.Server
+	mu   sync.Mutex
+	seen []seenRequest
+	// dialErr, when set, is what the dial answers instead of reaching app.
+	dialErr error
+	mux     *http.ServeMux
+	lim     exposeRouteLimits
+}
+
+// testExposures is the real bookkeeping with the dial sent to the fixture's
+// application.
+type testExposures struct {
+	*lifecycle.Manager
+	f *exposureFixture
+}
+
+func (x testExposures) DialExposure(ctx context.Context, _ store.WorkspaceRow, _ int) (io.ReadWriteCloser, error) {
+	if x.f.dialErr != nil {
+		return nil, x.f.dialErr
+	}
+	var d net.Dialer
+	return d.DialContext(ctx, "tcp", x.f.app.Listener.Addr().String())
+}
+
+func newExposureFixture(t *testing.T) *exposureFixture {
+	t.Helper()
+	st, err := storesqlite.Open(filepath.Join(t.TempDir(), "expose.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	f := &exposureFixture{st: st, lim: exposeRouteLimits{MaxConnections: 32, RequestsPerSecond: 1000, BytesPerSecond: 1 << 30}}
+	f.app = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		f.seen = append(f.seen, seenRequest{Path: r.URL.RequestURI(), Host: r.Host, Origin: r.Header.Get("Origin"),
+			Auth: r.Header.Get("Authorization"), Cookie: r.Header.Get("Cookie"), Header: r.Header.Clone()})
+		f.mu.Unlock()
+		switch r.URL.Path {
+		case "/redirect":
+			w.Header().Set("Location", "/there?x=1")
+			w.WriteHeader(http.StatusFound)
+			return
+		case "/away":
+			w.Header().Set("Location", "https://example.com/elsewhere")
+			w.WriteHeader(http.StatusFound)
+			return
+		}
+		http.SetCookie(w, &http.Cookie{Name: "sid", Value: "s3cret"})
+		w.Header().Set("Content-Security-Policy", "default-src *")
+		_, _ = io.WriteString(w, "hello from the workspace")
+	}))
+	t.Cleanup(f.app.Close)
+	ctx := context.Background()
+	if _, err := st.WorkspaceCreate(ctx, store.WorkspaceRow{ID: "ws_1", TenantID: "acme", UserID: "alice", Name: "web",
+		WorkerID: "wk1", Engine: "host", OwnerRunID: "run1", RootRunID: "run1", State: store.WorkspaceReady}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.WorkspaceExposureCreate(ctx, store.WorkspaceExposure{ID: testExposureID, TenantID: "acme", UserID: "alice",
+		WorkspaceID: "ws_1", Port: 8000, Kind: store.WorkspaceExposurePage}, 2); err != nil {
+		t.Fatal(err)
+	}
+	f.m = lifecycle.New(nil, st, lifecycle.Limits{}, nil)
+	f.m.SetExpose(lifecycle.ExposeLimits{Enabled: true})
+	f.rebuild()
+	return f
+}
+
+// rebuild makes the route's mux again with the fixture's limits.
+func (f *exposureFixture) rebuild() {
+	f.mux = http.NewServeMux()
+	f.mux.Handle(exposureRoutePattern, newExposureHandler(testExposures{Manager: f.m, f: f}, f.lim))
+}
+
+// as is a request with a bearer header, authenticated as p (nil p: no
+// principal, as open mode leaves it).
+func (f *exposureFixture) as(p *auth.Principal, method, path string, hdr map[string]string) *httptest.ResponseRecorder {
+	r := httptest.NewRequest(method, path, nil)
+	r.Host = "board.example"
+	for k, v := range hdr {
+		r.Header.Set(k, v)
+	}
+	if r.Header.Get("Authorization") == "" {
+		r.Header.Set("Authorization", "Bearer lc_test")
+	}
+	if p != nil {
+		r = r.WithContext(auth.WithPrincipal(r.Context(), *p))
+	}
+	w := httptest.NewRecorder()
+	f.mux.ServeHTTP(w, r)
+	return w
+}
+
+func (f *exposureFixture) seenCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.seen)
+}
+
+var (
+	alice      = &auth.Principal{TenantID: "acme", Subject: "alice", Scopes: []string{"runs:read"}}
+	bob        = &auth.Principal{TenantID: "acme", Subject: "bob", Scopes: []string{"runs:read"}}
+	aliceElse  = &auth.Principal{TenantID: "other", Subject: "alice", Scopes: []string{"runs:read"}}
+	adminBob   = &auth.Principal{TenantID: "acme", Subject: "bob", Scopes: []string{"substrate:admin"}}
+	legacyRoot = &auth.Principal{TenantID: "default", Subject: "alice", Legacy: true}
+	pagePath   = exposurePrefix + testExposureID + "/index.html"
+)
+
+// wantSandboxed asserts the headers every answer of the route carries.
+func wantSandboxed(t *testing.T, what string, w *httptest.ResponseRecorder) {
+	t.Helper()
+	csp := w.Header().Get("Content-Security-Policy")
+	if !strings.Contains(csp, "sandbox allow-scripts allow-forms") || !strings.Contains(csp, "connect-src 'self'") {
+		t.Errorf("%s: Content-Security-Policy = %q, want the sandbox policy", what, csp)
+	}
+	if w.Header().Get("X-Content-Type-Options") != "nosniff" {
+		t.Errorf("%s: no X-Content-Type-Options: nosniff", what)
+	}
+	if len(w.Header().Values("Set-Cookie")) != 0 {
+		t.Errorf("%s: Set-Cookie reached the client: %v", what, w.Header().Values("Set-Cookie"))
+	}
+}
+
+// Only the workspace's own user, in its tenant, reaches the page (RFC GW
+// D22, D-P9-8): another user of the tenant, the same subject in another
+// tenant, an admin, the legacy token and a caller with no principal all get
+// the answer an unknown id gets, and the application sees none of them.
+func TestExposureRoute_RefusesEveryCallerButTheWorkspacesOwnUser(t *testing.T) {
+	f := newExposureFixture(t)
+	unknown := f.as(alice, "GET", exposurePrefix+"ffffffffffffffffffffffff/index.html", nil)
+	if unknown.Code != http.StatusNotFound {
+		t.Fatalf("an unknown id = %d, want 404", unknown.Code)
+	}
+	for name, p := range map[string]*auth.Principal{"another user": bob, "another tenant": aliceElse,
+		"an admin": adminBob, "the legacy token": legacyRoot, "no principal": nil} {
+		w := f.as(p, "GET", pagePath, nil)
+		if w.Code != unknown.Code || w.Body.String() != unknown.Body.String() {
+			t.Errorf("%s: %d %q, want the unknown id's %d %q", name, w.Code, w.Body.String(), unknown.Code, unknown.Body.String())
+		}
+		wantSandboxed(t, name, w)
+	}
+	if n := f.seenCount(); n != 0 {
+		t.Fatalf("the application received %d requests from refused callers", n)
+	}
+	if w := f.as(alice, "GET", pagePath, nil); w.Code != http.StatusOK || w.Body.String() != "hello from the workspace" {
+		t.Errorf("the workspace's own user = %d %q", w.Code, w.Body.String())
+	}
+}
+
+// The route takes the bearer in the Authorization header only: a request a
+// Web UI cookie authenticated, and one with no header, are refused, so a
+// browser sent to the address runs nothing (RFC GW §5.3).
+func TestExposureRoute_RefusesACookieOrAMissingBearerHeader(t *testing.T) {
+	f := newExposureFixture(t)
+	r := httptest.NewRequest("GET", pagePath, nil)
+	r = r.WithContext(withUIAuth(auth.WithPrincipal(r.Context(), *alice), uiAuth{}))
+	w := httptest.NewRecorder()
+	f.mux.ServeHTTP(w, r)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("a cookie-authenticated request = %d, want 401", w.Code)
+	}
+	wantSandboxed(t, "cookie", w)
+	r = httptest.NewRequest("GET", pagePath, nil)
+	r = r.WithContext(auth.WithPrincipal(r.Context(), *alice))
+	w = httptest.NewRecorder()
+	f.mux.ServeHTTP(w, r)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("no Authorization header = %d, want 401", w.Code)
+	}
+	if n := f.seenCount(); n != 0 {
+		t.Errorf("the application received %d requests", n)
+	}
+}
+
+// What crosses (RFC GW §5.3): the prefix is removed, Host and Origin pass as
+// sent, the bearer and cookies never reach the application, Set-Cookie
+// never reaches the client, a redirect lands under the prefix, and every
+// answer carries the sandbox policy in place of the application's own.
+func TestExposureRoute_CarriesTheRequestUnderTheSandboxPolicy(t *testing.T) {
+	f := newExposureFixture(t)
+	w := f.as(alice, "GET", exposurePrefix+testExposureID+"/a/b%20c?q=1", map[string]string{
+		"Origin": "https://board.example", "Cookie": "lc_session=abc", "Authorization": "Bearer lc_secret_value",
+		"Proxy-Authorization": "Basic x"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("= %d %s", w.Code, w.Body.String())
+	}
+	wantSandboxed(t, "a page", w)
+	if strings.Contains(w.Header().Get("Content-Security-Policy"), "default-src *") {
+		t.Errorf("the application's own policy reached the client: %q", w.Header().Get("Content-Security-Policy"))
+	}
+	got := f.seen[0]
+	if got.Path != "/a/b%20c?q=1" || got.Host != "board.example" || got.Origin != "https://board.example" {
+		t.Errorf("the application saw path %q host %q origin %q", got.Path, got.Host, got.Origin)
+	}
+	if got.Auth != "" || got.Cookie != "" || got.Header.Get("Proxy-Authorization") != "" {
+		t.Errorf("a credential reached the application: auth %q cookie %q", got.Auth, got.Cookie)
+	}
+	for k, vs := range got.Header {
+		for _, v := range vs {
+			if strings.Contains(v, "lc_secret_value") || strings.Contains(v, "lc_test") {
+				t.Errorf("the bearer reached the application in %s", k)
+			}
+		}
+	}
+	if w := f.as(alice, "GET", exposurePrefix+testExposureID+"/redirect", nil); w.Header().Get("Location") != exposurePrefix+testExposureID+"/there?x=1" {
+		t.Errorf("a redirect's Location = %q, want it under the prefix", w.Header().Get("Location"))
+	}
+	if w := f.as(alice, "GET", exposurePrefix+testExposureID+"/away", nil); w.Header().Get("Location") != "https://example.com/elsewhere" {
+		t.Errorf("a redirect elsewhere = %q, want it unchanged", w.Header().Get("Location"))
+	}
+}
+
+// An exposure closes with unexpose, with its workspace's release, at its
+// idle timeout and when the operator turns workspace.expose off: each is the
+// unknown id's answer, and nothing reaches the application.
+func TestExposureRoute_ClosedByUnexposeReleaseIdleAndTheSwitch(t *testing.T) {
+	ctx := context.Background()
+	for name, close := range map[string]func(f *exposureFixture){
+		"unexpose": func(f *exposureFixture) { _, _ = f.st.WorkspaceExposureDelete(ctx, "acme", testExposureID) },
+		"release": func(f *exposureFixture) {
+			_, _ = f.st.WorkspaceSetState(ctx, "acme", "ws_1", store.WorkspaceReady, store.WorkspaceReleasing)
+		},
+		"idle": func(f *exposureFixture) {
+			_ = f.st.WorkspaceExposureTouch(ctx, "acme", testExposureID, time.Now().Add(-time.Hour))
+		},
+		"switch off": func(f *exposureFixture) { f.m.SetExpose(lifecycle.ExposeLimits{Enabled: false}) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newExposureFixture(t)
+			if w := f.as(alice, "GET", pagePath, nil); w.Code != http.StatusOK {
+				t.Fatalf("before = %d", w.Code)
+			}
+			close(f)
+			if w := f.as(alice, "GET", pagePath, nil); w.Code != http.StatusNotFound {
+				t.Errorf("after %s = %d, want 404", name, w.Code)
+			}
+			if n := f.seenCount(); n != 1 {
+				t.Errorf("the application received %d requests, want only the one before", n)
+			}
+		})
+	}
+}
+
+// A port no server of the workspace listens on itself (the worker's #2917
+// check) is a 502 with the sandbox policy, naming no host or path.
+func TestExposureRoute_APortNotServedIsABadGateway(t *testing.T) {
+	f := newExposureFixture(t)
+	f.dialErr = &dispatch.OpError{Class: workspace.ClassPortNotServed, Detail: "port 8000 is not listened on by a server of this workspace itself"}
+	w := f.as(alice, "GET", pagePath, nil)
+	if w.Code != http.StatusBadGateway || !strings.Contains(w.Body.String(), "no server") {
+		t.Errorf("= %d %q, want 502 naming no server", w.Code, w.Body.String())
+	}
+	wantSandboxed(t, "502", w)
+}
+
+// A WebSocket upgrade is refused until WebSocket arrives (P9 PR 5).
+func TestExposureRoute_RefusesAWebSocketUpgrade(t *testing.T) {
+	f := newExposureFixture(t)
+	w := f.as(alice, "GET", pagePath, map[string]string{"Connection": "Upgrade", "Upgrade": "websocket"})
+	if w.Code != http.StatusNotImplemented {
+		t.Errorf("an upgrade = %d, want 501", w.Code)
+	}
+	if n := f.seenCount(); n != 0 {
+		t.Errorf("the application received %d requests", n)
+	}
+}
+
+// The workspace's request rate is bounded (workspace.expose.requests_per_second).
+func TestExposureRoute_RefusesPastTheRequestRate(t *testing.T) {
+	f := newExposureFixture(t)
+	f.lim.RequestsPerSecond = 1
+	f.rebuild()
+	codes := map[int]int{}
+	for range 5 {
+		codes[f.as(alice, "GET", pagePath, nil).Code]++
+	}
+	if codes[http.StatusTooManyRequests] == 0 || codes[http.StatusOK] == 0 {
+		t.Errorf("5 quick requests at 1/s gave %v, want some 200 and some 429", codes)
+	}
+}

@@ -530,6 +530,9 @@ type Server struct {
 	// workspaces releases a run's workspaces when it ends (RFC GW); nil
 	// while workspace.mode is off.
 	workspaces workspaceReleaser
+	// exposures serves /v1/workspaces/exposures/… (RFC GW §5.3); nil while
+	// workspace.mode is off, and the route then answers 404.
+	exposures *exposureHandler
 
 	// metricsSampler is the v0.8.x process-resource sampler.
 	// Nil = the /v1/_metrics/* endpoints return 503. Set via
@@ -1248,6 +1251,23 @@ type workspaceReleaser interface {
 	ReleaseRun(ctx context.Context, runID string) error
 	// Share makes a spawn's workspace shares with its child (RFC GW P8).
 	Share(ctx context.Context, o lifecycle.Owner, name string, p lifecycle.Peer, access string) (store.WorkspaceRow, error)
+}
+
+// SetWorkspaceExposures serves the workspaces' exposed ports (RFC GW §5.3)
+// with workspace.expose's bounds. Boot wiring only.
+func (s *Server) SetWorkspaceExposures(x workspaceExposures, maxConnections, requestsPerSecond int, bytesPerSecond int64) {
+	s.exposures = newExposureHandler(x, exposeRouteLimits{MaxConnections: maxConnections,
+		RequestsPerSecond: requestsPerSecond, BytesPerSecond: bytesPerSecond})
+}
+
+// handleWorkspaceExposure serves the route, or 404 with no bookkeeping.
+func (s *Server) handleWorkspaceExposure(w http.ResponseWriter, r *http.Request) {
+	if s.exposures == nil {
+		setExposureHeaders(w.Header())
+		exposureNotFound(w)
+		return
+	}
+	s.exposures.ServeHTTP(w, r)
 }
 
 // SetWorkspaces gives the server the workspace bookkeeping, so a run's
@@ -4198,6 +4218,8 @@ func (s *Server) routes() *http.ServeMux {
 	// cannot send its credential on the upgrade (strict mode reads no bearer
 	// subprotocol). Gated exactly as the socket is.
 	mux.Handle("POST /v1/client-tools/ticket", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleClientToolsTicket))))
+	// RFC GW §5.3: a workspace's exposed port, to the workspace's own user.
+	mux.Handle("/v1/workspaces/exposures/{id}/{path...}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleWorkspaceExposure))))
 	// v0.7.3 Web UI — embedded React SPA. The shell and its assets are
 	// public; the SPA pulls protected data from /v1/*, which goes through
 	// authMiddleware. Standard SPA-on-API split.
