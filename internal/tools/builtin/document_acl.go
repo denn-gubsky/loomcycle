@@ -436,6 +436,14 @@ func (a *docACL) readable(ctx context.Context, docID string) (bool, error) {
 	if withheld, err := a.annotationDocumentWithheld(ctx, docID); err != nil || withheld {
 		return false, err
 	}
+	return a.readableByName(ctx, docID)
+}
+
+// readableByName is readable without the annotation-document question: whether
+// the set allows reading the document at every name it is filed under. A caller
+// that never shows a folder's annotation document (Path ls counts, RFC HA) asks
+// this alone and spares the one query per document that question costs.
+func (a *docACL) readableByName(ctx context.Context, docID string) (bool, error) {
 	if !a.pathSensitive {
 		return tools.ACLFilterAllows(ctx, a.eff, "read", a.resource("")), nil
 	}

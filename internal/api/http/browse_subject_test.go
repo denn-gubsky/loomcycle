@@ -67,7 +67,7 @@ const onePixelPNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mN
 func newBrowseFixture(t *testing.T) *browseFixture {
 	t.Helper()
 	f := &browseFixture{feedFixture: newFeedFixture(t), agentDocs: map[string]string{}}
-	f.srv.tools = []tools.Tool{f.doc, &builtin.Path{Store: f.store}}
+	f.srv.tools = []tools.Tool{f.doc, &builtin.Path{Store: f.store, Documents: f.doc}}
 	cfg := &config.Config{Agents: map[string]config.AgentDef{
 		"helper":       {Model: "stub-model", SystemPrompt: "helper"},
 		"secret-agent": {Model: "stub-model", SystemPrompt: "secret"},
@@ -140,6 +140,9 @@ func (f *browseFixture) foreignCases(subject string) []browseCase {
 		{"document copy into the subject's scope", "POST", "/v1/_document?scope_id=" + subject,
 			`{"op":"copy_documents","scope":"tenant","to_scope":"user","under_path":"/","dry_run":true}`},
 		{"path ls", "POST", "/v1/_path?scope_id=" + subject, `{"op":"ls","scope":"user","path":"/","recursive":true}`},
+		// RFC HA: a count or a filter is a read of the subject's scope, refused as one.
+		{"path ls counted and filtered", "POST", "/v1/_path?scope_id=" + subject,
+			`{"op":"ls","scope":"user","path":"/","with_counts":true,"name_contains":"plan"}`},
 		{"asset", "GET", "/v1/_document/asset/" + f.secretChunk + "?scope=user&scope_id=" + subject, ""},
 		{"project", "POST", "/v1/_document/project?scope=user&scope_id=" + subject, ""},
 	}
