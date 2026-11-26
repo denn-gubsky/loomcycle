@@ -2,9 +2,7 @@ package snapshot
 
 import (
 	"context"
-	"crypto/sha256"
 	"crypto/subtle"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +12,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/snapshot/migrations"
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/workerid"
 )
 
 // The workspaces section (RFC GW P12 plan §3.6, §5): a workspace's row, its
@@ -238,23 +237,18 @@ func restorableWorkspace(ctx context.Context, s store.Store, e WorkspaceEntry, o
 // that very tenant and user. A row with no user points at no personal
 // worker (P13 D-P13-24, the restore rule of its plan §5.2).
 func workerOfOwner(workerID, tenant, user string) bool {
-	rest, personal := strings.CutPrefix(workerID, "user:")
-	if !personal {
+	if !strings.HasPrefix(workerID, "user:") {
 		return workerOfTenant(workerID, tenant)
 	}
 	if user == "" {
 		return false
 	}
-	t, after, ok := strings.Cut(rest, "/")
-	if !ok || t != tenant {
+	// The row's own key and a declared id after it, nothing else.
+	key := workerid.PersonalGrantKey(tenant, user) + "/"
+	if len(workerID) <= len(key) {
 		return false
 	}
-	hash, declared, ok := strings.Cut(after, "/")
-	if !ok || declared == "" {
-		return false
-	}
-	sum := sha256.Sum256([]byte(user))
-	return subtle.ConstantTimeCompare([]byte(hash), []byte(hex.EncodeToString(sum[:])[:16])) == 1
+	return subtle.ConstantTimeCompare([]byte(workerID[:len(key)]), []byte(key)) == 1
 }
 
 // workerOfTenant reports whether a worker id carries tenant's own grant, or

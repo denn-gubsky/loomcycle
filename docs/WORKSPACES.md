@@ -14,6 +14,12 @@ A **workspace** is a directory on a *workspace worker*, a process apart from the
 - **No durable, git or shared workspaces.** Every workspace is ephemeral, empty when opened and gone when its run ends, and owned by one run. A reference into another agent's workspace (`workspace:<name>@<agent_id>:<path>`) comes with sharing, phase 8; checking a Document out into a workspace and committing it back, phase 7.
 - **Not on loomcycle's MCP server.** A workspace is pinned to a run, and an MCP session has none: the MCP `file` tool refuses a workspace reference.
 
+## Coming from Bash, Bashbox or the builder sidecar
+
+Workspaces replace the `Bash` tool, Bashbox and its host-command fallback, the builder sidecar's `mcp__sandbox__*` tools and the `shell_credentials` field. All of these still work, and a future release removes them (RFC GW P15). Boot and `loomcycle doctor` warn about each use. [MIGRATING-FROM-BASH.md](MIGRATING-FROM-BASH.md) maps each tool, variable and field to its replacement.
+
+The embedded bundles have moved already. `sdlc/coder`, `sdlc/reviewer`, `team/orchestrator` and the three `chat` agents hold `Workspace` with a `{ops: [read, write, exec], open: true}` grant, and fall back to their old shell tool only when this install runs no workspaces. The `dev-workspace` bundle's `dev/exec` runs the old sandbox command envelope in a workspace.
+
 ## Running a remote worker
 
 A remote worker is `loomcycle worker --role workspace` on a machine of its own, attached to the runtime's worker endpoint.
@@ -437,7 +443,20 @@ A template is a named starting state: a checkpoint's files, installed packages i
 - **Bounds.** The file may be at most 20 MiB (`too_large` otherwise); a picture as sent at most 3,750,000 bytes.
 - **A model that cannot see images.** The picture is not sent and the call fails saying so; the run goes on. The same applies to any tool that returns a picture.
 - **Kept with the run.** The picture is stored with the run's transcript, so a resumed run shows the model the same picture. The live event carries only the line naming it.
-- **Not yet:** `screenshot`, which loads a page of the workspace's own server in a headless browser, arrives with servers (RFC GW P9) and a worker image that carries a browser.
+
+**`screenshot`** loads a page a running server of the workspace serves in a headless browser and returns the picture the same way, so an agent can see the web page it built (RFC GW §5.8). It needs both the `exec` and the `connect` grant (the page's scripts run in the session, as a command does), and only the run's own workspace: never one shared with it, and not over the MCP server.
+
+```json
+{"op": "screenshot", "name": "site", "port": 8000, "path": "/report", "width": 1280, "height": 800}
+```
+```json
+{"bytes": 61204, "height": 800, "name": "site", "path": "/report", "port": 8000, "width": 1280}
+```
+
+- **Where the browser runs.** Inside the workspace's own container session, so only on a `container`-engine worker whose session image carries the browser: build it with `docker build -f Dockerfile.workspace --target browser .` (the plain session image with Chromium; a second image, so a general workspace stays the size it is), and name it in `LOOMCYCLE_WORKSPACE_CONTAINER_IMAGE`. Once its release step lands it is also published as `denngubsky/loomcycle-workspace-browser:<version>`. The worker finds `chromium` in its image when it starts and then reports the `browser` label. A worker without it, and every `host`-engine worker, answers `browser_unavailable`; the runtime does not send the op to one.
+- **What it reaches.** Only `http://127.0.0.1:<port><path>`, the session's own loopback, at a port a running server of the workspace declared (`port_not_served` otherwise). `path` is a path, never a URL: it starts with one `/`, holds printable ASCII without spaces or `\`, and is at most 2048 bytes. Every request the page makes goes to a proxy that is not there except that one port on `127.0.0.1`, so another loopback port, the egress gateway or any other address, even written as a number, is not reached. Host names other than `127.0.0.1` also resolve to nothing; WebRTC sends no UDP, and QUIC and the browser's own background requests are off.
+- **What it carries.** Nothing of the user's: the page is loaded directly, never through the exposure route, with no cookie, header or bearer. Each shot starts with a fresh profile in the session's `/tmp`, removed when it ends, so no cookie or storage survives it.
+- **Bounds.** A viewport of at most 1920 by 1080 (default 1280 by 800); one shot at most 30 seconds, after which the browser is killed (`browser_timed_out`); one at a time per workspace (`browser_busy`); the picture at most 20 MiB from the worker (`too_large`), then scaled and bounded as `view`'s is.
 
 ## Moving files
 

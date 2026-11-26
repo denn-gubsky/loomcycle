@@ -67,7 +67,9 @@ func (w *worker) serveOne(ctx context.Context, client workspacepb.WorkspaceServi
 	}
 	done := watchEnd(sctx, cancel, stream)
 	if a.class == "" {
-		a = w.run(sctx, start, input)
+		// A git op reaches the forge on the connection it came on: its
+		// ticket lives on that core replica (RFC GW P11 plan §3.3).
+		a = w.run(withOpClient(sctx, client), start, input)
 	}
 	return finish(ctx, stream, a, done)
 }
@@ -167,6 +169,10 @@ func (w *worker) run(ctx context.Context, start *workspacepb.OpStart, input []by
 	switch start.GetOp() {
 	case workspace.OpOpen:
 		return hidePaths(w.open(id, dir, start.GetArgs()), false, dir, w.opt.Root)
+	case workspace.OpGitFetch:
+		return w.gitFetch(ctx, id, start.GetArgs())
+	case workspace.OpGitOpen:
+		return hidePaths(w.gitOpen(ctx, id, dir, start.GetArgs()), false, dir, w.opt.Root)
 	case workspace.OpRemove:
 		if _, ok := w.boundRoot(id); ok {
 			return w.removeBound(ctx, id)
@@ -180,6 +186,11 @@ func (w *worker) run(ctx context.Context, start *workspacepb.OpStart, input []by
 		}
 		if err := w.removeOwnDir(id); err != nil {
 			return refuse(workspace.ClassFailed, "removing the workspace: %v", err)
+		}
+		// A git workspace's pins go with it, so its mirror keeps nothing
+		// for it (RFC GW §4.2).
+		if err := w.dropGit(id); err != nil {
+			return refuse(workspace.ClassFailed, "removing the workspace's pins: %v", err)
 		}
 		// Its checkpoints go with it (RFC GW §5.4).
 		if err := w.dropCheckpoints(id); err != nil {
@@ -252,6 +263,14 @@ func (w *worker) run(ctx context.Context, start *workspacepb.OpStart, input []by
 		}
 		// A server's output is returned as it is; only a refusal's detail
 		// is the runtime's text.
+		return hidePaths(a, false, real, dir, w.opt.Root)
+	case workspace.OpScreenshot:
+		dir, real, a := w.workspaceDir(id)
+		if a.class == "" {
+			a = w.screenshotOp(ctx, id, real, start.GetArgs())
+		}
+		// A failed load's detail is the browser's log, which may name the
+		// session's folders; the picture itself is returned as it is.
 		return hidePaths(a, false, real, dir, w.opt.Root)
 	case workspace.OpMDSplice:
 		dir, real, a := w.workspaceDir(id)

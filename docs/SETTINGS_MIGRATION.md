@@ -207,6 +207,8 @@ Seven features lost their switch and run on every server: the scheduler, the inb
 
 **What to do.** Set `LOOMCYCLE_MCP_ALLOW_PRIVILEGED_TOOLS=1` only if you trust every caller that can register an agent with a shell and with any host command you allowed for the Bashbox fallback.
 
+**Later:** `Bash` and Bashbox are now deprecated, and a future release removes them (RFC GW P15). Move such an agent to the `Workspace` tool; [MIGRATING-FROM-BASH.md](MIGRATING-FROM-BASH.md) maps each piece across.
+
 ### 4.4 SQL Memory turns on for SQLite instances
 
 **Who is affected.** A deployment on the SQLite store that never set `LOOMCYCLE_SQLMEM_ENABLED`.
@@ -905,6 +907,8 @@ SANDBOX_MAX_PIDS, SANDBOX_SESSION_IDLE_TTL: no longer read, the value is fixed (
 Remove the lines. If you had lowered one of these limits, the fixed value is looser than what you ran; decide whether that is acceptable before you start.
 
 These remain: `SANDBOX_LISTEN_ADDR`, `SANDBOX_AUTH_TOKEN`, `SANDBOX_ALLOW_ANON`, `SANDBOX_PODMAN_BIN`, `SANDBOX_IMAGE`, `SANDBOX_RUNTIME`, `SANDBOX_WORKSPACE_ROOT`, `SANDBOX_ALLOW_EGRESS`, `SANDBOX_EXPOSE_NETWORK`, `SANDBOX_ALLOW_ENV_INJECTION`, `SANDBOX_MAX_CPUS`, `SANDBOX_MAX_MEM_MB`, `SANDBOX_MAX_SESSIONS`.
+
+**Later:** the builder sidecar itself is now deprecated, and a future release removes it (RFC GW P15). A workspace worker with the `container` engine replaces it, and the `dev-workspace` bundle replaces `sandbox` + `dev-exec`; see [MIGRATING-FROM-BASH.md](MIGRATING-FROM-BASH.md#the-builder-sidecar).
 
 ### 5.15 Sign-in mode
 

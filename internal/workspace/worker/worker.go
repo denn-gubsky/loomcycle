@@ -35,6 +35,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/denn-gubsky/loomcycle/internal/convert"
+	"github.com/denn-gubsky/loomcycle/internal/gitsource"
 	"github.com/denn-gubsky/loomcycle/internal/safego"
 	"github.com/denn-gubsky/loomcycle/internal/workerlink"
 	"github.com/denn-gubsky/loomcycle/internal/workspace"
@@ -86,6 +87,9 @@ type Options struct {
 	// GW P4 plan O13). Not a boundary: the port takes a per-workspace
 	// secret, which this user's own processes can read (engine.Host).
 	HostEgress bool
+	// browser is whether the container engine's session image carries the
+	// browser, probed at the start; it adds the browser label.
+	browser bool
 	// hostEgress is the handler a host workspace's port serves, set by
 	// wireEgress.
 	hostEgress func(workspace string) http.Handler
@@ -217,6 +221,18 @@ func Run(ctx context.Context, opt Options) error {
 	// (RFC GW §6.3); self is set below, before any session can start.
 	var self *worker
 	wireEgress(&opt, &self)
+	// A git workspace's session sees its mirror's objects read-only (RFC GW
+	// §4.2): the container engine asks which mirror when it makes one.
+	opt.Container.MirrorKeyFor = func(id string) string {
+		if self == nil {
+			return ""
+		}
+		return self.MirrorKeyOf(id)
+	}
+	// go-git's HTTP clients go through gitsource's dispatcher, which takes
+	// each operation's transport from its context: here, the op's Egress
+	// streams to the core.
+	gitsource.InstallTransport()
 	eng, err := newEngine(ctx, &opt, log)
 	if err != nil {
 		return err
@@ -234,10 +250,16 @@ func Run(ctx context.Context, opt Options) error {
 	if opt.Convert == nil {
 		opt.Labels = nil
 	}
+	// After the conversion labels, which the line above may clear: the
+	// browser is the session image's, not the conversion child's.
+	if opt.browser {
+		opt.Labels = append(opt.Labels, workspace.LabelBrowser)
+		log.Info("the session image carries a browser; this worker takes screenshots")
+	}
 	// The checkpoint mechanism is the disk's, probed once and reported as a
 	// label (RFC GW §5.4).
 	mech := probeMechanism(root)
-	opt.Labels = append(opt.Labels, workspace.CheckpointLabelPrefix+mech)
+	opt.Labels = append(opt.Labels, workspace.CheckpointLabelPrefix+mech, workspace.GitLabel)
 	log.Info("checkpoints are recorded by this mechanism", "mechanism", mech)
 	w := &worker{opt: opt, log: log, engine: eng, mech: mech}
 	if opt.Personal {
@@ -297,6 +319,13 @@ func newEngine(ctx context.Context, opt *Options, log *slog.Logger) (engine.Engi
 	if opt.Toolchains == nil {
 		opt.Toolchains = tc
 	}
+	// A failed probe is no browser: the worker then never offers a
+	// screenshot (fail closed), and says why.
+	if ok, err := c.ProbeBrowser(ctx); err != nil {
+		log.Warn("cannot tell whether the session image carries a browser; this worker takes no screenshot", "err", err)
+	} else {
+		opt.browser = ok
+	}
 	if err := c.Reconcile(ctx); err != nil {
 		return nil, fmt.Errorf("workspace worker: %w", err)
 	}
@@ -338,6 +367,9 @@ type worker struct {
 	servers servers
 	// mu serialises open's capacity check with the directory it makes.
 	mu sync.Mutex
+	// mirrorMu guards mirrorLocks, one lock per mirror (git.go).
+	mirrorMu    sync.Mutex
+	mirrorLocks map[string]chan struct{}
 	// quotas is each workspace's disk count and write lock.
 	quotas quotas
 	// extra counts the one-op streams OpenStreams opened and still open.
@@ -355,6 +387,11 @@ type worker struct {
 	// tplMu serialises the template cache: a copy out of it, a tree put
 	// into it, and an eviction (RFC GW §5.5).
 	tplMu sync.Mutex
+	// shots holds the workspaces a screenshot is being taken of: one
+	// browser per workspace at a time (P10 plan §10).
+	shots sync.Map
+	// shotTimeout is one shot's bound; zero is workspace.ScreenshotTimeout.
+	shotTimeout time.Duration
 }
 
 func (w *worker) outgoing(ctx context.Context) context.Context {

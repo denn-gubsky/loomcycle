@@ -148,6 +148,8 @@ a `searxng/settings.yml` with three required knobs (`secret_key`, `limiter: fals
 
 ## Code execution (the toolbox image)
 
+> **Deprecated.** The toolbox image, `LOOMCYCLE_BASH_ENABLED`, the `LOOMCYCLE_BASHBOX_FALLBACK_*` variables and the builder sidecar are deprecated, and a future release removes them (RFC GW P15). They still work, and boot and `loomcycle doctor` warn while they are set. Workspaces replace them: set `workspace.mode` and give the agent the `Workspace` tool with a `workspace` grant ([WORKSPACES.md](WORKSPACES.md)). [MIGRATING-FROM-BASH.md](MIGRATING-FROM-BASH.md) maps each variable to what replaces it.
+
 By default the app runs the **distroless** image — no shell, no compilers, so agents
 can't run scripts or compile code. To let them, switch both services to the
 **`denngubsky/loomcycle-toolbox`** image (same uid + mount paths — a drop-in swap; it

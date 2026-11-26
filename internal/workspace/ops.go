@@ -832,3 +832,59 @@ func ValidTemplateDigest(d string) bool {
 // session) and keeps its directory: a durable workspace no run holds (RFC
 // GW P12 plan §3.3). It takes no arguments and is idempotent.
 const OpPark = "park"
+
+// The git ops (RFC GW §4.2, P11). A git workspace is a working tree over a
+// bare mirror the worker keeps per (tenant, repository); the core names the
+// mirror by its key and the repository by its URL, from the workspace's
+// row. Network ops carry the op's ticket, which the worker puts on every
+// git request it sends on the op's own connection.
+const (
+	// OpGitFetch fills the op's mirror from the forge (GitFetchArgs),
+	// answering GitFetchAnswer. Sent for the workspace being opened, before
+	// its working tree exists: the open's proof of access.
+	OpGitFetch = "git_fetch_mirror"
+	// OpGitOpen makes the op's workspace a git working tree over its mirror
+	// (GitOpenArgs), answering GitOpenAnswer. Its directory exists (open).
+	OpGitOpen = "git_open"
+)
+
+// GitLabel is the label a worker that serves git workspaces reports.
+const GitLabel = "git"
+
+// GitFetchArgs are a git_fetch_mirror op's arguments.
+type GitFetchArgs struct {
+	Mirror string `json:"mirror"`
+	URL    string `json:"url"`
+	// Ticket is the op's ticket, sent on each git request.
+	Ticket []byte `json:"ticket"`
+	// MaxObjectBytes and MaxReadBytes bound what the fetch takes in: one
+	// object inflated, and the bytes in all.
+	MaxObjectBytes int64 `json:"max_object_bytes"`
+	MaxReadBytes   int64 `json:"max_read_bytes"`
+	// Prove asks for an upload-pack request after the fetch, whatever the
+	// fetch needed: a mirror already up to date sends none, and the core's
+	// proof of access needs the forge to answer one under this ticket.
+	Prove bool `json:"prove,omitempty"`
+}
+
+// GitFetchAnswer reports a mirror fetch.
+type GitFetchAnswer struct {
+	UpToDate bool `json:"up_to_date"`
+	Updated  int  `json:"updated"`
+}
+
+// GitOpenArgs are a git_open op's arguments.
+type GitOpenArgs struct {
+	Mirror  string `json:"mirror"`
+	URL     string `json:"url"`
+	Branch  string `json:"branch"`
+	BaseRef string `json:"base_ref"`
+	// MaxFiles and MaxBytes bound the tree checked out.
+	MaxFiles int   `json:"max_files,omitempty"`
+	MaxBytes int64 `json:"max_bytes,omitempty"`
+}
+
+// GitOpenAnswer is the commit the workspace was opened at.
+type GitOpenAnswer struct {
+	Base string `json:"base"`
+}

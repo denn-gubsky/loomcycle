@@ -66,8 +66,12 @@ a line you add yourself:
 - **Files.** Uncomment `volumes:` in `loomcycle.yaml` and name a directory.
 - **The web.** `LOOMCYCLE_HTTP_HOST_ALLOWLIST` in `env.insecure`, and
   `BRAVE_API_KEY` in `env.local` for search.
-- **A shell.** `Bashbox` (a sandbox confined to the volume) needs only the
-  volume. `LOOMCYCLE_BASH_ENABLED=1` adds `Bash`, which is not a sandbox.
+- **Commands.** `workspace.mode: local` in `loomcycle.yaml` runs the chat
+  agents' commands in a workspace on a worker the runtime starts itself
+  (`docs/WORKSPACES.md`). `Bashbox` (a sandbox confined to the volume, needing
+  only the volume) and `LOOMCYCLE_BASH_ENABLED=1` (`Bash`, which is not a
+  sandbox) still work, and are deprecated: a future release removes them
+  (`docs/MIGRATING-FROM-BASH.md`).
 - **Durable memory.** `presets: [personal, memory]` and the `scheduled_runs`
   block, both in `loomcycle.yaml`.
 
