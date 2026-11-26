@@ -181,9 +181,9 @@ func TestWorkspaceFromDiscovered_CarriesEveryKey(t *testing.T) {
 	if mirror.NumField() != own.NumField() {
 		t.Fatalf("agents.AgentWorkspace has %d fields, config.AgentWorkspace %d: add the new key to both and to workspaceFromDiscovered", mirror.NumField(), own.NumField())
 	}
-	in := &agents.AgentWorkspace{Ops: []string{"read", "write"}, Open: true, Share: true, Expose: true, Connect: true, Durable: true, Templates: true, Egress: []string{"pypi"}, Engine: "container"}
+	in := &agents.AgentWorkspace{Ops: []string{"read", "write"}, Open: true, Share: true, Expose: true, Connect: true, Durable: true, Templates: true, Roots: true, Egress: []string{"pypi"}, Engine: "container"}
 	got := workspaceFromDiscovered(in)
-	want := &AgentWorkspace{Ops: []string{"read", "write"}, Open: true, Share: true, Expose: true, Connect: true, Durable: true, Templates: true, Egress: []string{"pypi"}, Engine: "container"}
+	want := &AgentWorkspace{Ops: []string{"read", "write"}, Open: true, Share: true, Expose: true, Connect: true, Durable: true, Templates: true, Roots: true, Egress: []string{"pypi"}, Engine: "container"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("workspaceFromDiscovered = %+v, want %+v", got, want)
 	}
