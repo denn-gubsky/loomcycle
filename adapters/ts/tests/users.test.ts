@@ -171,6 +171,30 @@ describe("mintUserToken", () => {
     });
   });
 
+  // RFC GW P13: a tenant operator mints a user's personal worker token on the
+  // same route; only ttl_seconds and name go with the purpose.
+  it("sends purpose personal_worker and returns the workers:attach token", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({
+        def_id: "def_w",
+        token: "lc_worker_plaintext",
+        token_suffix: "intext",
+        name: "u-alice-worker",
+        scopes: ["workers:attach"],
+        created_at: "2026-11-26T00:00:00Z",
+        restrictions: { worker_personal: true },
+        warning: "store this token now",
+      }),
+    ]);
+
+    const minted = await client.mintUserToken("alice", { purpose: "personal_worker", ttlSeconds: 3600 });
+
+    expect(minted.scopes).toEqual(["workers:attach"]);
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe("http://test-loomcycle:8787/v1/_users/alice/tokens");
+    expect(JSON.parse(init.body as string)).toEqual({ purpose: "personal_worker", ttl_seconds: 3600 });
+  });
+
   it("surfaces a 409 disabled-user as typed", async () => {
     const { client } = makeClient([
       errorResponse(409, `{"code":"user_disabled","error":"disabled"}`),
