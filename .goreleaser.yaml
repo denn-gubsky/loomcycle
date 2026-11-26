@@ -486,6 +486,62 @@ dockers:
     goarch: arm64
 
 
+  # loomcycle-workspace-browser — the same Dockerfile's browser target: the
+  # session image plus Chromium, for Workspace op=screenshot (RFC GW P10,
+  # owner ruling of 2026-11-26: a second image, so a general workspace stays
+  # the size it is). A container-engine worker running it finds chromium at
+  # its start and reports the browser label. Minor releases only, as the
+  # session image.
+  - id: loomcycle-workspace-browser-amd64
+    ids:
+      - loomcycle
+    image_templates:
+      - "denngubsky/loomcycle-workspace-browser:{{ .Version }}-amd64"
+      - "ghcr.io/denn-gubsky/loomcycle-workspace-browser:{{ .Version }}-amd64"
+      - "denngubsky/loomcycle-workspace-browser:latest-amd64"
+      - "ghcr.io/denn-gubsky/loomcycle-workspace-browser:latest-amd64"
+    dockerfile: Dockerfile.workspace
+    extra_files:
+      - internal/workspace/kernel/drivers/python_driver.py
+      - internal/workspace/kernel/drivers/node_driver.js
+    use: buildx
+    build_flag_templates:
+      - "--platform=linux/amd64"
+      - "--target=browser"
+      - "--label=org.opencontainers.image.title=loomcycle-workspace-browser"
+      - "--label=org.opencontainers.image.description=loomcycle workspace browser session image (RFC GW P10): the session image plus Chromium, for Workspace op=screenshot"
+      - "--label=org.opencontainers.image.url=https://github.com/denn-gubsky/loomcycle"
+      - "--label=org.opencontainers.image.source=https://github.com/denn-gubsky/loomcycle"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+      - "--label=org.opencontainers.image.licenses=Apache-2.0"
+    goarch: amd64
+  - id: loomcycle-workspace-browser-arm64
+    ids:
+      - loomcycle
+    image_templates:
+      - "denngubsky/loomcycle-workspace-browser:{{ .Version }}-arm64"
+      - "ghcr.io/denn-gubsky/loomcycle-workspace-browser:{{ .Version }}-arm64"
+      - "denngubsky/loomcycle-workspace-browser:latest-arm64"
+      - "ghcr.io/denn-gubsky/loomcycle-workspace-browser:latest-arm64"
+    dockerfile: Dockerfile.workspace
+    extra_files:
+      - internal/workspace/kernel/drivers/python_driver.py
+      - internal/workspace/kernel/drivers/node_driver.js
+    use: buildx
+    build_flag_templates:
+      - "--platform=linux/arm64"
+      - "--target=browser"
+      - "--label=org.opencontainers.image.title=loomcycle-workspace-browser"
+      - "--label=org.opencontainers.image.description=loomcycle workspace browser session image (RFC GW P10): the session image plus Chromium, for Workspace op=screenshot"
+      - "--label=org.opencontainers.image.url=https://github.com/denn-gubsky/loomcycle"
+      - "--label=org.opencontainers.image.source=https://github.com/denn-gubsky/loomcycle"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+      - "--label=org.opencontainers.image.licenses=Apache-2.0"
+    goarch: arm64
+
+
 # docker_manifests joins per-arch images into one multi-arch manifest
 # the operator pulls with `docker pull denngubsky/loomcycle:vX.Y.Z`
 # regardless of their host arch.
@@ -536,6 +592,14 @@ docker_manifests:
     image_templates:
       - "denngubsky/loomcycle-workspace:latest-amd64"
       - "denngubsky/loomcycle-workspace:latest-arm64"
+  - name_template: "denngubsky/loomcycle-workspace-browser:{{ .Version }}"
+    image_templates:
+      - "denngubsky/loomcycle-workspace-browser:{{ .Version }}-amd64"
+      - "denngubsky/loomcycle-workspace-browser:{{ .Version }}-arm64"
+  - name_template: "denngubsky/loomcycle-workspace-browser:latest"
+    image_templates:
+      - "denngubsky/loomcycle-workspace-browser:latest-amd64"
+      - "denngubsky/loomcycle-workspace-browser:latest-arm64"
 
   # ── GHCR mirror ──
   - name_template: "ghcr.io/denn-gubsky/loomcycle:{{ .Version }}"
@@ -578,3 +642,11 @@ docker_manifests:
     image_templates:
       - "ghcr.io/denn-gubsky/loomcycle-workspace:latest-amd64"
       - "ghcr.io/denn-gubsky/loomcycle-workspace:latest-arm64"
+  - name_template: "ghcr.io/denn-gubsky/loomcycle-workspace-browser:{{ .Version }}"
+    image_templates:
+      - "ghcr.io/denn-gubsky/loomcycle-workspace-browser:{{ .Version }}-amd64"
+      - "ghcr.io/denn-gubsky/loomcycle-workspace-browser:{{ .Version }}-arm64"
+  - name_template: "ghcr.io/denn-gubsky/loomcycle-workspace-browser:latest"
+    image_templates:
+      - "ghcr.io/denn-gubsky/loomcycle-workspace-browser:latest-amd64"
+      - "ghcr.io/denn-gubsky/loomcycle-workspace-browser:latest-arm64"

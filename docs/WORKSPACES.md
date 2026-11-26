@@ -78,7 +78,16 @@ loomcycle worker --role workspace --personal \
 
 A workspace opened on a root is that folder, not a copy. One workspace is open on a root at a time; a second is refused as busy. Releasing the workspace, or the runtime removing it, only unbinds the folder: the worker never deletes a root or anything in it. Checkpoints, restores, forks and templates are refused on a root, and the disk quota does not apply to it. The worker stages uploads in a `.loomcycle-work` folder inside the root, as in any workspace, and never clears it: what a worker killed mid-upload left there stays for the user to remove. A personal worker runs the `host` engine, so a command runs with the user's own rights and can reach the rest of that user's files by absolute path; the worker logs this at start.
 
-The runtime side, a personal worker token and opening a workspace on a root, comes with later parts of RFC GW P13; until then a personal worker's roots are not reachable from a run.
+**Setting one up.**
+
+1. The operator turns personal workers on in the runtime's yaml: `workspace.personal_workers: true`, with `workspace.mode: remote` (or `local+remote`) and `worker_endpoint.listen` on a loopback address. A runtime whose worker endpoint is reachable from the network refuses to start with the setting on, and a personal worker attaches only from loopback: personal workers are for a runtime on the user's own machine.
+2. A tenant operator mints the user's personal worker token: `POST /v1/_users/{subject}/tokens` with `{"purpose": "personal_worker"}` (an admin may also use `OperatorTokenDef create` with `worker_personal: true` and the user as `subject`). The token holds `workers:attach` alone and serves that user's runs and no one else's; a user cannot mint their own. Disabling or erasing the user retires it.
+3. The user runs the worker with that token in `LOOMCYCLE_WORKER_TOKEN`, as above.
+4. An agent with `workspace: {open: true, roots: true}` opens the folder: `Workspace {"op": "open", "name": "src", "root": "code"}`. Only that user's runs are placed on the worker, and only for a root it offers; an ordinary open never lands there. `list` and `status` name the root.
+
+`open` takes `root` or `repo`, never both, and a root is not opened with a template, a toolchain or `lifetime: "durable"`, nor over loomcycle's MCP server. Shares are refused on a root workspace, as are checkpoints, forks and templates (`not_on_root`). Retiring the token, or turning `workspace.personal_workers` off, detaches the worker within a minute; its workspaces go lost and the folders stay.
+
+**What it gives an agent.** The `host` engine is not a sandbox: an agent with exec on a root has what the user's shell has in that folder and, by absolute path, beyond it. Give `roots` only to agents you would let work in your own files.
 
 ## The container engine
 
@@ -159,10 +168,11 @@ agents:
       templates: true            # may save and delete templates (default false)
       connect: true              # may reach a peer's exposed ports through a share, and share with connect (default false)
       durable: true              # may open durable workspaces, kept for the user's next run (default false)
+      roots: true                # may open a workspace on a folder of the user's own machine (default false)
       engine: host               # least isolating engine it accepts; unset = any
 ```
 
-`exec`, `run_cell`, `reset_kernel`, `start`, `stop`, `logs`, `request` and `await` need `exec`; `write` and `edit` need `write`; `read`, `view`, `glob`, `grep`, `list` and `status` need `read`; `open` needs `open: true`; `expose` and `unexpose` need `expose: true`; `open` with `lifetime: "durable"` needs `durable: true`; `request` on a workspace shared with the run needs `connect: true` instead of `exec`. A sub-agent holds only what both it and its parent hold, before and after a resume. The grant is not per-run overridable, and an agent a tenant member authors may not set it. A grant on an agent without the tool, or while `workspace.mode` is off, does nothing; the boot log and `loomcycle doctor` name such agents.
+`exec`, `run_cell`, `reset_kernel`, `start`, `stop`, `logs`, `request` and `await` need `exec`; `write` and `edit` need `write`; `read`, `view`, `glob`, `grep`, `list` and `status` need `read`; `open` needs `open: true`; `expose` and `unexpose` need `expose: true`; `open` with `lifetime: "durable"` needs `durable: true`; `open` with `root` needs `roots: true`; `request` on a workspace shared with the run needs `connect: true` instead of `exec`. A sub-agent holds only what both it and its parent hold, before and after a resume. The grant is not per-run overridable, and an agent a tenant member authors may not set it. A grant on an agent without the tool, or while `workspace.mode` is off, does nothing; the boot log and `loomcycle doctor` name such agents.
 
 ## Egress
 

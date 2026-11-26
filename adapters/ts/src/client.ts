@@ -2524,6 +2524,12 @@ export class LoomcycleClient {
    *  A start past the rate is refused with 429 `rate_limited` and a
    *  `Retry-After` header.
    *
+   *  `purpose: "personal_worker"` mints the user's personal worker token
+   *  instead (RFC GW P13): exactly `["workers:attach"]`, bound to the user,
+   *  for `loomcycle worker --role workspace --personal`. The server needs
+   *  `workspace.personal_workers` on (403 `personal_workers_off`), and only
+   *  `ttlSeconds` and `name` go with it; any other option is refused (400).
+   *
    *  With none of the options the request has no body, as before. */
   async mintUserToken(
     subject: string,
@@ -2542,6 +2548,8 @@ export class LoomcycleClient {
       /** `"none"`: every run the token starts is a no-trace run, whatever
        *  the request or the agent says. */
       retention?: "none";
+      /** `"personal_worker"`: the user's personal worker token (RFC GW P13). */
+      purpose?: "personal_worker";
     },
   ): Promise<MintedUserToken> {
     const body: Record<string, unknown> = {};
@@ -2555,6 +2563,7 @@ export class LoomcycleClient {
       body.rate = { per_minute: opts.rate.perMinute, burst: opts.rate.burst };
     }
     if (opts?.retention !== undefined) body.retention = opts.retention;
+    if (opts?.purpose !== undefined) body.purpose = opts.purpose;
     return postJSON<MintedUserToken>(
       this.ctx,
       `/v1/_users/${encodeURIComponent(subject)}/tokens`,

@@ -884,6 +884,79 @@ type GitOpenArgs struct {
 	MaxBytes int64 `json:"max_bytes,omitempty"`
 }
 
+// The network ops of a git workspace (P11 plan §3.7), each on the op's
+// workspace with GitNetArgs, answering GitNetAnswer.
+const (
+	// OpGitFetchWorkspace fetches the mirror and makes the workspace's
+	// remote-tracking refs the forge's branches, pinned.
+	OpGitFetchWorkspace = "git_fetch"
+	// OpGitPull is OpGitFetchWorkspace, then a fast-forward of the
+	// current branch to its remote-tracking ref.
+	OpGitPull = "git_pull"
+	// OpGitPush pushes the workspace's own branch to the same name.
+	OpGitPush = "git_push"
+)
+
+// GitNetArgs are a network op's arguments: the row's repository and own
+// branch, the op's ticket, and the bounds.
+type GitNetArgs struct {
+	Mirror         string `json:"mirror"`
+	URL            string `json:"url"`
+	Branch         string `json:"branch"`
+	Ticket         []byte `json:"ticket"`
+	MaxObjectBytes int64  `json:"max_object_bytes"`
+	MaxReadBytes   int64  `json:"max_read_bytes"`
+	MaxPushBytes   int64  `json:"max_push_bytes,omitempty"`
+	// Force lets a push rewrite the own branch.
+	Force bool `json:"force,omitempty"`
+}
+
+// GitNetAnswer is what a network op did: the refs it moved (the
+// workspace's tracking refs for a fetch or pull, the forge's for a push),
+// and the workspace's HEAD after a pull.
+type GitNetAnswer struct {
+	UpToDate bool     `json:"up_to_date"`
+	Updated  []string `json:"updated"`
+	Head     string   `json:"head,omitempty"`
+}
+
+// OpGitLocal is a git workspace's local op (P11 plan §3.7): status, diff,
+// log, commit, branch or checkout, on its own repository over its mirror,
+// with GitLocalArgs. It answers the op's own JSON object.
+const OpGitLocal = "git_local"
+
+// GitLocalArgs are a local op's arguments. The repository and own branch are
+// the row's; the author is the core's, never the model's.
+type GitLocalArgs struct {
+	Mirror string `json:"mirror"`
+	URL    string `json:"url"`
+	Branch string `json:"branch"`
+	// Op is status, diff, log, commit, branch or checkout.
+	Op string `json:"op"`
+	// diff: Path limits it, Staged diffs the index, Rev diffs against a
+	// commit; MaxBytes cuts the patch.
+	Path     string `json:"path,omitempty"`
+	Staged   bool   `json:"staged,omitempty"`
+	Rev      string `json:"rev,omitempty"`
+	MaxBytes int    `json:"max_bytes,omitempty"`
+	// log: Rev and Max.
+	Max int `json:"max,omitempty"`
+	// commit: Message (with the run's trailer), Paths to stage first, All.
+	Message string   `json:"message,omitempty"`
+	Paths   []string `json:"paths,omitempty"`
+	All     bool     `json:"all,omitempty"`
+	// AuthorName, AuthorEmail and When sign a commit.
+	AuthorName  string `json:"author_name,omitempty"`
+	AuthorEmail string `json:"author_email,omitempty"`
+	When        int64  `json:"when,omitempty"`
+	// branch: Create names a new branch at From ("" for HEAD); empty lists.
+	Create string `json:"create,omitempty"`
+	From   string `json:"from,omitempty"`
+	// checkout: To is a branch, or with Detach a revision.
+	To     string `json:"to,omitempty"`
+	Detach bool   `json:"detach,omitempty"`
+}
+
 // GitOpenAnswer is the commit the workspace was opened at.
 type GitOpenAnswer struct {
 	Base string `json:"base"`

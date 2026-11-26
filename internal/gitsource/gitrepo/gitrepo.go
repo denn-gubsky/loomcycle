@@ -73,6 +73,15 @@ var networkClasses = []error{
 	gitsource.ErrTimeout, gitsource.ErrMergeBaseNotFound, gitsource.ErrFetchFailed,
 }
 
+// Classes is every class Class can return.
+func Classes() []string {
+	out := []string{classGitFailed}
+	for _, c := range append(append([]error{}, ownClasses...), networkClasses...) {
+		out = append(out, c.Error())
+	}
+	return out
+}
+
 // Class returns the class of an error from this package: one of the Err*
 // values' text, a gitsource class for a network failure, or "git_failed".
 func Class(err error) string {

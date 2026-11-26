@@ -118,6 +118,9 @@ type Manager struct {
 	// every one. gitTickets are the live tickets of git ops (git.go).
 	gitProxy   *egress.GitProxy
 	gitTickets gitTickets
+	// onGitTicket, when set, is told each network op's ticket as it is
+	// minted. Tests only.
+	onGitTicket func(*GitTicket)
 	// principalEgress is workspace.mcp.egress (SetPrincipalEgress): the
 	// routes a workspace opened over the MCP server may use.
 	principalEgress []string
