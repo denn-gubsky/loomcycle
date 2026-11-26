@@ -444,7 +444,7 @@ func (w *worker) copyLocalOp(ctx context.Context, id string, v *fsops.VolumeFS, 
 	if bad != nil {
 		return *bad
 	}
-	srcDir := filepath.Join(w.opt.Root, in.FromWorkspace)
+	srcDir := w.wsDir(in.FromWorkspace)
 	if st, err := os.Lstat(srcDir); err != nil || !st.IsDir() {
 		return refuse(workspace.ClassNotFound, "the source workspace is not on this worker")
 	}
