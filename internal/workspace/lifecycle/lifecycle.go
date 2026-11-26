@@ -159,7 +159,13 @@ func New(d *dispatch.Dispatcher, st Store, l Limits, log *slog.Logger) *Manager 
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Manager{disp: d, store: st, limits: l, log: log.With("component", "workspaces"), now: time.Now}
+	m := &Manager{disp: d, store: st, limits: l, log: log.With("component", "workspaces"), now: time.Now}
+	// A workspace reconciliation marks lost closes its pages, as one the
+	// lost sweep marks does (RFC GW P12 plan §3.4, G-D).
+	if d != nil {
+		d.SetOnLost(m.closeLostPages)
+	}
+	return m
 }
 
 // Owner is who is asking: who a workspace is for and who may use it. A run
@@ -632,6 +638,7 @@ func (m *Manager) MarkLost(ctx context.Context) (int, error) {
 		}
 		if ok {
 			n++
+			m.closeLostPages(ctx, r)
 		}
 	}
 	if n > 0 {

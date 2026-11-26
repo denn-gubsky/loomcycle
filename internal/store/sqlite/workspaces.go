@@ -102,3 +102,7 @@ func (s *Store) WorkspaceCountDurableByUser(ctx context.Context, tenantID, userI
 func (s *Store) WorkspaceListDurableByUser(ctx context.Context, tenantID, userID string) ([]store.WorkspaceRow, error) {
 	return sqlshared.WorkspaceListDurableByUser(ctx, s.shared(), tenantID, userID)
 }
+
+func (s *Store) SnapshotReadWorkspaces(ctx context.Context) ([]store.WorkspaceRow, error) {
+	return sqlshared.SnapshotReadWorkspaces(ctx, s.shared())
+}

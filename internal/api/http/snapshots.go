@@ -22,6 +22,8 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/snapshot/migrations"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
+	"github.com/denn-gubsky/loomcycle/internal/workspace"
+	"github.com/denn-gubsky/loomcycle/internal/workspace/lifecycle"
 )
 
 // Snapshot admin endpoints — v0.8.17 Pause/Resume/Snapshot (PR 2).
@@ -415,6 +417,9 @@ func (s *Server) snapshotRestoreOptions(ctx context.Context, includeHistory bool
 			// A tenant telemetry policy sends a tenant's traces to a host:
 			// held to this host's operator rules, as a set is.
 			migrations.SectionTenantTelemetry: s.restoredTenantTelemetryValidator,
+			// A workspace row (RFC GW P12) is re-checked as an open would
+			// write it: its name and id, its kind and engine.
+			migrations.SectionWorkspaces: validRestoredWorkspace,
 		},
 		CredentialExists:     s.credKeyable,
 		CredentialToCompare:  s.credToCompare,
@@ -435,6 +440,11 @@ func (s *Server) snapshotRestoreOptions(ctx context.Context, includeHistory bool
 		}
 		for name := range cfg.Volumes {
 			opts.StaticVolumeNames = append(opts.StaticVolumeNames, name)
+		}
+		// A restored workspace keeps only the routes this host defines: a
+		// route is the operator's, never the snapshot's.
+		for name := range cfg.Workspace.Egress.Routes {
+			opts.WorkspaceEgressRoutes = append(opts.WorkspaceEgressRoutes, name)
 		}
 	}
 	if s.resolver != nil {
@@ -700,4 +710,26 @@ func channelConfigForSnapshot(cfg *config.Config) []snapshot.ChannelConfigEntry 
 		})
 	}
 	return out
+}
+
+// validRestoredWorkspace refuses a workspace row of a snapshot that an open
+// here could not have written (RFC GW P12): a name or id out of shape, an
+// unknown kind or engine. Where it points (worker, run, shares, routes) the
+// restore itself decides.
+func validRestoredWorkspace(body json.RawMessage) error {
+	var e snapshot.WorkspaceEntry
+	if err := json.Unmarshal(body, &e); err != nil {
+		return err
+	}
+	switch {
+	case !lifecycle.ValidName(e.Name):
+		return fmt.Errorf("name %q is not a workspace name", e.Name)
+	case !workspace.ValidID(e.ID):
+		return fmt.Errorf("id %q is not a workspace id", e.ID)
+	case e.Kind != "" && e.Kind != store.WorkspaceKindGeneral && e.Kind != store.WorkspaceKindGit:
+		return fmt.Errorf("unknown kind %q", e.Kind)
+	case e.Engine != "" && e.Engine != workspace.EngineHost && e.Engine != workspace.EngineContainer:
+		return fmt.Errorf("unknown engine %q", e.Engine)
+	}
+	return nil
 }

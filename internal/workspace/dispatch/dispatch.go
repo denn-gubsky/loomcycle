@@ -118,6 +118,8 @@ type Dispatcher struct {
 
 	opt Options
 	log *slog.Logger
+	// onLost is told of each row reconciliation marks lost (SetOnLost).
+	onLost func(context.Context, store.WorkspaceRow)
 	// deps are the store and the token resolver, set by Activate.
 	deps atomic.Pointer[deps]
 	// egress answers the Egress streams (SetEgress); nil refuses them.
@@ -626,6 +628,7 @@ func (d *Dispatcher) reconcile(ctx context.Context, w *worker, held []string, lo
 			d.deleteRow(ctx, r, log)
 		}
 	}
+	d.markAbsentLost(ctx, rows, onDisk, log)
 	if len(remove) > 0 {
 		log.Info("removing workspaces released or unknown while the worker was away", "count", len(remove))
 	}
@@ -1066,4 +1069,41 @@ func (d *Dispatcher) count(opName, outcome string) {
 	d.mu.Lock()
 	d.ops[opName+"/"+outcome]++
 	d.mu.Unlock()
+}
+
+// SetOnLost sets who is told of a workspace reconciliation marked lost (its
+// pages close, RFC GW P12). Wiring only, before the first attach.
+func (d *Dispatcher) SetOnLost(fn func(context.Context, store.WorkspaceRow)) { d.onLost = fn }
+
+// absentGrace is how old a ready row must be before a worker that attaches
+// without its directory marks it lost: one made in the last minutes may be
+// one another replica is opening on this worker as it attaches, its
+// directory made after the worker listed what it holds.
+const absentGrace = 2 * time.Minute
+
+// markAbsentLost marks lost the ready rows of w whose directories w did not
+// come back with (RFC GW P12 plan §3.4, G-C): their files are gone, so they
+// must not answer ready. Opening and releasing rows are not touched.
+func (d *Dispatcher) markAbsentLost(ctx context.Context, rows []store.WorkspaceRow, onDisk map[string]bool, log *slog.Logger) {
+	now := time.Now()
+	for _, r := range rows {
+		// A row with no creation time says nothing of its age (every store
+		// stamps it): it is left, never marked lost on a guess.
+		if r.State != store.WorkspaceReady || onDisk[r.ID] || r.CreatedAt.IsZero() || now.Sub(r.CreatedAt) < absentGrace {
+			continue
+		}
+		ok, err := d.store().WorkspaceSetState(ctx, r.TenantID, r.ID, store.WorkspaceReady, store.WorkspaceLost)
+		if err != nil {
+			log.Warn("cannot mark lost a workspace its worker came back without", "workspace_id", r.ID, "err", err)
+			continue
+		}
+		if !ok {
+			continue
+		}
+		log.Warn("a worker came back without a workspace's directory; it is lost", "workspace_id", r.ID)
+		if d.onLost != nil {
+			r.State = store.WorkspaceLost
+			d.onLost(ctx, r)
+		}
+	}
 }

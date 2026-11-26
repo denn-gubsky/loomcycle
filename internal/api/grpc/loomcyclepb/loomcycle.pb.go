@@ -5492,7 +5492,7 @@ type Event struct {
 	TraceId string `protobuf:"bytes,25,opt,name=trace_id,json=traceId,proto3" json:"trace_id,omitempty"`
 	// surface carries the payload on type=surface frames (a page the run
 	// exposed from its workspace, RFC GW D24) and type=surface_closed frames
-	// (it went: unexposed, released or idle). SERVER-generated, on the run's
+	// (it went: unexposed, released, idle or lost). SERVER-generated, on the run's
 	// own stream only. Nil on every other event type.
 	Surface       *SurfaceInfo `protobuf:"bytes,26,opt,name=surface,proto3" json:"surface,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -6930,7 +6930,7 @@ type SurfaceInfo struct {
 	Kind          string                 `protobuf:"bytes,4,opt,name=kind,proto3" json:"kind,omitempty"`                            // page | panel
 	BasePath      string                 `protobuf:"bytes,5,opt,name=base_path,json=basePath,proto3" json:"base_path,omitempty"`    // the exposure route's prefix
 	ExpiresAt     *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=expires_at,json=expiresAt,proto3" json:"expires_at,omitempty"` // the idle deadline when told; moves with use
-	Reason        string                 `protobuf:"bytes,7,opt,name=reason,proto3" json:"reason,omitempty"`                        // surface_closed: unexposed | released | idle
+	Reason        string                 `protobuf:"bytes,7,opt,name=reason,proto3" json:"reason,omitempty"`                        // surface_closed: unexposed | released | idle | lost
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }

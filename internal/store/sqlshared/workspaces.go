@@ -92,7 +92,15 @@ func WorkspaceCreate(ctx context.Context, q Querier, row store.WorkspaceRow) (st
 	if row.OwnerKind == "" {
 		row.OwnerKind = store.WorkspaceOwnerRun
 	}
-	if row.OwnerKind != store.WorkspaceOwnerRun && row.OwnerKind != store.WorkspaceOwnerPrincipal {
+	switch row.OwnerKind {
+	case store.WorkspaceOwnerRun, store.WorkspaceOwnerPrincipal:
+	case store.WorkspaceOwnerParked:
+		// Only a durable row is parked, and only under its own parked key
+		// (a snapshot restore writes one; RFC GW P12).
+		if row.Lifetime != store.WorkspaceLifetimeDurable || row.OwnerRunID != store.WorkspaceParkedKey(row.ID) {
+			return store.WorkspaceRow{}, fmt.Errorf("workspace create: a parked row is a durable one under its parked key")
+		}
+	default:
 		return store.WorkspaceRow{}, fmt.Errorf("workspace create: unknown owner kind %q", row.OwnerKind)
 	}
 	// A durable row is kept under its user (RFC GW §4.2): one with none
@@ -521,6 +529,17 @@ func WorkspaceListDurableByUser(ctx context.Context, q Querier, tenantID, userID
 		tenantID, userID, store.WorkspaceLifetimeDurable)
 	if err != nil {
 		return nil, fmt.Errorf("workspace list durable by user: %w", err)
+	}
+	return collectWorkspaces(d, rows)
+}
+
+// SnapshotReadWorkspaces returns every workspace row, every tenant's, ordered
+// by (tenant_id, id): the snapshot capture's read (RFC GW P12).
+func SnapshotReadWorkspaces(ctx context.Context, q Querier) ([]store.WorkspaceRow, error) {
+	d := q.Dialect()
+	rows, err := q.Query(ctx, `SELECT `+workspaceCols+` FROM workspaces ORDER BY tenant_id, id`)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot read workspaces: %w", err)
 	}
 	return collectWorkspaces(d, rows)
 }
