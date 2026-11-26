@@ -45,7 +45,9 @@ func (p WorkspacePushConfig) Resolved() WorkspacePushConfig {
 }
 
 // AllowsTags reports whether a push may create a tag.
-func (p WorkspacePushConfig) AllowsTags() bool { return slices.Contains(p.RefPrefixes, workspacePushTags) }
+func (p WorkspacePushConfig) AllowsTags() bool {
+	return slices.Contains(p.RefPrefixes, workspacePushTags)
+}
 
 // BranchAllowed reports whether a workspace's own branch may be named branch
 // (a short name): refs/heads/<branch> lies under a heads prefix listed.
