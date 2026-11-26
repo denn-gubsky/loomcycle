@@ -272,6 +272,15 @@ type Connector interface {
 	GetOntologyJob(ctx context.Context, req GetOntologyJobRequest) (OntologyJobResult, error)
 	ResumeOntologyJob(ctx context.Context, req ResumeOntologyJobRequest) (OntologyJobResult, error)
 
+	// ApplyOntologyRollback applies the plan of rolling the tenant ontology
+	// back to a release (RFC GQ P5.7): it plans {op: release, seq} again,
+	// refuses unless the request carries that plan's fingerprint, and makes
+	// the writes through the ontology's own guards. Operator-only on every
+	// transport. A rollback that did not complete is an
+	// *OntologyRollbackRefusal; the plan's own refusals wrap the
+	// ErrOntologyPlan* sentinels. Reachable via POST /v1/_ontology/rollback.
+	ApplyOntologyRollback(ctx context.Context, req ApplyOntologyRollbackRequest) (ApplyOntologyRollbackResult, error)
+
 	// ListReviewQueue lists a document scope's statements awaiting review
 	// (status proposed unless the filter names another), narrowed by the queue
 	// filters, or with req.Summarize their counts grouped by kind × method ×

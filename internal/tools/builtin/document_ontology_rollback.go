@@ -72,32 +72,12 @@ const ontologyRollbackMaxChanges = 10 * ontologyPlanMaxChanges
 // Applied says what.
 var ErrRollbackPartiallyApplied = errors.New("partially_applied")
 
-// RollbackStep is one write a rollback made.
-type RollbackStep struct {
-	Op    string `json:"op"`
-	Entry string `json:"entry"`
-	Name  string `json:"name"`
-	// NewID is the chunk an entry added back was written as (ruling Q6).
-	NewID string `json:"new_id,omitempty"`
-}
-
-// RollbackReport says what rolling the ontology back to a release did.
-type RollbackReport struct {
-	Release int64 `json:"release"`
-	// ReleaseContentVersion is what the release declared; ContentVersion what the
-	// ontology in force declares after the rollback. Matches is their equality.
-	ReleaseContentVersion string         `json:"release_content_version"`
-	ContentVersion        string         `json:"content_version"`
-	Matches               bool           `json:"matches"`
-	Risk                  string         `json:"risk"`
-	Applied               []RollbackStep `json:"applied"`
-	// RenameJobs are the class-rename jobs the rollback's renames started.
-	RenameJobs []connector.OntologyJobStatus `json:"rename_jobs,omitempty"`
-	// RollbackRelease is the release taken of the ontology the rollback left.
-	RollbackRelease int64    `json:"rollback_release,omitempty"`
-	Notes           []string `json:"notes,omitempty"`
-	Warnings        []string `json:"warnings,omitempty"`
-}
+// RollbackStep is one write a rollback made, and RollbackReport what the rollback did:
+// the connector's shapes, which every transport answers with.
+type (
+	RollbackStep   = connector.OntologyRollbackStep
+	RollbackReport = connector.OntologyRollbackReport
+)
 
 // rollbackEntry is what the rollback does to one chunk, with the release's values.
 type rollbackEntry struct {

@@ -98,6 +98,7 @@ import type {
   GetOntologyReleaseResult,
   DiffOntologyReleasesResult,
   OntologyJobResult,
+  ApplyOntologyRollbackResult,
   Agent,
   AgentEvent,
   AgentList,
@@ -1188,6 +1189,36 @@ export class LoomcycleClient {
       this.ctx,
       `/v1/_ontology/plan${q}`,
       { changes },
+      opts,
+    );
+  }
+
+  /**
+   * Roll the tenant ontology back to release `seq`: apply the plan of
+   * `{op: "release", seq}` ({@link planOntology}), which the server computes
+   * again and refuses unless `planFingerprint` is still its fingerprint. The
+   * writes go through the ontology's own guards; a write by anyone else stops
+   * the rollback. Never automatic. Mirrors POST /v1/_ontology/rollback.
+   *
+   * For an admin or a tenant operator only. A refusal throws with the server's
+   * code: `plan_required` / `plan_stale` (409; the error's `bodyText` carries
+   * `fingerprint`, the ontology's current one), `partially_applied` (409;
+   * `bodyText` carries `applied`), `rename_job_pending`, `entry_locked`,
+   * `invalid_request`, `invalid_body`, `entry_not_found`, `forbidden`,
+   * `unavailable`.
+   */
+  async rollbackOntology(
+    seq: number,
+    planFingerprint: string,
+    opts?: { tenant?: string; signal?: AbortSignal },
+  ): Promise<ApplyOntologyRollbackResult> {
+    const q = opts?.tenant !== undefined
+      ? `?tenant=${encodeURIComponent(opts.tenant)}`
+      : "";
+    return postJSON<ApplyOntologyRollbackResult>(
+      this.ctx,
+      `/v1/_ontology/rollback${q}`,
+      { seq, plan_fingerprint: planFingerprint },
       opts,
     );
   }

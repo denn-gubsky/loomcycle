@@ -2168,7 +2168,7 @@ class LoomcycleClient:
         }
 
     async def plan_ontology(
-        self, changes: Sequence[Mapping[str, str]], *, tenant: str = ""
+        self, changes: Sequence[Mapping[str, Any]], *, tenant: str = ""
     ) -> Mapping[str, Any]:
         """Say what changes to the tenant ontology's entries would do before
         any is made; writes nothing. Mirrors ``POST /v1/_ontology/plan``.
@@ -2178,7 +2178,11 @@ class LoomcycleClient:
         ``edit`` (needs ``body``) or ``delete``, each ``entry`` a chunk id of
         the ontology; or ``{"op": "proposal", "id": <chunk id>}``, an open
         proposal, planned as the direct changes accepting it makes (an add
-        proposal as op ``add``, risk ``none``), together with the rest.
+        proposal as op ``add``, risk ``none``), together with the rest;
+        ``{"op": "unretire", "entry"}``; ``{"op": "add", "seq", "entry"}``
+        (an entry of release *seq* added back); or ``{"op": "release",
+        "seq"}``, the request's only change, which plans rolling the ontology
+        back to release *seq* (apply it with :meth:`rollback_ontology`).
 
         Returns ``{tenant, fingerprint, content_version, changes, issues,
         new_issues, scopes_counted, scopes_skipped, complete}``
@@ -2191,7 +2195,8 @@ class LoomcycleClient:
         blocked, collisions, collisions_total, collisions_other_scopes,
         scopes_not_counted, running, notes}``, ``running`` the unfinished job
         as :meth:`get_ontology_job` shapes it or ``None``) and ``None`` for
-        every other change, and each count ``{n, effect,
+        every other change, ``release`` the release a rollback plans toward
+        (0 for any other change), and each count ``{n, effect,
         tenant_scope, other_scopes, by_status, sample}`` — the same shape as
         the HTTP route's JSON, with absent strings, lists and maps empty.
 
@@ -2210,6 +2215,7 @@ class LoomcycleClient:
                     parent=c.get("parent", ""),
                     body=c.get("body", ""),
                     id=c.get("id", ""),
+                    seq=int(c.get("seq", 0)),
                 )
                 for c in changes
             ],
@@ -2246,6 +2252,7 @@ class LoomcycleClient:
                     "notes": list(c.notes),
                     "proposal": c.proposal,
                     "job": _rename_job_plan(c.job) if c.HasField("job") else None,
+                    "release": c.release,
                 }
                 for c in resp.changes
             ],
@@ -2254,6 +2261,64 @@ class LoomcycleClient:
             "scopes_counted": resp.scopes_counted,
             "scopes_skipped": resp.scopes_skipped,
             "complete": resp.complete,
+        }
+
+    async def rollback_ontology(
+        self, seq: int, plan_fingerprint: str, *, tenant: str = ""
+    ) -> Mapping[str, Any]:
+        """Roll the tenant ontology back to release *seq*: apply the plan of
+        ``{"op": "release", "seq": seq}`` (:meth:`plan_ontology`), which the
+        server computes again and refuses unless *plan_fingerprint* is still
+        its fingerprint. The writes go through the ontology's own guards; a
+        write by anyone else stops the rollback. Never automatic. Mirrors
+        ``POST /v1/_ontology/rollback`` over the ``ApplyOntologyRollback``
+        RPC.
+
+        Returns ``{tenant, rollback}``, ``rollback`` ``{release,
+        release_content_version, content_version, matches, risk, applied,
+        rename_jobs, rollback_release, notes, warnings}``: ``applied`` the
+        writes made (``{op, entry, name, new_id}``), ``rename_jobs`` the
+        class-rename jobs its renames started (as :meth:`get_ontology_job`
+        shapes a job), ``matches`` whether the ontology in force now
+        declares the release's content version.
+
+        For an admin or a tenant operator only. A refusal raises with the
+        code on ``.reason``: ``plan_required`` / ``plan_stale`` (the error's
+        ``.fingerprint`` is the ontology's current one), ``partially_applied``
+        (``.applied`` lists the writes made), ``rename_job_pending``,
+        ``entry_locked``, ``invalid_request``, ``entry_not_found``,
+        ``forbidden``, ``unavailable``."""
+        req = pb.ApplyOntologyRollbackRequest(tenant=tenant, seq=seq, plan_fingerprint=plan_fingerprint)
+        try:
+            resp = await self._stub.ApplyOntologyRollback(req, metadata=self._auth_metadata())
+        except grpc.aio.AioRpcError as e:
+            info = _error_info(e)
+            try:
+                _raise_from_grpc(e)
+            except LoomcycleError as le:
+                # What HTTP's 409 body carries beside the code rides the
+                # ErrorInfo's metadata (internal/api/grpc/ontology_rollback.go).
+                meta = info[1] if info is not None else {}
+                le.fingerprint = meta.get("fingerprint", "")  # type: ignore[attr-defined]
+                le.applied = json.loads(meta["applied"]) if meta.get("applied") else []  # type: ignore[attr-defined]
+                raise
+        r = resp.rollback
+        return {
+            "tenant": resp.tenant,
+            "rollback": {
+                "release": r.release,
+                "release_content_version": r.release_content_version,
+                "content_version": r.content_version,
+                "matches": r.matches,
+                "risk": r.risk,
+                "applied": [
+                    {"op": a.op, "entry": a.entry, "name": a.name, "new_id": a.new_id} for a in r.applied
+                ],
+                "rename_jobs": [_ontology_job(j) for j in r.rename_jobs],
+                "rollback_release": r.rollback_release,
+                "notes": list(r.notes),
+                "warnings": list(r.warnings),
+            },
         }
 
     async def list_ontology_releases(self, *, tenant: str = "") -> Mapping[str, Any]:

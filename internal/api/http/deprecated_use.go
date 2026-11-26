@@ -129,3 +129,31 @@ func writeDeprecatedUse(w io.Writer, replicaLabels string, st map[deprecatedUseK
 	}
 	writeLine("")
 }
+
+// deprecatedUseRow is one series of loomcycle_deprecated_use_total, as the
+// Settings health panel reads it.
+type deprecatedUseRow struct {
+	Kind  string `json:"kind"`
+	Name  string `json:"name"`
+	Count int64  `json:"count"`
+}
+
+// deprecationsReport is the deprecations field of GET /v1/_config/teams
+// (admin; RFC GW P14, owner ruling Q5): config, the load's deprecation lines
+// (the words boot and doctor print, names only); runs, how many runs this
+// replica gave each deprecated row since it started, which is the only place
+// a stored definition's use shows. Both lists are present and empty when
+// nothing is used.
+func deprecationsReport(lines []string, st map[deprecatedUseKey]int64) map[string]any {
+	runs := make([]deprecatedUseRow, 0, len(st))
+	for k, n := range st {
+		runs = append(runs, deprecatedUseRow{Kind: k.Kind, Name: k.Name, Count: n})
+	}
+	sort.Slice(runs, func(i, j int) bool {
+		if runs[i].Kind != runs[j].Kind {
+			return runs[i].Kind < runs[j].Kind
+		}
+		return runs[i].Name < runs[j].Name
+	})
+	return map[string]any{"config": append([]string{}, lines...), "runs": runs}
+}

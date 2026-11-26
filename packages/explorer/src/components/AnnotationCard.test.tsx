@@ -164,6 +164,11 @@ describe("AnnotationCard", () => {
     expect(spec).toMatchObject({ title: "Intro", brief: "Why it exists.", abstract: "More." });
     expect(spec.load).toBeUndefined();
     expect(chunkCard(row, { data: {} as ExplorerDataLayer, scope: "tenant" }).load).toBeTypeOf("function");
+    // Once the list carries briefs, a row without one has none of its own:
+    // nothing is read for it.
+    expect(chunkCard(row, { data: {} as ExplorerDataLayer, scope: "tenant" }, true).load).toBeUndefined();
+    // A stale brief says so.
+    expect(rowSummary({ ...row, summary: { brief: "Old.", stale: true } })).toMatchObject({ brief: "Old.", stale: true });
   });
 });
 

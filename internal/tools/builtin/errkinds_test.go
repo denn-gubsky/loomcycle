@@ -35,7 +35,7 @@ var classifiedToolFiles = []string{
 	// Calc
 	"calc.go",
 	// Path, Channel, Context, Agent, Skill
-	"pathtool.go", "pathtool_listing.go", "channel.go", "context.go", "context_capabilities.go", "context_guide.go", "context_identity.go", "agent.go", "skill.go",
+	"pathtool.go", "pathtool_listing.go", "channel.go", "context.go", "context_capabilities.go", "context_guide.go", "context_identity.go", "context_self_deprecations.go", "agent.go", "skill.go",
 	// Identity
 	"identity.go", "identity_profile.go",
 }

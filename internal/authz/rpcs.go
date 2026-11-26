@@ -197,6 +197,9 @@ var grpcRPCs = map[string]RPC{
 	"MergeSubjects":        rpc(ScopeTenant, false, typeLevel("write", "document")),
 	"BindSubjectPrincipal": rpc(ScopeTenant, false, typeLevel("write", "document")),
 	"PlanOntology":         rpc(ScopeTenant, false, typeLevel("read", "document")),
+	// Rolling the ontology back to a release writes it, as POST
+	// /v1/_ontology/rollback.
+	"ApplyOntologyRollback": rpc(ScopeTenant, false, typeLevel("write", "document")),
 	// Releases keep the ontology's text after an edit or an erasure removed
 	// it: operator-only, read documents, as GET /v1/_ontology/releases*. The
 	// rename and re-tag job's status and resume (RFC GQ P5.6) are operator-only

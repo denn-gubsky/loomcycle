@@ -26,6 +26,7 @@ import { App, ExpressAdapter } from "@microsoft/teams.apps";
 import { parseCardAction, renderCard } from "./cards.js";
 import type { TeamsConfig } from "./config.js";
 import { attachmentsSummary, dumpFields } from "./dump.js";
+import { chooseFileToken, SECRET_ONLY_WARNING, type FileTokenSource } from "./filetoken.js";
 import { GRAPH_PUBLIC_BASE, GraphFiles, withGraphFiles, type GraphFilesOptions } from "./graph.js";
 import { groupsOf, identify, personSub, uninstalledSub } from "./identity.js";
 import { hasFileDownloadInfo, looksLikeFile, noFileText, routeMessage, seenOf } from "./inbound.js";
@@ -85,6 +86,9 @@ export type TeamsBridgeOptions = BridgeOptions<ConversationRef> & {
   /** The Graph fallback's fetch, token and timings (tests). The token
    *  defaults to the SDK's app Graph token, the host to its cloud's. */
   graph?: Pick<GraphFilesOptions, "fetch" | "token" | "timeoutMs" | "retryDelaysMs">;
+  /** The bot's file token for a link without tempauth (tests); by default
+   *  the certificate or the SDK's non-secret credential (filetoken.ts). */
+  fileToken?: FileTokenSource;
 };
 
 /** LoopbackExpressAdapter is the SDK's Express adapter listening on one
@@ -146,6 +150,14 @@ export function createTeamsBridge(cfg: TeamsConfig, opts: TeamsBridgeOptions = {
   });
   // The bridge's gate name in loomcycle; unset for a bridge with a token.
   const gate = shared.gate?.name;
+  // The bot's token for a file link without tempauth (RFC HF §3.7).
+  const fileToken = opts.fileToken
+    ? { kind: "token" as const, source: opts.fileToken }
+    : chooseFileToken({
+        certificate: cfg.fileCertificate && { ...cfg.fileCertificate, loginEndpoint: app.cloud.loginEndpoint },
+        credentials: app.credentials,
+        app: app.tokenProvider,
+      });
   const fileLog = opts.logger ?? consoleLogger;
   // The Graph fallback (RFC HF), app-only mode. Graph's host comes from the
   // SDK's cloud, so a sovereign cloud's token goes to its own Graph.
@@ -161,7 +173,7 @@ export function createTeamsBridge(cfg: TeamsConfig, opts: TeamsBridgeOptions = {
           ...opts.graph,
         })
       : undefined;
-  const filePort = teamsFilePort({ hosts: cfg.fileHosts, fetch: opts.fileFetch, log: fileLog });
+  const filePort = teamsFilePort({ hosts: cfg.fileHosts, fetch: opts.fileFetch, token: fileToken.source, log: fileLog });
 
   const adapter: BridgeAdapter<ConversationRef> = {
     platform: { name: "teams", label: "Teams" },
@@ -184,6 +196,7 @@ export function createTeamsBridge(cfg: TeamsConfig, opts: TeamsBridgeOptions = {
     voice: teamsVoicePort<ConversationRef>({
       hosts: cfg.fileHosts,
       fetch: opts.fileFetch,
+      token: fileToken.source,
       typing: (ref) => app.sendTo(ref, { type: "typing" }),
       log: opts.logger ?? consoleLogger,
     }),
@@ -192,6 +205,7 @@ export function createTeamsBridge(cfg: TeamsConfig, opts: TeamsBridgeOptions = {
     // BRIDGE_FILES=1.
     files: graph ? withGraphFiles(filePort, graph, fileLog) : filePort,
     async start(ctx) {
+      if ((ctx.config.files?.enabled || ctx.config.voice?.enabled) && fileToken.kind === "secret") ctx.log.warn(SECRET_ONLY_WARNING);
       if (cfg.dumpActivities) {
         // Registered first, so it sees every activity that passed the SDK's
         // request check, whatever its type, before any handler runs.

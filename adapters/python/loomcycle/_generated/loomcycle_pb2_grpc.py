@@ -238,6 +238,11 @@ class LoomcycleStub:
                 request_serializer=loomcycle__pb2.PlanOntologyRequest.SerializeToString,
                 response_deserializer=loomcycle__pb2.PlanOntologyResponse.FromString,
                 _registered_method=True)
+        self.ApplyOntologyRollback = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/ApplyOntologyRollback',
+                request_serializer=loomcycle__pb2.ApplyOntologyRollbackRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.ApplyOntologyRollbackResponse.FromString,
+                _registered_method=True)
         self.ListOntologyReleases = channel.unary_unary(
                 '/loomcycle.v1.Loomcycle/ListOntologyReleases',
                 request_serializer=loomcycle__pb2.ListOntologyReleasesRequest.SerializeToString,
@@ -1054,6 +1059,28 @@ class LoomcycleServicer:
         (invalid_request, forbidden, entry_not_found, unavailable).
 
         Mirrors POST /v1/_ontology/plan.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ApplyOntologyRollback(self, request, context):
+        """ApplyOntologyRollback applies the plan of rolling the tenant ontology
+        back to a release (a PlanOntology change {op: release, seq}). It plans
+        again and is refused unless plan_fingerprint is still that plan's; the
+        writes go through the ontology's own guards, and a write by anyone else
+        stops it. Never automatic.
+
+        Operator-only, as PlanOntology. A refusal carries a google.rpc.ErrorInfo
+        whose reason is the code HTTP returns. What HTTP's 409 body carries
+        beside the code is in the ErrorInfo's metadata: `fingerprint` (the
+        ontology's current one) on plan_required and plan_stale
+        (FAILED_PRECONDITION), and `applied` (the writes made, as HTTP's JSON
+        array) on partially_applied (ABORTED). rename_job_pending and
+        entry_locked are FAILED_PRECONDITION, invalid_request INVALID_ARGUMENT;
+        the plan's own refusals map as PlanOntology's.
+
+        Mirrors POST /v1/_ontology/rollback.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -2054,6 +2081,11 @@ def add_LoomcycleServicer_to_server(servicer, server):
                     servicer.PlanOntology,
                     request_deserializer=loomcycle__pb2.PlanOntologyRequest.FromString,
                     response_serializer=loomcycle__pb2.PlanOntologyResponse.SerializeToString,
+            ),
+            'ApplyOntologyRollback': grpc.unary_unary_rpc_method_handler(
+                    servicer.ApplyOntologyRollback,
+                    request_deserializer=loomcycle__pb2.ApplyOntologyRollbackRequest.FromString,
+                    response_serializer=loomcycle__pb2.ApplyOntologyRollbackResponse.SerializeToString,
             ),
             'ListOntologyReleases': grpc.unary_unary_rpc_method_handler(
                     servicer.ListOntologyReleases,
@@ -3445,6 +3477,33 @@ class Loomcycle:
             '/loomcycle.v1.Loomcycle/PlanOntology',
             loomcycle__pb2.PlanOntologyRequest.SerializeToString,
             loomcycle__pb2.PlanOntologyResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ApplyOntologyRollback(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/ApplyOntologyRollback',
+            loomcycle__pb2.ApplyOntologyRollbackRequest.SerializeToString,
+            loomcycle__pb2.ApplyOntologyRollbackResponse.FromString,
             options,
             channel_credentials,
             insecure,
