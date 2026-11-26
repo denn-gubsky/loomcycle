@@ -270,3 +270,138 @@ async def test_plan_ontology_refusal_carries_the_code_as_reason():
     with pytest.raises(LoomcycleError) as ei:
         await _client(_Refusing()).plan_ontology([{"op": "retire", "entry": "c9"}])
     assert ei.value.reason == "entry_not_found"
+
+
+class _ReleasesStub:
+    def __init__(self):
+        self.req = None
+
+    async def ListOntologyReleases(self, req, metadata=None):
+        self.req = req
+        return pb.ListOntologyReleasesResponse(
+            tenant="acme",
+            releases=[
+                pb.OntologyRelease(
+                    seq=2, content_version="0123456789abcdef", fingerprint="f" * 64,
+                    reason="confirm", actor="u-op", created_at=1764000000000000000, entries=12,
+                ),
+                pb.OntologyRelease(seq=1, content_version="0", fingerprint="e", reason="catch_up", entries=10),
+            ],
+        )
+
+    async def DiffOntologyReleases(self, req, metadata=None):
+        self.req = req
+        return pb.DiffOntologyReleasesResponse(
+            tenant="acme",
+            to=pb.OntologyDiffSide(current=True, content_version="fedcba9876543210"),
+            changes=[
+                pb.OntologyEntryDiff(
+                    chunk_id="c1", kind="class", change="changed", changed=["renamed", "directives"],
+                    before=pb.OntologyEntryState(name="event", directives_json=b'{"identity":["title"]}'),
+                    after=pb.OntologyEntryState(
+                        name="incident", parent="c0", parent_name="thing", status="", meaning="m",
+                        directives_json=b'{"identity":["title","date"]}',
+                    ),
+                ),
+                pb.OntologyEntryDiff(
+                    chunk_id="c2", kind="relation", change="added",
+                    after=pb.OntologyEntryState(name="caused_by", directives_json=b"{}"),
+                ),
+            ],
+            issues=["i"],
+            **{"from": pb.OntologyDiffSide(seq=2, content_version="0123456789abcdef")},
+        )
+
+
+@pytest.mark.asyncio
+async def test_list_ontology_releases_returns_every_header_field():
+    stub = _ReleasesStub()
+    got = await _client(stub).list_ontology_releases(tenant="globex")
+    assert stub.req.tenant == "globex"
+    assert got == {
+        "tenant": "acme",
+        "releases": [
+            {
+                "seq": 2, "content_version": "0123456789abcdef", "fingerprint": "f" * 64,
+                "reason": "confirm", "actor": "u-op", "created_at": 1764000000000000000, "entries": 12,
+            },
+            {
+                "seq": 1, "content_version": "0", "fingerprint": "e",
+                "reason": "catch_up", "actor": "", "created_at": 0, "entries": 10,
+            },
+        ],
+    }
+
+
+@pytest.mark.asyncio
+async def test_diff_ontology_releases_sends_from_and_to_and_keeps_an_absent_side_none():
+    stub = _ReleasesStub()
+    got = await _client(stub).diff_ontology_releases(2, tenant="globex")
+    assert (getattr(stub.req, "from"), stub.req.to, stub.req.tenant) == (2, 0, "globex")
+    assert got == {
+        "tenant": "acme",
+        "from": {"seq": 2, "current": False, "content_version": "0123456789abcdef"},
+        "to": {"seq": 0, "current": True, "content_version": "fedcba9876543210"},
+        "changes": [
+            {
+                "chunk_id": "c1", "kind": "class", "change": "changed", "changed": ["renamed", "directives"],
+                "before": {
+                    "name": "event", "parent": "", "parent_name": "", "status": "", "meaning": "",
+                    "directives": {"identity": ["title"]},
+                },
+                "after": {
+                    "name": "incident", "parent": "c0", "parent_name": "thing", "status": "", "meaning": "m",
+                    "directives": {"identity": ["title", "date"]},
+                },
+            },
+            {
+                "chunk_id": "c2", "kind": "relation", "change": "added", "changed": [],
+                "before": None,
+                "after": {
+                    "name": "caused_by", "parent": "", "parent_name": "", "status": "", "meaning": "",
+                    "directives": {},
+                },
+            },
+        ],
+        "issues": ["i"],
+    }
+
+
+@pytest.mark.asyncio
+async def test_diff_ontology_releases_sends_a_release_number_as_to():
+    stub = _ReleasesStub()
+    await _client(stub).diff_ontology_releases(1, 3)
+    assert (getattr(stub.req, "from"), stub.req.to, stub.req.tenant) == (1, 3, "")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method", "rpc", "code", "status", "reason"),
+    [
+        ("list", "ListOntologyReleases", grpc.StatusCode.PERMISSION_DENIED, 7, "forbidden"),
+        ("diff", "DiffOntologyReleases", grpc.StatusCode.NOT_FOUND, 5, "release_not_found"),
+        ("diff", "DiffOntologyReleases", grpc.StatusCode.INVALID_ARGUMENT, 3, "invalid_request"),
+        ("diff", "DiffOntologyReleases", grpc.StatusCode.UNAVAILABLE, 14, "unavailable"),
+    ],
+)
+async def test_ontology_release_refusal_carries_the_code_as_reason(method, rpc, code, status, reason):
+    trailing = grpc.aio.Metadata()
+    trailing.add("grpc-status-details-bin", _status_details(status, "refused", reason))
+    err = grpc.aio.AioRpcError(
+        code=code,
+        initial_metadata=grpc.aio.Metadata(),
+        trailing_metadata=trailing,
+        details="refused",
+        debug_error_string="",
+    )
+
+    async def _raise(req, metadata=None):
+        raise err
+
+    stub = type("_Refusing", (), {})()
+    setattr(stub, rpc, _raise)
+    client = _client(stub)
+    call = client.list_ontology_releases() if method == "list" else client.diff_ontology_releases(9)
+    with pytest.raises(LoomcycleError) as ei:
+        await call
+    assert ei.value.reason == reason
