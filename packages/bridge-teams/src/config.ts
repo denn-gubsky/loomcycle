@@ -5,8 +5,11 @@
 // environment; this module checks only what the bridge itself needs, and
 // refuses to start rather than run half-configured.
 
+import { readFileSync } from "node:fs";
+
 import { EnvReader, loadSharedConfig, type Env, type SharedConfig } from "@loomcycle/bridge-core";
 
+import { parseCertificate, type CertificateTokenOptions } from "./filetoken.js";
 import { DEFAULT_FILE_HOSTS } from "./voice.js";
 
 export interface TeamsConfig {
@@ -20,6 +23,9 @@ export interface TeamsConfig {
    *  (dump.ts), to see what Teams sent. Off by default: the dump holds what
    *  people write. */
   dumpActivities: boolean;
+  /** CLIENT_CERTIFICATE_PATH (RFC HF §3.7): the certificate the bot's file
+   *  token is acquired with, for a file link without tempauth. */
+  fileCertificate?: Omit<CertificateTokenOptions, "loginEndpoint" | "fetch" | "now">;
 }
 
 export const DEFAULT_PORT = 3978;
@@ -39,8 +45,37 @@ export function loadConfig(env: Env = process.env): TeamsConfig {
   }
   const fileHosts = loadFileHosts(r);
   const dumpActivities = r.flag("TEAMS_BRIDGE_DUMP_ACTIVITIES");
+  const fileCertificate = loadFileCertificate(r);
   r.check("teams-bridge");
-  return { shared, allowedTenants, fileHosts, dumpActivities };
+  return { shared, allowedTenants, fileHosts, dumpActivities, ...(fileCertificate ? { fileCertificate } : {}) };
+}
+
+/** loadFileCertificate reads CLIENT_CERTIFICATE_PATH (RFC HF §3.7): a PEM
+ *  file with the bot's certificate and its unencrypted RSA private key. The
+ *  token request names the bot's app (CLIENT_ID) and its tenant (TENANT_ID),
+ *  the names the Teams SDK reads too. A problem names the file, never its
+ *  content. */
+function loadFileCertificate(r: EnvReader): TeamsConfig["fileCertificate"] {
+  const path = r.get("CLIENT_CERTIFICATE_PATH");
+  if (path === undefined) return undefined;
+  const clientId = r.get("CLIENT_ID");
+  const tenantId = r.get("TENANT_ID");
+  if (!clientId) r.problems.push("CLIENT_CERTIFICATE_PATH needs CLIENT_ID, the bot's app id");
+  if (!tenantId) r.problems.push("CLIENT_CERTIFICATE_PATH needs TENANT_ID, the tenant the bot's app is registered in");
+  let pem: string;
+  try {
+    pem = readFileSync(path, "utf8");
+  } catch {
+    r.problems.push(`CLIENT_CERTIFICATE_PATH: cannot read ${path}`);
+    return undefined;
+  }
+  try {
+    const certificate = parseCertificate(pem);
+    return clientId && tenantId ? { clientId, tenantId, certificate } : undefined;
+  } catch (err) {
+    r.problems.push(`CLIENT_CERTIFICATE_PATH: ${path} ${(err as Error).message}`);
+    return undefined;
+  }
 }
 
 /** loadFileHosts reads TEAMS_BRIDGE_FILE_HOSTS: domain suffixes such as
