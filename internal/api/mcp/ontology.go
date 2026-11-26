@@ -41,11 +41,15 @@ const ontologyToolDescription = "Operator actions on the tenant ontology. " +
 	"op=release_diff compares release from with release to, or with the ontology as it stands when to is omitted, entry by entry. A rename keeps the entry's chunk, so it is one changed entry, never an add and a remove; proposals, the Review section, section headers and sibling order are not compared. " +
 	"Returns {tenant, from, to (each {seq, current, content_version}), changes: [{chunk_id, kind, change (added, removed or changed), changed (renamed, moved, kind, status, meaning, directives), before, after (each {name, parent, parent_name, status, meaning, directives})}], issues}. " +
 	"Both write nothing. A release keeps text an edit or an erasure removed from the ontology, which is why they are an operator's. " +
+	"op=job reads the tenant's ontology job: the class rename or concept re-tag carrying a change through the stored rows of the tenant scope and every user and agent scope — the unfinished one, else the one updated last, else job null. It writes nothing. " +
+	"Returns {tenant, job: {id, kind (class_rename or concept_retag), entry, from, to, to_tags, state (pending, running, blocked, done, abandoned), step, done (rows rewritten per step), error (why a blocked job cannot go on), remaining (rows still under an old name in the scope it is at), scope, scopes_done, scopes_total, created_at, updated_at}}. " +
+	"op=resume_job gives the unfinished job one slice of work (about 20 seconds) under the ontology rename lease, from the scope and step it is at, as the next class rename or concept move would; a job whose change never reached the ontology is marked abandoned. Pass id (from op=job) to refuse the resume unless that job is still the unfinished one. Returns the same shape, as the slice left the job; call again while it is unfinished. " +
 	"For an admin or a tenant operator only, holding write on the subject's document for merge_subjects (both documents) and bind_principal; plan reads the whole tenant. The tenant is your own unless you are an admin and pass another. " +
 	"A refusal is {code, error}. merge_subjects: same_subject, not_a_subject, subject_not_in_scope, already_merged, principal_conflict, forbidden, merge_conflict. " +
 	"bind_principal: subject_not_found, not_a_subject, binding_conflict (names the subject that holds the binding), principal_not_found, forbidden, invalid_request, unavailable. " +
 	"plan: invalid_request (also a proposal accepting would refuse as it stands), invalid_body (over 64 KiB), entry_not_found (no in-force entry by that id, no open proposal by that id, or no ontology), forbidden, unavailable. " +
 	"releases and release_diff: invalid_request (a from or to that is not a release's number), release_not_found (no such release, or no ontology to compare with), forbidden, unavailable. " +
+	"job and resume_job: job_not_found (resume: no unfinished job, or not the one id names), job_busy (resume: a class rename or concept move is being checked or carried out right now), invalid_request (an id that is not a string), forbidden, unavailable. " +
 	"Do NOT use it to rename a subject or change its type — edit the subject's document with the document tool."
 
 // ontologyToolSchema is the `ontology` tool's input schema.
@@ -53,7 +57,7 @@ const ontologyToolSchema = `{
 	"type": "object",
 	"required": ["op"],
 	"properties": {
-		"op":        {"type": "string", "enum": ["merge_subjects", "bind_principal", "plan", "releases", "release_diff"], "description": "merge_subjects (needs duplicate and survivor), bind_principal (needs subject and principal), plan (needs changes), releases, or release_diff (needs from)."},
+		"op":        {"type": "string", "enum": ["merge_subjects", "bind_principal", "plan", "releases", "release_diff", "job", "resume_job"], "description": "merge_subjects (needs duplicate and survivor), bind_principal (needs subject and principal), plan (needs changes), releases, release_diff (needs from), job, or resume_job."},
 		"duplicate": {"type": "string", "description": "merge_subjects: the subject that goes: its document id or natural key."},
 		"survivor":  {"type": "string", "description": "merge_subjects: the subject that stays and receives the duplicate's facts and statements: its document id or natural key."},
 		"subject":   {"type": "string", "description": "bind_principal: the subject to bind or clear: its document id, root chunk id or natural key."},
@@ -73,6 +77,7 @@ const ontologyToolSchema = `{
 		}},
 		"from":      {"type": "integer", "minimum": 1, "description": "release_diff (required): the earlier release's sequence number (seq from releases)."},
 		"to":        {"type": "integer", "minimum": 1, "description": "release_diff: the later release's sequence number. Omit it to compare with the ontology as it stands now."},
+		"id":        {"type": "string", "description": "resume_job: the job's id from op=job; the resume is refused unless that job is still the unfinished one. Omit it to resume whichever job is unfinished."},
 		"tenant":    {"type": "string", "description": "Admin only: whose ontology. Ignored for a tenant operator, which always acts on its own tenant."}
 	}
 }`
@@ -97,6 +102,10 @@ func handleOntology(ctx context.Context, env *handlerEnv, args json.RawMessage) 
 		// release's number is invalid_request, as HTTP's query parse answers.
 		From json.RawMessage `json:"from"`
 		To   json.RawMessage `json:"to"`
+
+		// resume_job: decoded in its op, so a value that is not a string is
+		// invalid_request, as HTTP's body decode refuses it.
+		ID json.RawMessage `json:"id"`
 	}
 	if len(args) > 0 {
 		if err := json.Unmarshal(args, &p); err != nil {
@@ -173,9 +182,37 @@ func handleOntology(ctx context.Context, env *handlerEnv, args json.RawMessage) 
 			return ontologyReleaseRefusal("release_diff", err), nil
 		}
 		return toolResultJSON(res), nil
+	case "job":
+		res, err := env.connector.GetOntologyJob(ctx, connector.GetOntologyJobRequest{Tenant: p.Tenant})
+		if err != nil {
+			return ontologyJobRefusal("job", err), nil
+		}
+		return toolResultJSON(res), nil
+	case "resume_job":
+		var id string
+		if len(p.ID) > 0 && string(p.ID) != "null" {
+			if err := json.Unmarshal(p.ID, &id); err != nil {
+				return ontologyRefusal("resume_job", "invalid_request", errors.New("id must be a job's id, a string")), nil
+			}
+		}
+		res, err := env.connector.ResumeOntologyJob(ctx, connector.ResumeOntologyJobRequest{Tenant: p.Tenant, ID: id})
+		if err != nil {
+			return ontologyJobRefusal("resume_job", err), nil
+		}
+		return toolResultJSON(res), nil
 	}
-	return toolErrValidation(`ontology: unknown op "`+p.Op+`" (must be merge_subjects, bind_principal, plan, releases or release_diff)`,
-		"pass op merge_subjects, bind_principal, plan, releases or release_diff"), nil
+	return toolErrValidation(`ontology: unknown op "`+p.Op+`" (must be merge_subjects, bind_principal, plan, releases, release_diff, job or resume_job)`,
+		"pass op merge_subjects, bind_principal, plan, releases, release_diff, job or resume_job"), nil
+}
+
+// ontologyJobRefusal renders a job refusal as HTTP's {code, error}; an internal
+// failure carries no text, as on HTTP.
+func ontologyJobRefusal(op string, err error) *loommcp.CallToolResult {
+	code := connector.OntologyJobCode(err)
+	if code == "" {
+		code, err = "job_failed", errors.New("the ontology job could not be read or resumed; see the server log")
+	}
+	return ontologyRefusal(op, code, err)
 }
 
 // releaseSeqArg reads a release's sequence number: a positive integer, or — when

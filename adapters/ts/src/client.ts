@@ -97,6 +97,7 @@ import type {
   ListOntologyReleasesResult,
   GetOntologyReleaseResult,
   DiffOntologyReleasesResult,
+  OntologyJobResult,
   Agent,
   AgentEvent,
   AgentList,
@@ -1262,6 +1263,53 @@ export class LoomcycleClient {
     return jsonFetch<DiffOntologyReleasesResult>(
       this.ctx,
       `/v1/_ontology/releases/diff?${q.toString()}`,
+      opts,
+    );
+  }
+
+  /**
+   * Read the tenant's ontology job — the class rename or concept re-tag
+   * carrying a change through the stored rows of the tenant scope and every
+   * user and agent scope: the unfinished one, else the one updated last;
+   * `job` is `null` when the tenant never had one. Writes nothing. Mirrors
+   * GET /v1/_ontology/job.
+   *
+   * For an admin or a tenant operator only. `tenant` is honored only for an
+   * admin token. A refusal throws with the server's code: `forbidden`,
+   * `unavailable`.
+   */
+  async getOntologyJob(
+    opts?: { tenant?: string; signal?: AbortSignal },
+  ): Promise<OntologyJobResult> {
+    const q = opts?.tenant !== undefined
+      ? `?tenant=${encodeURIComponent(opts.tenant)}`
+      : "";
+    return jsonFetch<OntologyJobResult>(this.ctx, `/v1/_ontology/job${q}`, opts);
+  }
+
+  /**
+   * Give the tenant's unfinished ontology job one slice of work (about 20
+   * seconds) under the ontology rename lease, from the scope and step it is
+   * at, as the next class rename or concept move would; a job whose change
+   * never reached the ontology is marked `abandoned`. Resolves to the job as
+   * the slice left it; call again while it is unfinished. Mirrors POST
+   * /v1/_ontology/job/resume.
+   *
+   * `id` (from {@link getOntologyJob}) refuses the resume unless that job is
+   * still the unfinished one. Operator only, as {@link getOntologyJob}. A
+   * refusal throws with the server's code: `job_not_found`, `job_busy`,
+   * `invalid_body`, `forbidden`, `unavailable`.
+   */
+  async resumeOntologyJob(
+    opts?: { id?: string; tenant?: string; signal?: AbortSignal },
+  ): Promise<OntologyJobResult> {
+    const q = opts?.tenant !== undefined
+      ? `?tenant=${encodeURIComponent(opts.tenant)}`
+      : "";
+    return postJSON<OntologyJobResult>(
+      this.ctx,
+      `/v1/_ontology/job/resume${q}`,
+      opts?.id !== undefined ? { id: opts.id } : {},
       opts,
     );
   }

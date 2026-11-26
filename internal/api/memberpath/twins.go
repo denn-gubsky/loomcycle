@@ -86,6 +86,8 @@ var twins = map[string][]Twin{
 	"PlanOntology":         {{Method: http.MethodPost, Path: "/v1/_ontology/plan"}},
 	"ListOntologyReleases": {{Method: http.MethodGet, Path: "/v1/_ontology/releases"}},
 	"DiffOntologyReleases": {{Method: http.MethodGet, Path: "/v1/_ontology/releases/diff"}},
+	"GetOntologyJob":       {{Method: http.MethodGet, Path: "/v1/_ontology/job"}},
+	"ResumeOntologyJob":    {{Method: http.MethodPost, Path: "/v1/_ontology/job/resume"}},
 	// Statement review: the queue, bulk rulings and their undo.
 	"ListReviewQueue": {{Method: http.MethodGet, Path: "/v1/_statements/review"}},
 	"RuleStatements":  {{Method: http.MethodPost, Path: "/v1/_statements/rule"}},

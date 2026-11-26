@@ -2184,9 +2184,14 @@ class LoomcycleClient:
         new_issues, scopes_counted, scopes_skipped, complete}``
         (``content_version`` names what the ontology in force declares now; it
         moves only when an in-force entry does); each change is ``{op,
-        entry, risk, counts, subtree, notes, proposal}`` with ``entry``
+        entry, risk, counts, subtree, notes, proposal, job}`` with ``entry``
         ``{chunk_id, name, section, kind}``, ``proposal`` the proposal's chunk
-        id ("" for a direct change), and each count ``{n, effect,
+        id ("" for a direct change), ``job`` the class-rename job's block
+        for a rename of a class something rests on (``{steps, runnable,
+        blocked, collisions, collisions_total, collisions_other_scopes,
+        scopes_not_counted, running, notes}``, ``running`` the unfinished job
+        as :meth:`get_ontology_job` shapes it or ``None``) and ``None`` for
+        every other change, and each count ``{n, effect,
         tenant_scope, other_scopes, by_status, sample}`` — the same shape as
         the HTTP route's JSON, with absent strings, lists and maps empty.
 
@@ -2240,6 +2245,7 @@ class LoomcycleClient:
                     "subtree": [entry(s) for s in c.subtree],
                     "notes": list(c.notes),
                     "proposal": c.proposal,
+                    "job": _rename_job_plan(c.job) if c.HasField("job") else None,
                 }
                 for c in resp.changes
             ],
@@ -2355,6 +2361,63 @@ class LoomcycleClient:
                 for d in resp.changes
             ],
             "issues": list(resp.issues),
+        }
+
+    async def get_ontology_job(self, *, tenant: str = "") -> Mapping[str, Any]:
+        """Read the tenant's ontology job — the class rename or concept
+        re-tag carrying a change through the stored rows of the tenant scope
+        and every user and agent scope: the unfinished one, else the one
+        updated last. Writes nothing. Mirrors ``GET /v1/_ontology/job`` over
+        the ``GetOntologyJob`` RPC.
+
+        Returns ``{tenant, job}``; ``job`` is ``None`` when the tenant never
+        had one, else ``{id, kind, entry, from, to, to_tags, state, step,
+        done, error, remaining, scope, scopes_done, scopes_total, created_at,
+        updated_at}`` (``kind`` ``class_rename`` or ``concept_retag``;
+        ``state`` ``pending``, ``running``, ``blocked``, ``done`` or
+        ``abandoned``; ``done`` the rows rewritten per step; ``remaining``
+        the rows still under an old name in the scope it is at; the times
+        in unix nanoseconds) — HTTP's JSON shape, absent strings and lists
+        empty.
+
+        For an admin or a tenant operator only; *tenant* is honored only for
+        an admin token. A refusal raises the error class its gRPC code maps
+        to, with the code (``forbidden``, ``unavailable``) on its
+        ``.reason``."""
+        req = pb.GetOntologyJobRequest(tenant=tenant)
+        try:
+            resp = await self._stub.GetOntologyJob(req, metadata=self._auth_metadata())
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+        return {
+            "tenant": resp.tenant,
+            "job": _ontology_job(resp.job) if resp.HasField("job") else None,
+        }
+
+    async def resume_ontology_job(self, *, id: str = "", tenant: str = "") -> Mapping[str, Any]:
+        """Give the tenant's unfinished ontology job one slice of work
+        (about 20 seconds) under the ontology rename lease, from the scope
+        and step it is at, as the next class rename or concept move would; a
+        job whose change never reached the ontology is marked ``abandoned``.
+        Mirrors ``POST /v1/_ontology/job/resume`` over the
+        ``ResumeOntologyJob`` RPC.
+
+        *id* (from :meth:`get_ontology_job`) refuses the resume unless that
+        job is still the unfinished one. Returns ``{tenant, job}`` as
+        :meth:`get_ontology_job` does, the job as the slice left it; call
+        again while it is unfinished.
+
+        Operator only, as :meth:`get_ontology_job`. A refusal raises with the
+        code (``job_not_found``, ``job_busy``, ``forbidden``,
+        ``unavailable``) on its ``.reason``."""
+        req = pb.ResumeOntologyJobRequest(tenant=tenant, id=id)
+        try:
+            resp = await self._stub.ResumeOntologyJob(req, metadata=self._auth_metadata())
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+        return {
+            "tenant": resp.tenant,
+            "job": _ontology_job(resp.job) if resp.HasField("job") else None,
         }
 
     async def list_review_queue(
@@ -3952,6 +4015,48 @@ def _raise_calc_from_grpc(err: grpc.aio.AioRpcError) -> "None":
             retryable=meta.get("is_retryable") == "true",
         ) from err
     _raise_from_grpc(err)
+
+
+def _ontology_job(j: "pb.OntologyJobStatus") -> Mapping[str, Any]:
+    """An ontology job as HTTP's JSON shapes it (``remaining`` for the
+    rows still under an old name)."""
+    return {
+        "id": j.id,
+        "kind": j.kind,
+        "entry": j.entry,
+        "from": list(getattr(j, "from")),
+        "to": j.to,
+        "to_tags": list(j.to_tags),
+        "state": j.state,
+        "step": j.step,
+        "done": dict(j.done),
+        "error": j.error,
+        "remaining": j.remaining,
+        "scope": j.scope,
+        "scopes_done": j.scopes_done,
+        "scopes_total": j.scopes_total,
+        "created_at": j.created_at,
+        "updated_at": j.updated_at,
+    }
+
+
+def _rename_job_plan(p: "pb.OntologyRenameJobPlan") -> Mapping[str, Any]:
+    """A planned class rename's job block, as HTTP's ``job``."""
+    return {
+        "steps": [
+            {"name": s.name, "tenant_scope": s.tenant_scope, "other_scopes": s.other_scopes} for s in p.steps
+        ],
+        "runnable": p.runnable,
+        "blocked": list(p.blocked),
+        "collisions": [
+            {"column": c.column, "key": c.key, "into": c.into, "holder": c.holder} for c in p.collisions
+        ],
+        "collisions_total": p.collisions_total,
+        "collisions_other_scopes": p.collisions_other_scopes,
+        "scopes_not_counted": p.scopes_not_counted,
+        "running": _ontology_job(p.running) if p.HasField("running") else None,
+        "notes": list(p.notes),
+    }
 
 
 def _retention_override_entry(o: "pb.RetentionOverrideEntry") -> Mapping[str, Any]:
