@@ -2651,7 +2651,8 @@ export interface OntologyEntryDiff {
   chunk_id: string;
   /** class | relation | scheme | concept | instance | grammar */
   kind: string;
-  change: "added" | "removed" | "changed";
+  /** erased: a subject erasure redacted the entry from a release on either side; no before or after. */
+  change: "added" | "removed" | "changed" | "erased";
   /** On a changed entry: what differs. */
   changed?: ("renamed" | "moved" | "kind" | "status" | "meaning" | "directives")[];
   /** Absent for an added entry. */

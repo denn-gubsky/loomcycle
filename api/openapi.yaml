@@ -927,7 +927,7 @@ paths:
                       properties:
                         chunk_id: { type: string }
                         kind: { type: string, enum: [class, grammar, relation, scheme, concept, instance] }
-                        change: { type: string, enum: [added, removed, changed] }
+                        change: { type: string, enum: [added, removed, changed, erased], description: "erased: a subject erasure redacted the entry from a release on either side; it carries no before or after and is not compared." }
                         changed: { type: array, items: { type: string, enum: [renamed, moved, kind, status, meaning, directives] } }
                         before: { $ref: "#/components/schemas/OntologyEntryState" }
                         after: { $ref: "#/components/schemas/OntologyEntryState" }

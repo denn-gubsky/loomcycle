@@ -1816,6 +1816,9 @@ const (
 	OntologyDiffAdded   = "added"
 	OntologyDiffRemoved = "removed"
 	OntologyDiffChanged = "changed"
+	// OntologyDiffErased: a subject erasure redacted the entry from a release on
+	// either side, so it carries no state and is not compared.
+	OntologyDiffErased = "erased"
 )
 
 // What changed about an entry present on both sides (OntologyEntryDiff.Changed).

@@ -4088,7 +4088,7 @@ export type OntologyEntryChange = "renamed" | "moved" | "kind" | "status" | "mea
 export interface OntologyEntryDiff {
   chunk_id: string;
   kind: string;
-  change: "added" | "removed" | "changed";
+  change: "added" | "removed" | "changed" | "erased";
   changed?: OntologyEntryChange[];
   before?: OntologyEntryState;
   after?: OntologyEntryState;

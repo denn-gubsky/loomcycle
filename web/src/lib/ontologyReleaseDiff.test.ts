@@ -132,6 +132,11 @@ describe("diffSummary", () => {
       ),
     ).toBe("1 changed, 1 added, 0 removed");
   });
+  it("counts an entry a subject erasure redacted as erased, not as a change", () => {
+    const d = diff([{ chunk_id: "a", kind: "instance", change: "erased" }]);
+    expect(diffSummary(d)).toBe("0 changed, 0 added, 0 removed, 1 erased");
+    expect(diffRows(d)).toEqual([{ chunkId: "a", kind: "instance", change: "erased", name: "a", lines: [] }]);
+  });
 });
 
 describe("release labels", () => {

@@ -99,6 +99,12 @@ type Service struct {
 	BoundSubjects      func(ctx context.Context, tenant, subject string) ([]BoundSubject, error)
 	ClearBoundSubjects func(ctx context.Context, tenant, subject string) ([]BoundSubject, error)
 	AnnounceErased     func(ctx context.Context, tenant string, subjects []BoundSubject) string
+	// ReleaseCopies redacts, from the tenant's ontology releases, the copies of the
+	// bound subjects' ontology instance entries, or with dryRun counts them (RFC GQ
+	// P3.3: a release keeps the ontology for up to 50 releases). The transport owns
+	// it: the releases are in the tenant's document plane. nil, or the bound-subject
+	// plane unwired = the releases are not examined.
+	ReleaseCopies func(ctx context.Context, tenant string, subjects []BoundSubject, dryRun bool) (ReleaseRedaction, error)
 	// TemplateArchive returns where the archive of workspace template id is
 	// kept (RFC GW §5.5). The transport owns it: the archive folder and its
 	// naming are the workspace layer's, above this one. nil: the rows of the
@@ -133,6 +139,83 @@ type BoundSubject struct {
 // the audit record, which counts bound subjects and never names them; it would also
 // name a subject the caller's rules withhold. So no plane error is passed through.
 var errBoundSubjectsUnread = errors.New("the subjects bound to this principal could not be read")
+
+// ReleaseRedaction is what an erasure did to the tenant's ontology releases, or would
+// do. Counts only: like the bound subjects, they reach the audit record unnamed.
+type ReleaseRedaction struct {
+	// Entries is the release entries redacted (or that would be); Releases the
+	// releases they are in.
+	Entries  int
+	Releases int
+	// InForce counts the bound subjects' instance entries still in the ontology in
+	// force, which an erasure does not edit and a later release copies again.
+	InForce int
+	// SummariesNaming counts the releases whose plan summary names a redacted entry
+	// or a bound subject's key; summaries are not rewritten.
+	SummariesNaming int
+}
+
+// releaseCopiesPlane names the release entries in Tier2 and Deleted.
+const releaseCopiesPlane = "ontology_release_entries"
+
+// errReleaseCopiesUnread stands in for the release plane's error, as
+// errBoundSubjectsUnread does for the bound subjects'.
+var errReleaseCopiesUnread = errors.New("the ontology releases could not be read")
+
+// releaseCopiesWired reports whether the release plane is examined.
+func (s *Service) releaseCopiesWired() bool {
+	return s.ReleaseCopies != nil && s.subjectBindingsWired()
+}
+
+// retainedReleaseCopies is the Retained entry for the release plane; "" when it holds
+// nothing to say.
+func retainedReleaseCopies(r ReleaseRedaction, dryRun bool) string {
+	if r.Entries == 0 && r.InForce == 0 && r.SummariesNaming == 0 {
+		return ""
+	}
+	verb := "were redacted"
+	if dryRun {
+		verb = "would be redacted"
+	}
+	return fmt.Sprintf("ontology releases: %d copied instance entr(ies) of the bound subjects in %d release(s) %s "+
+		"(name, text and fields replaced by an erased marker; the release header, its seq and the content "+
+		"version it recorded stay, so a redacted release no longer hashes to that version). Not rewritten: "+
+		"%d instance entr(ies) still declared in the ontology in force, which an erasure never edits and "+
+		"the next release copies again — retire or delete them with a plan of the change; %d release plan "+
+		"summar(ies) naming them; and any other entry whose own text names the subject. A subject deleted "+
+		"before the erasure is no longer bound, so its release copies cannot be found.",
+		r.Entries, r.Releases, verb, r.InForce, r.SummariesNaming)
+}
+
+// eraseReleaseCopies redacts (or with dryRun counts) the release copies of bound and
+// records it in res; it reports whether the release plane answered.
+func (s *Service) eraseReleaseCopies(ctx context.Context, tenant string, bound []BoundSubject, dryRun bool, res *Result, fail func(string, error)) bool {
+	if !s.releaseCopiesWired() {
+		return true
+	}
+	r, err := s.ReleaseCopies(ctx, tenant, bound, dryRun)
+	// A redaction that faulted part-way still redacted what it reports.
+	res.Deleted[releaseCopiesPlane] = r.Entries
+	if err != nil {
+		fail("ontology_releases", errReleaseCopiesUnread)
+		return false
+	}
+	if n := retainedReleaseCopies(r, dryRun); n != "" {
+		res.Retained["ontology_releases"] = n
+	}
+	return true
+}
+
+// eraseReleaseCopiesFirst redacts the release copies of the subjects still bound to
+// subject, before their bindings are cleared. It reports whether the bindings may go.
+func (s *Service) eraseReleaseCopiesFirst(ctx context.Context, tenant, subject string, res *Result, fail func(string, error)) bool {
+	bound, err := s.BoundSubjects(ctx, tenant, subject)
+	if err != nil {
+		// ClearBoundSubjects reads them again and reports its own failure.
+		return true
+	}
+	return s.eraseReleaseCopies(ctx, tenant, bound, false, res, fail)
+}
 
 // subjectBindingsWired reports whether the transport wired the bound-subject plane.
 func (s *Service) subjectBindingsWired() bool {
@@ -641,6 +724,16 @@ func (s *Service) Report(ctx context.Context, tenant, subject string) (Report, e
 			if len(bound) > 0 {
 				aclNotes = append(aclNotes, retainedBoundSubjects(len(bound)))
 			}
+			if s.releaseCopiesWired() {
+				if r, err := s.ReleaseCopies(ctx, tenant, bound, true); err != nil {
+					fail("ontology_releases", errReleaseCopiesUnread)
+				} else {
+					rep.Tier2.set(releaseCopiesPlane, int64(r.Entries))
+					if n := retainedReleaseCopies(r, true); n != "" {
+						aclNotes = append(aclNotes, n)
+					}
+				}
+			}
 		}
 	}
 	if creds, err := s.Store.CredentialDefList(ctx, tenant, "user", subject); err != nil {
@@ -784,6 +877,9 @@ func (s *Service) Execute(ctx context.Context, req ExecuteRequest) (Result, erro
 	if s.subjectBindingsWired() {
 		res.Deleted["subject_bindings"] = 0
 	}
+	if s.releaseCopiesWired() {
+		res.Deleted[releaseCopiesPlane] = 0
+	}
 	fail := func(plane string, err error) { res.Errors = append(res.Errors, plane+": "+err.Error()) }
 
 	sessions, err := s.subjectSessions(ctx, tenant, subject)
@@ -882,6 +978,14 @@ func (s *Service) Execute(ctx context.Context, req ExecuteRequest) (Result, erro
 		var err error
 		if req.DryRun {
 			bound, err = s.BoundSubjects(ctx, tenant, subject)
+			if err == nil {
+				s.eraseReleaseCopies(ctx, tenant, bound, true, &res, fail)
+			}
+		} else if s.releaseCopiesWired() && !s.eraseReleaseCopiesFirst(ctx, tenant, subject, &res, fail) {
+			// The binding is what ties the subjects to the principal: cleared, a re-run
+			// could not find their release copies again. Kept until they are redacted.
+			fail("subject_bindings", errors.New("the bindings were left in place because the ontology releases "+
+				"could not be redacted; re-run the erasure"))
 		} else {
 			bound, err = s.ClearBoundSubjects(ctx, tenant, subject)
 			unbound = bound
