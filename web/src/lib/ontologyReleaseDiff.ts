@@ -184,3 +184,19 @@ export function diffSummary(d: DiffOntologyReleasesResult): string {
 export function releasesRefused(e: unknown): boolean {
   return e instanceof ApiError && e.status === 403;
 }
+
+/** The server's own sentence from a refusal: an api.ts error reads
+ *  "403 Forbidden: <body>", and the body is JSON with an `error` field. */
+export function refusalText(e: unknown): string {
+  if (!(e instanceof Error)) return "";
+  const body = e.message.replace(/^\d{3} [^:]*: /, "");
+  try {
+    const parsed: unknown = JSON.parse(body);
+    if (parsed && typeof parsed === "object" && typeof (parsed as { error?: unknown }).error === "string") {
+      return (parsed as { error: string }).error;
+    }
+  } catch {
+    // not JSON: the body text is the sentence
+  }
+  return body;
+}

@@ -9,6 +9,7 @@ import {
   previousRelease,
   releaseReasonLabel,
   releaseTime,
+  refusalText,
   releasesRefused,
 } from "./ontologyReleaseDiff";
 
@@ -164,5 +165,14 @@ describe("releasesRefused", () => {
     );
     expect(releasesRefused(apiError(404, "Not Found", JSON.stringify({ code: "release_not_found" })))).toBe(false);
     expect(releasesRefused(new Error("403 Forbidden"))).toBe(false);
+  });
+});
+
+describe("refusalText", () => {
+  it("is the server's error sentence, not the JSON body", () => {
+    expect(refusalText(apiError(403, "Forbidden", JSON.stringify({ code: "forbidden", error: "operator only" })))).toBe(
+      "operator only",
+    );
+    expect(refusalText(apiError(403, "Forbidden", "plain text"))).toBe("plain text");
   });
 });

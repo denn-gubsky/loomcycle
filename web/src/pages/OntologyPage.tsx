@@ -21,6 +21,7 @@ import {
   diffSideLabel,
   diffSummary,
   previousRelease,
+  refusalText,
   releaseReasonLabel,
   releaseTime,
   releasesRefused,
@@ -713,7 +714,7 @@ const RELEASES_TAB: OntologyTab = { id: "releases", label: "releases", warn: fal
 // which ErrorNotice does not know) in the same "Not permitted" form, saying why.
 function ReleasesError({ error }: { error: unknown }) {
   if (!forbiddenKind(error) && releasesRefused(error)) {
-    const message = error instanceof Error ? error.message.replace(/^\d{3} [^:]*: /, "") : "";
+    const message = refusalText(error);
     return (
       <div className="acl-denied" role="alert">
         <div className="acl-denied-head">Not permitted</div>

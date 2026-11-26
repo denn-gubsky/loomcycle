@@ -393,7 +393,7 @@ describe("OntologySection releases (RFC GQ P3.7)", () => {
     mounted = await mount(member, "/?section=releases");
     const alert = mounted.el.querySelector(".acl-denied");
     expect(alert?.querySelector(".acl-denied-head")?.textContent).toBe("Not permitted");
-    expect(alert?.textContent).toContain("operator only");
+    expect(alert?.querySelector(".settings-muted")?.textContent).toBe("ontology releases: operator only");
     expect(mounted.el.querySelector("table.ontology-releases")).toBeNull();
     expect(mounted.el.querySelector(".settings-error")).toBeNull();
   });
