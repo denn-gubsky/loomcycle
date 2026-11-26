@@ -35,10 +35,16 @@ const ontologyToolDescription = "Operator actions on the tenant ontology. " +
 	"Returns {tenant, fingerprint, content_version, changes, issues, new_issues, scopes_counted, scopes_skipped, complete}: issues are the ontology's advisories as it would read after every change, new_issues those it does not report now, and complete is false when some scope was not counted (the other-scope counts are then a floor). " +
 	"The fingerprint names the ontology the plan was computed against. " +
 	"content_version names what the ontology in force declares now, before the changes: it moves only when an in-force entry is added, changed, retired, moved or removed, never on a proposal, a review rule or a reorder. " +
+	"op=releases lists the ontology's releases, newest first: the copies taken when it was confirmed (reason confirm), when an accepted change was applied (apply) or rolled back (rollback), and before either when it had moved without one (catch_up); the newest 50 are kept. " +
+	"Returns {tenant, releases: [{seq, content_version, fingerprint, reason, actor, created_at, entries}]}. " +
+	"op=release_diff compares release from with release to, or with the ontology as it stands when to is omitted, entry by entry. A rename keeps the entry's chunk, so it is one changed entry, never an add and a remove; proposals, the Review section, section headers and sibling order are not compared. " +
+	"Returns {tenant, from, to (each {seq, current, content_version}), changes: [{chunk_id, kind, change (added, removed or changed), changed (renamed, moved, kind, status, meaning, directives), before, after (each {name, parent, parent_name, status, meaning, directives})}], issues}. " +
+	"Both write nothing. A release keeps text an edit or an erasure removed from the ontology, which is why they are an operator's. " +
 	"For an admin or a tenant operator only, holding write on the subject's document for merge_subjects (both documents) and bind_principal; plan reads the whole tenant. The tenant is your own unless you are an admin and pass another. " +
 	"A refusal is {code, error}. merge_subjects: same_subject, not_a_subject, subject_not_in_scope, already_merged, principal_conflict, forbidden, merge_conflict. " +
 	"bind_principal: subject_not_found, not_a_subject, binding_conflict (names the subject that holds the binding), principal_not_found, forbidden, invalid_request, unavailable. " +
 	"plan: invalid_request (also a proposal accepting would refuse as it stands), invalid_body (over 64 KiB), entry_not_found (no in-force entry by that id, no open proposal by that id, or no ontology), forbidden, unavailable. " +
+	"releases and release_diff: invalid_request (a from or to that is not a release's number), release_not_found (no such release, or no ontology to compare with), forbidden, unavailable. " +
 	"Do NOT use it to rename a subject or change its type — edit the subject's document with the document tool."
 
 // ontologyToolSchema is the `ontology` tool's input schema.
@@ -46,7 +52,7 @@ const ontologyToolSchema = `{
 	"type": "object",
 	"required": ["op"],
 	"properties": {
-		"op":        {"type": "string", "enum": ["merge_subjects", "bind_principal", "plan"], "description": "merge_subjects (needs duplicate and survivor), bind_principal (needs subject and principal) or plan (needs changes)."},
+		"op":        {"type": "string", "enum": ["merge_subjects", "bind_principal", "plan", "releases", "release_diff"], "description": "merge_subjects (needs duplicate and survivor), bind_principal (needs subject and principal), plan (needs changes), releases, or release_diff (needs from)."},
 		"duplicate": {"type": "string", "description": "merge_subjects: the subject that goes: its document id or natural key."},
 		"survivor":  {"type": "string", "description": "merge_subjects: the subject that stays and receives the duplicate's facts and statements: its document id or natural key."},
 		"subject":   {"type": "string", "description": "bind_principal: the subject to bind or clear: its document id, root chunk id or natural key."},
@@ -63,6 +69,8 @@ const ontologyToolSchema = `{
 				"body":   {"type": "string", "description": "edit: the entry's new body (its meaning and directives), at most 32 KiB."}
 			}
 		}},
+		"from":      {"type": "integer", "minimum": 1, "description": "release_diff (required): the earlier release's sequence number (seq from releases)."},
+		"to":        {"type": "integer", "minimum": 1, "description": "release_diff: the later release's sequence number. Omit it (or pass \"current\") to compare with the ontology as it stands now."},
 		"tenant":    {"type": "string", "description": "Admin only: whose ontology. Ignored for a tenant operator, which always acts on its own tenant."}
 	}
 }`
@@ -82,6 +90,11 @@ func handleOntology(ctx context.Context, env *handlerEnv, args json.RawMessage) 
 		// Decoded in op plan only, after the size bound and with unknown keys
 		// refused, as HTTP does.
 		Changes json.RawMessage `json:"changes"`
+
+		// release_diff: decoded by releaseSeqArg, so a value that is not a
+		// release's number is invalid_request, as HTTP's query parse answers.
+		From json.RawMessage `json:"from"`
+		To   json.RawMessage `json:"to"`
 	}
 	if len(args) > 0 {
 		if err := json.Unmarshal(args, &p); err != nil {
@@ -138,9 +151,59 @@ func handleOntology(ctx context.Context, env *handlerEnv, args json.RawMessage) 
 			return ontologyRefusal("plan", code, err), nil
 		}
 		return toolResultJSON(res), nil
+	case "releases":
+		res, err := env.connector.ListOntologyReleases(ctx, connector.ListOntologyReleasesRequest{Tenant: p.Tenant})
+		if err != nil {
+			return ontologyReleaseRefusal("releases", err), nil
+		}
+		return toolResultJSON(res), nil
+	case "release_diff":
+		from, err := releaseSeqArg(p.From, "from", false)
+		if err != nil {
+			return ontologyRefusal("release_diff", "invalid_request", err), nil
+		}
+		to, err := releaseSeqArg(p.To, "to", true)
+		if err != nil {
+			return ontologyRefusal("release_diff", "invalid_request", err), nil
+		}
+		res, err := env.connector.DiffOntologyReleases(ctx, connector.DiffOntologyReleasesRequest{Tenant: p.Tenant, From: from, To: to})
+		if err != nil {
+			return ontologyReleaseRefusal("release_diff", err), nil
+		}
+		return toolResultJSON(res), nil
 	}
-	return toolErrValidation(`ontology: unknown op "`+p.Op+`" (must be merge_subjects, bind_principal or plan)`,
-		"pass op merge_subjects, bind_principal or plan"), nil
+	return toolErrValidation(`ontology: unknown op "`+p.Op+`" (must be merge_subjects, bind_principal, plan, releases or release_diff)`,
+		"pass op merge_subjects, bind_principal, plan, releases or release_diff"), nil
+}
+
+// releaseSeqArg reads a release's sequence number: a positive integer, or — when
+// current is allowed — "current", null or an absent value for the ontology as it
+// stands (0). Anything else is refused here with the sentence HTTP's query parse
+// answers, so a string where a number belongs is invalid_request on both rather
+// than an argument-decoding failure on this transport alone.
+func releaseSeqArg(raw json.RawMessage, name string, current bool) (int64, error) {
+	if current {
+		var s string
+		if len(raw) == 0 || string(raw) == "null" || (json.Unmarshal(raw, &s) == nil && s == "current") {
+			return 0, nil
+		}
+	}
+	var seq int64
+	if err := json.Unmarshal(raw, &seq); err != nil || seq <= 0 {
+		return 0, fmt.Errorf("%s must be a release's sequence number, a positive integer", name)
+	}
+	return seq, nil
+}
+
+// ontologyReleaseRefusal renders a release-read refusal as HTTP's {code, error}. An
+// internal failure carries no text, as on HTTP: a store fault's text can carry a
+// path or a DSN, and the connector has logged it.
+func ontologyReleaseRefusal(op string, err error) *loommcp.CallToolResult {
+	code := connector.OntologyReleaseCode(err)
+	if code == "" {
+		code, err = "release_read_failed", errors.New("the ontology releases could not be read; see the server log")
+	}
+	return ontologyRefusal(op, code, err)
 }
 
 // ontologyRefusal renders a refusal as the HTTP error body's {code, error}, so a
