@@ -18,8 +18,6 @@ package dispatch
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -411,8 +409,7 @@ func grantKey(att auth.WorkerAttach) string {
 		// (D-P13-5): a subject may hold bytes an id may not, and the id
 		// names the grant, never the token, so a rotated token keeps its
 		// worker's rows. No other prefix starts "user:".
-		h := sha256.Sum256([]byte(att.UserID))
-		return "user:" + att.TenantID + "/" + hex.EncodeToString(h[:])[:16]
+		return workspace.PersonalGrantKey(att.TenantID, att.UserID)
 	}
 	return "tenant:" + att.TenantID
 }

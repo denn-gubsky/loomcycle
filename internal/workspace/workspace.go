@@ -5,7 +5,11 @@
 // internal/workspace/worker.
 package workspace
 
-import "strings"
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"strings"
+)
 
 // ProtocolVersion is the workspace worker protocol this build speaks (RFC GW
 // §8). 2 added the worker-to-core Egress stream (RFC GW P4): an older worker
@@ -169,4 +173,15 @@ type Stats struct {
 // StatusAnswer is a status op's output.
 type StatusAnswer struct {
 	Exists bool `json:"exists"`
+}
+
+// PersonalGrantKey is the grant part of a personal worker's id (RFC GW P13,
+// D-P13-5): "user:<tenant>/" and the first 16 hex of SHA-256 of the user. A
+// subject may hold bytes an id may not, and the key names the grant, never
+// the token, so a rotated token's worker keeps its rows. The worker's id is
+// the key, "/" and the id it declares. The dispatcher builds the id from it
+// and the snapshot restore checks a row against it, so the two cannot drift.
+func PersonalGrantKey(tenantID, userID string) string {
+	h := sha256.Sum256([]byte(userID))
+	return "user:" + tenantID + "/" + hex.EncodeToString(h[:])[:16]
 }
