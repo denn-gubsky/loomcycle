@@ -332,6 +332,12 @@ func (w *Workspace) Execute(ctx context.Context, input json.RawMessage) (tools.R
 	default:
 		return workspaceRefusal("invalid_argument", fmt.Sprintf("lifetime %q: want ephemeral or durable", in.Lifetime)), nil
 	}
+	// discard destroys a durable workspace, which another run may have
+	// made: the durable grant too (security review of #2973), checked
+	// before anything is read.
+	if in.Discard && !pol.Durable {
+		return workspaceRefusal("not_granted", "this agent's workspace grant does not allow durable workspaces (workspace.durable), so it may not discard one"), nil
+	}
 	if w.Manager == nil {
 		return workspaceRefusal("workspaces_off", "this runtime serves no workspaces (workspace.mode is off)"), nil
 	}
@@ -381,7 +387,7 @@ func (w *Workspace) Execute(ctx context.Context, input json.RawMessage) (tools.R
 		// A durable workspace of the user that no live run holds is
 		// discarded by name (RFC GW §5: release {discard: true}).
 		if in.Op == "release" && in.Discard && errors.Is(err, lifecycle.ErrNotFound) {
-			if derr := w.Manager.DiscardParked(ctx, owner, in.Name); derr != nil {
+			if derr := w.Manager.DiscardParked(ctx, owner, in.Name, pol.Engine, pol.Egress); derr != nil {
 				return workspaceError(derr, in.Name), nil
 			}
 			return workspaceOK(map[string]any{"name": in.Name, "released": true, "discarded": true}), nil

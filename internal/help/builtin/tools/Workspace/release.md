@@ -11,7 +11,9 @@ run ends, and frees one of your run's workspace slots.
   servers, interpreters, the session. Its shares end, its pages close, and a
   Documents checkout in it is forgotten (commit before you release).
 - `discard: true` deletes a durable workspace instead. It also deletes a
-  durable workspace of yours that no live run holds, by name.
+  durable workspace of yours that no live run holds, by name. It needs your
+  grant's `workspace.durable`, and a grant that covers the engine and the
+  egress routes the workspace was opened with.
 
 ## Arguments
 
@@ -30,6 +32,8 @@ when it comes back; the workspace is gone for you either way.
   is there a durable one of yours of that name).
 - `held` — with `discard`: another live run of yours holds that durable
   workspace.
+- `not_granted` — with `discard`: your grant has no `durable`, or does not
+  cover the workspace's engine or routes. Nothing is deleted.
 
 ## Examples
 

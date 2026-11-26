@@ -270,3 +270,56 @@ func TestDurable_ListSaysDurable(t *testing.T) {
 		t.Errorf("list = %+v, %v", out, err)
 	}
 }
+
+// Discarding destroys a workspace another run made: it needs the durable
+// grant, and a grant that covers what the workspace was made with (its
+// engine and routes), as pinning it does. Refused, nothing is touched.
+// (Security review of #2973.)
+func TestDurable_DiscardNeedsTheDurableGrant(t *testing.T) {
+	f := durableFixture(t, 8)
+	maker := f.runAsAgent(t, "acme", "alice", "a1", wsKeeper)
+	f.mustOK(t, maker, openDurable)
+	f.mustOK(t, maker, `{"op":"write","name":"work","path":"notes.txt","content":"keep me"}`)
+	f.endRun(t, maker)
+
+	noDurable := f.runAsAgent(t, "acme", "alice", "a2", wsFull)
+	if c := refusalClass(f.call(t, noDurable, `{"op":"release","name":"work","discard":true}`)); c != "not_granted" {
+		t.Errorf("discard without the durable grant = %q, want not_granted", c)
+	}
+	strict := tools.WorkspacePolicyValue{Read: true, Write: true, Exec: true, Open: true, Durable: true, Engine: "container"}
+	if c := refusalClass(f.call(t, f.runAsAgent(t, "acme", "alice", "a3", strict), `{"op":"release","name":"work","discard":true}`)); c != "not_granted" {
+		t.Errorf("discard by a run whose grant does not cover the host engine it was made on = %q, want not_granted", c)
+	}
+	if _, err := f.st.WorkspaceGetDurable(context.Background(), "acme", "alice", "work"); err != nil {
+		t.Fatalf("the row after refused discards: %v", err)
+	}
+	again := f.runAsAgent(t, "acme", "alice", "a4", wsKeeper)
+	f.mustOK(t, again, openDurable)
+	if got := readNotes(t, f, again); !strings.Contains(got, "keep me") {
+		t.Errorf("the files after refused discards: %s", got)
+	}
+	// Its own holder, with the grant, may.
+	f.mustOK(t, again, `{"op":"release","name":"work","discard":true}`)
+	if _, err := f.st.WorkspaceGetDurable(context.Background(), "acme", "alice", "work"); err == nil {
+		t.Error("the holder's discard left the row")
+	}
+}
+
+// A grant that names fewer egress routes than the workspace was made with
+// cannot discard it either.
+func TestDurable_DiscardNeedsTheGrantToCoverItsRoutes(t *testing.T) {
+	f := durableFixture(t, 8)
+	routed := wsKeeper
+	routed.Egress = []string{"pypi"}
+	maker := f.runAsAgent(t, "acme", "alice", "a1", routed)
+	if res := f.call(t, maker, openDurable); res.IsError {
+		t.Skipf("this fixture cannot open a workspace with a route: %s", res.Text)
+	}
+	f.endRun(t, maker)
+	if c := refusalClass(f.call(t, f.runAsAgent(t, "acme", "alice", "a2", wsKeeper), `{"op":"release","name":"work","discard":true}`)); c != "not_granted" {
+		t.Errorf("discard by a run without the workspace's route = %q, want not_granted", c)
+	}
+	if _, err := f.st.WorkspaceGetDurable(context.Background(), "acme", "alice", "work"); err != nil {
+		t.Errorf("the row after a refused discard: %v", err)
+	}
+}

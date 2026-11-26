@@ -182,13 +182,8 @@ func (m *Manager) pin(ctx context.Context, o Owner, req OpenRequest, r store.Wor
 	if req.Template != nil {
 		return store.WorkspaceRow{}, ErrDurableTemplate
 	}
-	if !engineAccepted(req.Engine, r.Engine) {
-		return store.WorkspaceRow{}, fmt.Errorf("%w: it runs on the %s engine, and this agent accepts %s only", ErrDurableGrant, r.Engine, req.Engine)
-	}
-	for _, route := range r.Egress {
-		if !slices.Contains(req.Egress, route) {
-			return store.WorkspaceRow{}, fmt.Errorf("%w: it may reach the network through the route %q, which this open does not grant", ErrDurableGrant, route)
-		}
+	if err := grantCovers(req.Engine, req.Egress, r); err != nil {
+		return store.WorkspaceRow{}, err
 	}
 	if !m.disp.Attached(r.WorkerID, r.TenantID) {
 		return store.WorkspaceRow{}, dispatch.ErrWorkerLost
@@ -221,6 +216,23 @@ func (m *Manager) pin(ctx context.Context, o Owner, req OpenRequest, r store.Wor
 		return store.WorkspaceRow{}, err
 	}
 	return cur, nil
+}
+
+// grantCovers refuses a run whose grant does not cover what the durable
+// workspace r was made with: its engine (a run held to a more isolating one
+// takes none on a weaker engine) and its routes (each one the run's grant
+// names). Pinning it and discarding it both ask it, so a run never takes,
+// nor destroys, more than its own grant would have made.
+func grantCovers(engine string, egress []string, r store.WorkspaceRow) error {
+	if !engineAccepted(engine, r.Engine) {
+		return fmt.Errorf("%w: it runs on the %s engine, and this agent accepts %s only", ErrDurableGrant, r.Engine, engine)
+	}
+	for _, route := range r.Egress {
+		if !slices.Contains(egress, route) {
+			return fmt.Errorf("%w: it may reach the network through the route %q, which this agent's grant does not name", ErrDurableGrant, route)
+		}
+	}
+	return nil
 }
 
 // engineAccepted reports whether a workspace on engine meets a run's least
@@ -282,8 +294,10 @@ func (m *Manager) ReleaseDiscard(ctx context.Context, r store.WorkspaceRow) erro
 
 // DiscardParked removes the user's durable workspace of name that no live
 // run holds: a parked one, or one whose run has ended. One a live run holds
-// is refused with *HeldError; none, ErrNotFound.
-func (m *Manager) DiscardParked(ctx context.Context, o Owner, name string) error {
+// is refused with *HeldError; none, ErrNotFound. engine and egress are the
+// run's grant, which must cover what it was made with, as for a pin
+// (ErrDurableGrant). The caller has checked the run's durable grant.
+func (m *Manager) DiscardParked(ctx context.Context, o Owner, name, engine string, egress []string) error {
 	if o.IsPrincipal() || o.UserID == "" || !ValidName(name) {
 		return ErrNotFound
 	}
@@ -308,6 +322,9 @@ func (m *Manager) DiscardParked(ctx context.Context, o Owner, name string) error
 		if !ended {
 			return &HeldError{Name: name, AgentID: r.OwnerAgentID}
 		}
+	}
+	if err := grantCovers(engine, egress, r); err != nil {
+		return err
 	}
 	return m.remove(ctx, r)
 }
