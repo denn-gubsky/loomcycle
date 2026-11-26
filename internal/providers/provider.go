@@ -867,7 +867,7 @@ const (
 	// run's own stream (a sub-agent's on its own run's), persisted.
 	EventSurface EventType = "surface"
 	// EventSurfaceClosed reports that a page the run published went: Surface
-	// carries its id, workspace and the reason (unexposed, released, idle).
+	// carries its id, workspace and the reason (unexposed, released, idle, lost).
 	// On the run's own stream when the run closed it; otherwise appended to
 	// the run's transcript, which a re-attached stream reads.
 	EventSurfaceClosed EventType = "surface_closed"
@@ -1976,7 +1976,7 @@ type SurfaceInfo struct {
 	// ExpiresAt is when the page closes if no request uses it (its idle
 	// timeout); each use moves it later. Set on EventSurface.
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
-	// Reason is why the page went (unexposed | released | idle); set on
+	// Reason is why the page went (unexposed | released | idle | lost); set on
 	// EventSurfaceClosed.
 	Reason string `json:"reason,omitempty"`
 }

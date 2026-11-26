@@ -6,7 +6,9 @@ import (
 	"io"
 	"net"
 	"path/filepath"
+	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -595,6 +597,59 @@ func TestAttach_ALostDurableWorkspaceIsNeverRemoved(t *testing.T) {
 			t.Errorf("%s's directory was removed", ws)
 		}
 	}
+}
+
+// A worker that comes back without a ready workspace's directory (a new
+// disk) leaves it lost, never ready: its files are gone (RFC GW P12 plan
+// §3.4, G-C). A row made in the last minutes may be one another replica is
+// opening on the worker as it attaches, and is left; an opening row is left;
+// each row marked lost is told to the lost hook.
+func TestAttach_AWorkspaceTheWorkerNoLongerHoldsIsLost(t *testing.T) {
+	id := acmeID("w1")
+	old := time.Now().Add(-10 * time.Minute)
+	row := func(ws string, state store.WorkspaceState, created time.Time, lifetime string) store.WorkspaceRow {
+		return store.WorkspaceRow{ID: ws, TenantID: "acme", UserID: "alice", WorkerID: id, OwnerRunID: "run-1", OwnerKind: store.WorkspaceOwnerRun,
+			Lifetime: lifetime, State: state, CreatedAt: created}
+	}
+	st := newMemStore(
+		row("ws-gone", store.WorkspaceReady, old, store.WorkspaceLifetimeEphemeral),
+		row("ws-durable", store.WorkspaceReady, old, store.WorkspaceLifetimeDurable),
+		row("ws-new", store.WorkspaceReady, time.Now(), store.WorkspaceLifetimeEphemeral),
+		row("ws-opening", store.WorkspaceOpening, old, store.WorkspaceLifetimeEphemeral),
+		row("ws-here", store.WorkspaceReady, old, store.WorkspaceLifetimeEphemeral),
+	)
+	st.runs["run-1"] = store.RunRunning
+	d, target := core(t, st, dispatch.Options{})
+	var mu sync.Mutex
+	var told []string
+	d.SetOnLost(func(_ context.Context, r store.WorkspaceRow) {
+		mu.Lock()
+		told = append(told, r.ID)
+		mu.Unlock()
+	})
+	root := t.TempDir()
+	mkdirs(t, root, "ws-here")
+	realWorker(t, target, tokAcme, "w1", worker.Options{Root: root, IdleStreams: 1})
+	waitAttached(t, d, id)
+	waitFor(t, "the gone workspaces to be lost", func() bool {
+		return st.state("ws-gone") == store.WorkspaceLost && st.state("ws-durable") == store.WorkspaceLost
+	})
+	for ws, want := range map[string]store.WorkspaceState{"ws-new": store.WorkspaceReady, "ws-opening": store.WorkspaceOpening, "ws-here": store.WorkspaceReady} {
+		if got := st.state(ws); got != want {
+			t.Errorf("%s = %s, want %s", ws, got, want)
+		}
+	}
+	waitFor(t, "the lost hook to be told", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(told) == 2
+	})
+	mu.Lock()
+	sort.Strings(told)
+	if strings.Join(told, ",") != "ws-durable,ws-gone" {
+		t.Errorf("told = %v", told)
+	}
+	mu.Unlock()
 }
 
 // On the host engine every command runs as the worker's user over the
