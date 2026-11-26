@@ -107,7 +107,7 @@ func TestSnapshotEntries_NeverEmbedStoreRows(t *testing.T) {
 // deployment. Do not add a key without that decision.
 var pinnedEntryKeys = map[string][]string{
 	"Sections": {"users", "token_limits", "acl", "oauth_credentials", "tenant_telemetry", "agent_defs", "agent_def_active", "skill_defs", "skill_def_active", "team_defs",
-		"team_def_active", "hook_defs", "hook_def_active", "mcp_server_defs", "mcp_server_def_active", "volume_defs",
+		"team_def_active", "hook_defs", "hook_def_active", "mcp_server_defs", "mcp_server_def_active", "volume_defs", "workspaces",
 		"memory_backend_defs", "memory_backend_def_active", "document_source_defs", "document_source_def_active",
 		"a2a_agent_defs", "a2a_agent_def_active", "a2a_server_card_defs", "a2a_server_card_def_active",
 		"memory", "memory_pending", "channels", "channel_defs", "webhook_defs", "webhook_def_active", "schedule_defs",
@@ -207,6 +207,13 @@ var pinnedEntryKeys = map[string][]string{
 	// lookup trusts a stored path, so the target derives it. Never add one.
 	"VolumeDefsSection": {"version", "entries"},
 	"VolumeDefEntry":    {"tenant_id", "name", "mode", "created_at", "updated_at"},
+	// RFC GW P12: a workspace's row, never its files; the git credential is
+	// a reference ($cred:/$ghapp: name), and the restore refuses any other.
+	"WorkspacesSection": {"version", "entries"},
+	"WorkspaceEntry": {"id", "tenant_id", "user_id", "name", "worker_id", "kind", "lifetime", "engine", "owner_kind",
+		"owner_run_id", "owner_agent_id", "root_run_id", "state", "root", "egress", "shares", "git", "created_at"},
+	"WorkspaceShareEntry": {"run_id", "agent_id", "access", "connect", "created_at"},
+	"WorkspaceGitEntry":   {"url", "branch", "base_ref", "base", "default_branch", "credential", "mirror"},
 
 	// Memory-backend and document-source defs carry env var NAMES only. The
 	// definition is the stored body; it must never gain a resolved value.

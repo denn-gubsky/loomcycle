@@ -308,15 +308,15 @@ var tableCoverageMap = map[string]tableCoverage{
 		Reason: "tenant egress routes must pass the target's operator ceiling again; snapshot section is a follow-up"},
 	"ephemeral_volume_defs": {Kind: coverOmitted, Backends: onBoth,
 		Reason: "run-bound scratch volumes"},
-	// A workspace's files live on a worker and never travel; its row (the
-	// pin) joins snapshots with durable workspaces in RFC GW P12. Until then
-	// a run restored elsewhere finds no workspace and its next op says so.
+	// A workspace's files live on a worker and never travel (RFC GW P12).
 	// A template's archive is a file under the data directory that never
 	// travels; its row joins snapshots, if ever, with durable state (P12).
 	"workspace_templates": {Kind: coverOmitted, Backends: onBoth,
 		Reason: "RFC GW P6 D-P6-36: template rows stay with their archives under the data directory; durable workspace state is P12"},
-	"workspaces": {Kind: coverOmitted, Backends: onBoth,
-		Reason: "RFC GW P1 ruling Q5: workspace rows (the pin) join snapshots in P12; the files on a worker never do"},
+	// RFC GW P12: a workspace's row (its pin) travels; its files never do.
+	// A git record's credential is a reference ($cred:/$ghapp: name).
+	"workspaces": {Kind: coverSection, Section: "workspaces", Backends: onBoth,
+		Secrets: "by-reference: git.credential (a $cred:/$ghapp: name)"},
 	// A workspace's exposed ports (RFC GW P9): each names a port a server
 	// on a worker serves now, and goes with its workspace's row, which is
 	// not carried either. A restore must not bring back a page that points

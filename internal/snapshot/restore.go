@@ -96,6 +96,12 @@ type RestoreOptions struct {
 	// ground truth and would shadow it at resolution.
 	StaticVolumeNames []string
 
+	// WorkspaceEgressRoutes are the egress routes this host's configuration
+	// defines (RFC GW P12): a restored workspace keeps only these of the
+	// routes it recorded, since a route is the operator's, never the
+	// snapshot's. nil keeps none.
+	WorkspaceEgressRoutes []string
+
 	// DocumentExists reports whether a document a restored Path name points
 	// at is on this host. It takes the dirent's own coordinates (tenant,
 	// scope, scope_id — the dirent plane's, which SQL Memory keys
@@ -164,6 +170,8 @@ type RestoreResult struct {
 	MCPServerDefsRestored          int      `json:"mcp_server_defs_restored"`
 	MCPServerDefActiveRestored     int      `json:"mcp_server_def_active_restored"`
 	VolumeDefsRestored             int      `json:"volume_defs_restored"`
+	WorkspacesRestored             int      `json:"workspaces_restored"`
+	WorkspacesSkipped              int      `json:"workspaces_skipped"`
 	VolumeDirsCreated              int      `json:"volume_dirs_created"`
 	MemoryBackendDefsRestored      int      `json:"memory_backend_defs_restored"`
 	MemoryBackendDefActiveRestored int      `json:"memory_backend_def_active_restored"`
