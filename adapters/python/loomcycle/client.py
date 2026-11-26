@@ -2190,12 +2190,16 @@ class LoomcycleClient:
         moves only when an in-force entry does); each change is ``{op,
         entry, risk, counts, subtree, notes, proposal, job}`` with ``entry``
         ``{chunk_id, name, section, kind}``, ``proposal`` the proposal's chunk
-        id ("" for a direct change), ``job`` the class-rename job's block
-        for a rename of a class something rests on (``{steps, runnable,
-        blocked, collisions, collisions_total, collisions_other_scopes,
-        scopes_not_counted, running, notes}``, ``running`` the unfinished job
-        as :meth:`get_ontology_job` shapes it or ``None``) and ``None`` for
-        every other change, ``release`` the release a rollback plans toward
+        id ("" for a direct change), ``job`` the block of the ontology job
+        the change would start — the class-rename job for a rename of a
+        class something rests on, the concept re-tag job for a concept
+        rename or move or a scheme rename that moves a tag (``{kind, steps,
+        runnable, blocked, collisions, collisions_total,
+        collisions_other_scopes, scopes_not_counted, running, notes,
+        tag_moves}``, ``kind`` ``class_rename`` or ``concept_retag``,
+        ``tag_moves`` ``[{from, to}]`` for a re-tag, ``running`` the
+        unfinished job as :meth:`get_ontology_job` shapes it or ``None``)
+        and ``None`` for every other change, ``release`` the release a rollback plans toward
         (0 for any other change), and each count ``{n, effect,
         tenant_scope, other_scopes, by_status, sample}`` — the same shape as
         the HTTP route's JSON, with absent strings, lists and maps empty.
@@ -4108,7 +4112,9 @@ def _ontology_job(j: "pb.OntologyJobStatus") -> Mapping[str, Any]:
 
 
 def _rename_job_plan(p: "pb.OntologyRenameJobPlan") -> Mapping[str, Any]:
-    """A planned class rename's job block, as HTTP's ``job``."""
+    """A planned change's job block, as HTTP's ``job``: a class rename's
+    (``kind`` ``class_rename``) or a concept re-tag's (``concept_retag``,
+    with ``tag_moves``)."""
     return {
         "steps": [
             {"name": s.name, "tenant_scope": s.tenant_scope, "other_scopes": s.other_scopes} for s in p.steps
@@ -4123,6 +4129,9 @@ def _rename_job_plan(p: "pb.OntologyRenameJobPlan") -> Mapping[str, Any]:
         "scopes_not_counted": p.scopes_not_counted,
         "running": _ontology_job(p.running) if p.HasField("running") else None,
         "notes": list(p.notes),
+        "kind": p.kind,
+        # "from" is a Python keyword, so the field is read through getattr.
+        "tag_moves": [{"from": getattr(m, "from"), "to": m.to} for m in p.tag_moves],
     }
 
 

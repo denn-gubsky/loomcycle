@@ -3,6 +3,7 @@
 import { describe, expect, it } from "vitest";
 
 import { LoomcycleError, SessionBusyError } from "../src/index.js";
+import type { OntologyTagMove } from "../src/index.js";
 import { jsonResponse, makeClient } from "./helpers.js";
 
 const result = {
@@ -396,6 +397,38 @@ describe("ontology job", () => {
     const res = await client.planOntology([{ op: "rename", entry: "c1", name: "Circular" }]);
     expect(res.changes[0]!.job?.steps[0]!.other_scopes).toBe(5);
     expect(res.changes[0]!.job?.running?.kind).toBe("concept_retag");
+  });
+
+  it("planOntology carries a planned concept move's re-tag job block", async () => {
+    const plan = {
+      tenant: "acme",
+      fingerprint: "f".repeat(64),
+      changes: [{
+        op: "move",
+        entry: { chunk_id: "c1", name: "Risk", section: "schemes", kind: "concept" },
+        risk: "stales",
+        counts: {},
+        job: {
+          kind: "concept_retag",
+          tag_moves: [{ from: "topics/risk", to: "topics/reporting/risk" }],
+          steps: [{ name: "document_tags", tenant_scope: 1, other_scopes: 2 }],
+          runnable: true,
+          collisions_total: 0,
+          scopes_not_counted: 0,
+        },
+      }],
+      issues: [],
+      new_issues: [],
+      scopes_counted: 2,
+      scopes_skipped: 0,
+      complete: true,
+    };
+    const { client } = makeClient([jsonResponse(plan)]);
+    const res = await client.planOntology([{ op: "move", entry: "c1", parent: "c2" }]);
+    const job = res.changes[0]!.job;
+    expect(job?.kind).toBe("concept_retag");
+    const moves: OntologyTagMove[] = job?.tag_moves ?? [];
+    expect(moves).toEqual([{ from: "topics/risk", to: "topics/reporting/risk" }]);
   });
 });
 
