@@ -516,14 +516,59 @@ func validateWorkspace(c *Config) error {
 	return nil
 }
 
+// workspaceGrantWarnings is workspaceWarnings for agent name of c, less the
+// mode-off advisory on a grant an embedded bundle gave and no operator layer
+// changed. Under RFC GW P14 (owner ruling Q4 a) a bundle's agents gain
+// Workspace and keep their old shell tool until P15, so on an install with
+// workspaces off the grant is a prepared path, not an operator's mistake. An
+// agent the operator took the tool from is still advised on.
+func (c *Config) workspaceGrantWarnings(name string, a AgentDef) []string {
+	mode := c.Workspace.Resolved().Mode
+	if mode == WorkspaceModeOff && c.bundledWorkspace[name] && slices.Contains(a.Tools, "Workspace") {
+		return nil
+	}
+	return workspaceWarnings(name, a, mode)
+}
+
+// bundledWorkspaceGrants names the agents whose merged workspace grant is
+// the one the last embedded layer setting it gave. A layer that does not
+// parse here gives none, so its agents keep every advisory.
+func bundledWorkspaceGrants(cfg *Config, layers []Layer) map[string]bool {
+	given := map[string]*AgentWorkspace{}
+	for _, l := range layers {
+		if !l.Embedded || l.Data == nil {
+			continue
+		}
+		var doc struct {
+			Agents map[string]struct {
+				Workspace *AgentWorkspace `yaml:"workspace"`
+			} `yaml:"agents"`
+		}
+		if yaml.Unmarshal(l.Data, &doc) != nil {
+			continue
+		}
+		for name, a := range doc.Agents {
+			if a.Workspace != nil {
+				given[name] = a.Workspace
+			}
+		}
+	}
+	out := map[string]bool{}
+	for name, w := range given {
+		if a, ok := cfg.Agents[name]; ok && reflect.DeepEqual(a.Workspace, w) {
+			out[name] = true
+		}
+	}
+	return out
+}
+
 // InertWorkspaceGrants names, sorted, the agents whose workspace grant
 // reaches nothing: Workspace is not in their tools, or workspace.mode is off.
 // The same agents workspaceWarnings advises on at load.
 func (c *Config) InertWorkspaceGrants() []string {
-	mode := c.Workspace.Resolved().Mode
 	var out []string
 	for name, a := range c.Agents {
-		if len(workspaceWarnings(name, a, mode)) > 0 {
+		if len(c.workspaceGrantWarnings(name, a)) > 0 {
 			out = append(out, name)
 		}
 	}

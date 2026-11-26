@@ -251,7 +251,7 @@ func validateAgentGrants(c *Config, name string, agent AgentDef) error {
 	c.Warnings = append(c.Warnings, agentGateWarnings(name, agent)...)
 	c.Warnings = append(c.Warnings, shellCredentialWarnings(name, agent, c.Env)...)
 	c.Warnings = append(c.Warnings, gitRemoteWarnings(name, agent, c.Env)...)
-	c.Warnings = append(c.Warnings, workspaceWarnings(name, agent, c.Workspace.Resolved().Mode)...)
+	c.Warnings = append(c.Warnings, c.workspaceGrantWarnings(name, agent)...)
 	c.Warnings = append(c.Warnings, workspaceEgressWarnings(name, agent, c.Workspace.Egress)...)
 	if !c.Decision.Configured() {
 		for _, tool := range agent.Tools {
