@@ -245,7 +245,7 @@ func (w *worker) run(ctx context.Context, start *workspacepb.OpStart, input []by
 		// A kernel that failed to start reports its stderr, which can name
 		// the drivers' folder in the worker's root.
 		return hidePaths(a, false, real, dir, w.opt.Root)
-	case workspace.OpServerStart, workspace.OpServerStop, workspace.OpServerLogs:
+	case workspace.OpServerStart, workspace.OpServerStop, workspace.OpServerLogs, workspace.OpAwait:
 		dir, real, a := w.workspaceDir(id)
 		if a.class == "" {
 			a = w.serverOp(ctx, id, real, start.GetOp(), start.GetArgs())
