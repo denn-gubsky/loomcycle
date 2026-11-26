@@ -304,3 +304,17 @@ func TestOpenGit_ARepeatedOpenOfAnotherKindIsRefused(t *testing.T) {
 		t.Fatalf("general open of a git workspace's name = %v, want ErrNameTaken", err)
 	}
 }
+
+// A git workspace is ephemeral in this release: a durable one would keep a
+// mirror's pins and a branch across runs that each prove access again,
+// which nothing here does yet.
+func TestOpenGit_ADurableGitWorkspaceIsRefused(t *testing.T) {
+	forge := newRealForge(t)
+	f := newGitFixture(t, forge)
+	f.m.SetDurable(DurableLimits{Enabled: true})
+	req := gitOpenReq(forge, "app", "", forgeTokenA)
+	req.Lifetime = store.WorkspaceLifetimeDurable
+	if _, err := f.m.Open(context.Background(), f.run(t, "alice"), req); !errors.Is(err, ErrGitUnsupported) {
+		t.Fatalf("durable git open = %v, want ErrGitUnsupported", err)
+	}
+}

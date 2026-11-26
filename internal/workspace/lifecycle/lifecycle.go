@@ -286,6 +286,11 @@ func (m *Manager) Open(ctx context.Context, o Owner, req OpenRequest) (store.Wor
 	if !ValidName(req.Name) {
 		return store.WorkspaceRow{}, fmt.Errorf("%w: 1 to %d letters, digits, '.', '-' or '_', starting with a letter or digit", ErrInvalidName, MaxNameLen)
 	}
+	// A durable git workspace would keep a mirror's pins and a branch
+	// across runs, each of which must prove access again: not built yet.
+	if req.Git != nil && req.Lifetime == store.WorkspaceLifetimeDurable {
+		return store.WorkspaceRow{}, fmt.Errorf("%w: a durable workspace", ErrGitUnsupported)
+	}
 	switch req.Lifetime {
 	case "", store.WorkspaceLifetimeEphemeral:
 	case store.WorkspaceLifetimeDurable:
