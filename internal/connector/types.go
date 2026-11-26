@@ -1588,15 +1588,19 @@ type OntologyPlannedChange struct {
 	// Release is the release a rollback plans toward (op release): every change
 	// it expands to carries it. Absent for any other change.
 	Release int64 `json:"release,omitempty"`
-	// Job is what the class-rename job would do for a rename of a class
-	// something rests on (RFC GQ P5); absent for every other change.
+	// Job is what the ontology job the change would start would do (RFC GQ P5):
+	// the class-rename job for a rename of a class something rests on, the
+	// concept re-tag job for a change that moves a concept's or scheme's tag
+	// (Job.Kind says which); absent for every other change.
 	Job *OntologyRenameJobPlan `json:"job,omitempty"`
 }
 
-// OntologyRenameJobPlan is the class-rename job a rename would start: the rows
-// each step rewrites, whether it can run now, and the stored keys that would
-// collide under the new name. Blocked says why the rename is refused
-// (rename_job_pending); Collisions refuse it too (rename_identity_collision).
+// OntologyRenameJobPlan is the ontology job a change would start: the rows
+// each step rewrites, whether it can run now, and — for a class rename — the
+// stored keys that would collide under the new name. Blocked says why the
+// rename is refused (rename_job_pending); Collisions refuse it too
+// (rename_identity_collision). Kind is class_rename or concept_retag; a
+// concept_retag block carries TagMoves and never collisions.
 type OntologyRenameJobPlan struct {
 	Steps      []OntologyRenameJobStep   `json:"steps"`
 	Runnable   bool                      `json:"runnable"`
@@ -1613,6 +1617,17 @@ type OntologyRenameJobPlan struct {
 	// second rename waits for it.
 	Running *OntologyJobStatus `json:"running,omitempty"`
 	Notes   []string           `json:"notes,omitempty"`
+	// Kind is the job's kind: class_rename or concept_retag.
+	Kind string `json:"kind,omitempty"`
+	// TagMoves (concept_retag) are the tags the change moves, the topmost only:
+	// every tag equal to From, or under it, becomes To with the same rest.
+	TagMoves []OntologyTagMove `json:"tag_moves,omitempty"`
+}
+
+// OntologyTagMove is one tag a concept re-tag job moves.
+type OntologyTagMove struct {
+	From string `json:"from"`
+	To   string `json:"to"`
 }
 
 // OntologyRenameJobStep is one step of the rename job: the stored rows under
