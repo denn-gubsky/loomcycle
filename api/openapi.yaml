@@ -3120,9 +3120,18 @@ components:
           description: The unfinished job, else the one updated last; null when the tenant never had one.
           oneOf: [{ $ref: "#/components/schemas/OntologyJob" }, { type: "null" }]
     OntologyRenameJobPlan:
-      description: What the class-rename job would do for a rename of a class something rests on; absent for every other change.
+      description: "What the ontology job a change would start would do: the class-rename job for a rename of a class something rests on (kind class_rename), the concept re-tag job for a concept rename or move or a scheme rename that moves a tag (kind concept_retag, with tag_moves); absent for every other change."
       type: object
       properties:
+        kind: { type: string, enum: [class_rename, concept_retag] }
+        tag_moves:
+          type: array
+          description: "concept_retag: the tags the change moves, the topmost only. Every tag equal to from, or under it, becomes to with the same rest."
+          items:
+            type: object
+            properties:
+              from: { type: string }
+              to: { type: string }
         steps:
           type: array
           items:

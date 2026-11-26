@@ -479,7 +479,7 @@ async def test_plan_ontology_carries_a_class_renames_job_block():
                             blocked=["the plan could not count every scope"],
                             collisions=[pb.OntologyRenameCollision(column="identity_key", key="bulletin:a", into="circular:a", holder="c9")],
                             collisions_total=3, collisions_other_scopes=2, scopes_not_counted=1,
-                            running=_pb_job(), notes=["n"],
+                            running=_pb_job(), notes=["n"], kind="class_rename",
                         ),
                     )
                 ],
@@ -496,7 +496,38 @@ async def test_plan_ontology_carries_a_class_renames_job_block():
         "scopes_not_counted": 1,
         "running": _JOB,
         "notes": ["n"],
+        "kind": "class_rename",
+        "tag_moves": [],
     }
+
+
+@pytest.mark.asyncio
+async def test_plan_ontology_carries_a_concept_retag_job_block():
+    class _RetagPlanStub:
+        async def PlanOntology(self, req, metadata=None):
+            return pb.PlanOntologyResponse(
+                tenant="acme",
+                changes=[
+                    pb.OntologyPlannedChange(
+                        op="move",
+                        entry=pb.OntologyPlanEntry(chunk_id="c1", name="Risk", section="schemes", kind="concept"),
+                        risk="stales",
+                        job=pb.OntologyRenameJobPlan(
+                            kind="concept_retag",
+                            tag_moves=[pb.OntologyTagMove(**{"from": "topics/risk", "to": "topics/reporting/risk"})],
+                            steps=[pb.OntologyRenameJobStep(name="document_tags", tenant_scope=1, other_scopes=2)],
+                            runnable=True,
+                        ),
+                    )
+                ],
+            )
+
+    got = await _client(_RetagPlanStub()).plan_ontology([{"op": "move", "entry": "c1", "parent": "c2"}])
+    job = got["changes"][0]["job"]
+    assert job["kind"] == "concept_retag"
+    assert job["tag_moves"] == [{"from": "topics/risk", "to": "topics/reporting/risk"}]
+    assert job["steps"] == [{"name": "document_tags", "tenant_scope": 1, "other_scopes": 2}]
+    assert job["running"] is None
 
 
 @pytest.mark.asyncio
