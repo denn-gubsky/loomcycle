@@ -303,6 +303,21 @@ func (c *Container) Probe(ctx context.Context) ([]string, error) {
 	return tc, nil
 }
 
+// ProbeBrowser reports whether the session image carries the browser a
+// screenshot runs (chromium on its PATH), by starting a session of it as
+// Probe does. Only the one word the probe prints is taken.
+func (c *Container) ProbeBrowser(ctx context.Context) (bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
+	args := append([]string{"run", "--rm"}, c.hardening("none")...)
+	args = append(args, c.opt.Image, "/bin/sh", "-c", `command -v chromium >/dev/null 2>&1 && echo browser; true`)
+	out, err := c.cli(ctx, args...)
+	if err != nil {
+		return false, fmt.Errorf("container engine: starting a session of %s: %w", c.opt.Image, err)
+	}
+	return slices.Contains(strings.Fields(string(out)), "browser"), nil
+}
+
 // Reconcile removes every session of this worker: at start, those a crash
 // left; at stop, those still running. A session holds nothing that must
 // survive: the workspace's files are on the worker's disk.

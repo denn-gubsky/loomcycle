@@ -264,6 +264,14 @@ func (w *worker) run(ctx context.Context, start *workspacepb.OpStart, input []by
 		// A server's output is returned as it is; only a refusal's detail
 		// is the runtime's text.
 		return hidePaths(a, false, real, dir, w.opt.Root)
+	case workspace.OpScreenshot:
+		dir, real, a := w.workspaceDir(id)
+		if a.class == "" {
+			a = w.screenshotOp(ctx, id, real, start.GetArgs())
+		}
+		// A failed load's detail is the browser's log, which may name the
+		// session's folders; the picture itself is returned as it is.
+		return hidePaths(a, false, real, dir, w.opt.Root)
 	case workspace.OpMDSplice:
 		dir, real, a := w.workspaceDir(id)
 		if a.class == "" {
