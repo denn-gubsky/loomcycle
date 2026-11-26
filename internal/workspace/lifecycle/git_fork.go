@@ -20,6 +20,11 @@ import (
 // boot; unset, the defaults hold.
 func (m *Manager) SetGitPush(p config.WorkspacePushConfig) { m.gitPush = p.Resolved() }
 
+// SetGitMirrorMax sets a git mirror's cap (workspace.git.mirror_max_mb, in
+// bytes): a fetch that would take a mirror past it is refused
+// (mirror_too_large). Zero is none. Called once at boot.
+func (m *Manager) SetGitMirrorMax(bytes int64) { m.gitMirrorMax = bytes }
+
 func (m *Manager) pushConfig() config.WorkspacePushConfig {
 	if m.gitPush.RefPrefixes == nil {
 		return config.WorkspacePushConfig{}.Resolved()

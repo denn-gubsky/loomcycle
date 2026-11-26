@@ -85,7 +85,30 @@ type WorkspaceConfig struct {
 	Template WorkspaceTemplateConfig `yaml:"template,omitempty"`
 	// Push bounds a git workspace's push (RFC GW §6.2, P11).
 	Push WorkspacePushConfig `yaml:"push,omitempty"`
+	// Git bounds git workspaces' mirrors (RFC GW P11).
+	Git WorkspaceGitConfig `yaml:"git,omitempty"`
 }
+
+// WorkspaceGitConfig is `workspace.git` (RFC GW P11, the owner's ruling of
+// 2026-11-26): a worker's mirror of a repository grows with every fetch and
+// outlives the workspaces over it, so it is bounded and collected.
+type WorkspaceGitConfig struct {
+	// MirrorMaxMB caps one mirror: a fetch that would take it past the cap
+	// is refused and leaves it as it was. Default 4096, at most 1 TiB.
+	MirrorMaxMB int64 `yaml:"mirror_max_mb,omitempty"`
+	// MirrorIdleS is how long a mirror no workspace pins is kept after its
+	// last use, on the local worker; a remote worker reads
+	// LOOMCYCLE_WORKSPACE_MIRROR_IDLE_S. Default 3600, at most 30 days.
+	MirrorIdleS int `yaml:"mirror_idle_s,omitempty"`
+}
+
+// Defaults and ceilings of workspace.git.
+const (
+	DefaultWorkspaceMirrorMaxMB = 4096
+	DefaultWorkspaceMirrorIdleS = 3600
+	maxWorkspaceMirrorMB        = 1 << 20
+	MaxWorkspaceMirrorIdleS     = 30 * 24 * 3600
+)
 
 // WorkspaceTemplateConfig is `workspace.template`: the size of one template's
 // archive and how many a tenant holds (RFC GW §5.5).
@@ -343,6 +366,12 @@ func (w WorkspaceConfig) Resolved() WorkspaceConfig {
 	}
 	w.Egress = w.Egress.Resolved()
 	w.Push = w.Push.Resolved()
+	if w.Git.MirrorMaxMB == 0 {
+		w.Git.MirrorMaxMB = DefaultWorkspaceMirrorMaxMB
+	}
+	if w.Git.MirrorIdleS == 0 {
+		w.Git.MirrorIdleS = DefaultWorkspaceMirrorIdleS
+	}
 	if w.Expose.MaxPerWorkspace == 0 {
 		w.Expose.MaxPerWorkspace = DefaultWorkspaceExposeMaxPerWorkspace
 	}
@@ -492,6 +521,12 @@ func validateWorkspace(c *Config) error {
 	}
 	if g := w.Kernel.InterruptGraceSeconds; g < 0 || g > maxWorkspaceKernelGraceS {
 		return fmt.Errorf("workspace.kernel.interrupt_grace_seconds: %d is out of range (1 to %d)", g, maxWorkspaceKernelGraceS)
+	}
+	if w.Git.MirrorMaxMB < 0 || w.Git.MirrorMaxMB > maxWorkspaceMirrorMB {
+		return fmt.Errorf("workspace.git.mirror_max_mb: %d is out of range (1 to %d, 1 TiB)", w.Git.MirrorMaxMB, maxWorkspaceMirrorMB)
+	}
+	if w.Git.MirrorIdleS < 0 || w.Git.MirrorIdleS > MaxWorkspaceMirrorIdleS {
+		return fmt.Errorf("workspace.git.mirror_idle_s: %d is out of range (1 to %d, 30 days)", w.Git.MirrorIdleS, MaxWorkspaceMirrorIdleS)
 	}
 	if err := validateWorkspacePush(w.Push); err != nil {
 		return err
@@ -662,6 +697,9 @@ func (w *WorkspaceConfig) UnmarshalYAML(n *yaml.Node) error {
 		return err
 	}
 	if err := strictKeys(valueOf(n, "push"), "workspace.push", nil, reflect.TypeOf(WorkspacePushConfig{})); err != nil {
+		return err
+	}
+	if err := strictKeys(valueOf(n, "git"), "workspace.git", nil, reflect.TypeOf(WorkspaceGitConfig{})); err != nil {
 		return err
 	}
 	if err := strictKeys(valueOf(n, "checkpoint"), "workspace.checkpoint", nil, reflect.TypeOf(WorkspaceCheckpointConfig{})); err != nil {

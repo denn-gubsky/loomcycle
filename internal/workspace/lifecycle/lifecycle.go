@@ -125,6 +125,8 @@ type Manager struct {
 	// gitPush is workspace.push, resolved (SetGitPush): a git fork's branch
 	// is held to it.
 	gitPush config.WorkspacePushConfig
+	// gitMirrorMax is a mirror's cap in bytes (SetGitMirrorMax); 0 is none.
+	gitMirrorMax int64
 	// principalEgress is workspace.mcp.egress (SetPrincipalEgress): the
 	// routes a workspace opened over the MCP server may use.
 	principalEgress []string

@@ -63,6 +63,10 @@ const (
 
 // Options configure a workspace worker.
 type Options struct {
+	// MirrorIdle is how long a git mirror no workspace pins is kept after
+	// its last use (workspace.git.mirror_idle_s,
+	// LOOMCYCLE_WORKSPACE_MIRROR_IDLE_S); zero keeps them all.
+	MirrorIdle time.Duration
 	// Target is the dispatchers to attach to (workerlink.ParseTargets).
 	Target string
 	// Token is an operator token holding only workers:attach.
@@ -283,6 +287,7 @@ func Run(ctx context.Context, opt Options) error {
 	// The servers die with the worker, before the engine closes.
 	defer w.servers.Close()
 	w.cleanWork()
+	w.runMirrorSweep(ctx)
 	return workerlink.Serve(ctx, targets, workerlink.Options{
 		TLS: opt.TLS, Insecure: opt.Insecure, Resolve: opt.Resolve, ResolveEvery: opt.ResolveEvery,
 		Name: "workspace.worker", Logger: log,

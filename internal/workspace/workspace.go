@@ -107,6 +107,10 @@ const (
 // ClassNotFound).
 const ClassRepositoryNotFound = "repository_not_found"
 
+// ClassMirrorTooLarge is a git fetch refused because it would take the
+// repository's mirror past workspace.git.mirror_max_mb.
+const ClassMirrorTooLarge = "mirror_too_large"
+
 // KnownWorkerClasses are the classes a worker may answer with that the core
 // reports by name; any other is reported as ClassFailed, so a worker cannot
 // grow a metric's label set or put arbitrary text where a class is read.
@@ -125,7 +129,7 @@ var KnownWorkerClasses = map[string]bool{
 	"git_failed": true, "not_a_repository": true, "already_exists": true, "invalid_argument": true, "invalid_revision": true,
 	"non_fast_forward": true, "nothing_to_commit": true, "worktree_dirty": true, "push_rejected": true, "already_up_to_date": true,
 	"unsupported_repository_feature": true, "upload_too_large": true, "invalid_request": true, "auth_failed": true,
-	ClassRepositoryNotFound: true, "commit_not_found": true, "source_too_large": true, "timeout": true,
+	ClassRepositoryNotFound: true, ClassMirrorTooLarge: true, "commit_not_found": true, "source_too_large": true, "timeout": true,
 	"merge_base_not_found": true, "fetch_failed": true,
 }
 

@@ -861,6 +861,9 @@ type GitFetchArgs struct {
 	// object inflated, and the bytes in all.
 	MaxObjectBytes int64 `json:"max_object_bytes"`
 	MaxReadBytes   int64 `json:"max_read_bytes"`
+	// MaxMirrorBytes is the mirror's cap (workspace.git.mirror_max_mb); a
+	// fetch that would pass it is refused. Zero is none.
+	MaxMirrorBytes int64 `json:"max_mirror_bytes,omitempty"`
 	// Prove asks for an upload-pack request after the fetch, whatever the
 	// fetch needed: a mirror already up to date sends none, and the core's
 	// proof of access needs the forge to answer one under this ticket.
@@ -907,6 +910,8 @@ type GitNetArgs struct {
 	MaxObjectBytes int64  `json:"max_object_bytes"`
 	MaxReadBytes   int64  `json:"max_read_bytes"`
 	MaxPushBytes   int64  `json:"max_push_bytes,omitempty"`
+	// MaxMirrorBytes is the mirror's cap, as GitFetchArgs's.
+	MaxMirrorBytes int64 `json:"max_mirror_bytes,omitempty"`
 	// Force lets a push rewrite the own branch.
 	Force bool `json:"force,omitempty"`
 }

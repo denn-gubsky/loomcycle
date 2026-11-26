@@ -86,7 +86,7 @@ func (m *Manager) gitNetOp(ctx context.Context, r store.WorkspaceRow, n GitNet, 
 	}
 	defer tk.End()
 	args, err := json.Marshal(workspace.GitNetArgs{Mirror: r.Git.Mirror, URL: r.Git.URL, Branch: r.Git.Branch, Ticket: tk.Secret(),
-		MaxObjectBytes: n.MaxObjectBytes, MaxReadBytes: n.MaxReadBytes, MaxPushBytes: n.pushBytes(), Force: force})
+		MaxObjectBytes: n.MaxObjectBytes, MaxReadBytes: n.MaxReadBytes, MaxPushBytes: n.pushBytes(), MaxMirrorBytes: m.gitMirrorMax, Force: force})
 	if err != nil {
 		return GitNetResult{}, err
 	}

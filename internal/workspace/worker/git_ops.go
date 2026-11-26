@@ -26,12 +26,10 @@ func (w *worker) gitWorkspace(id, dir, mirror, url, branch string) (*gitrepo.Rep
 	if key := w.MirrorKeyOf(id); key == "" || key != mirror {
 		return nil, nil, nil, refuse(workspace.ClassInvalid, "this workspace is no git workspace over that mirror")
 	}
-	fs, done, err := w.mirrorFS(mirror)
+	fs, release, err := w.lockedMirrorFS(mirror)
 	if err != nil {
 		return nil, nil, nil, refuse(workspace.ClassInvalid, "the mirror: %v", err)
 	}
-	unlock := w.lockMirror(mirror)
-	release := func() { unlock(); done() }
 	m, err := gitrepo.OpenMirror(fs)
 	if err != nil {
 		release()
@@ -74,7 +72,14 @@ func (w *worker) gitSync(ctx context.Context, id, dir string, raw []byte, pull b
 		return refuse(workspace.ClassFailed, "%v", err)
 	}
 	defer cleanup()
+	capped, a := w.capFetch(in.Mirror, in.MaxMirrorBytes, &n)
+	if a.class != "" {
+		return a
+	}
 	if _, err := m.Fetch(ctx, n); err != nil {
+		if capped && gitClass(err) == gitTooLarge {
+			return mirrorFull()
+		}
 		w.log.Warn("git: fetching a workspace's mirror failed", "workspace", id, "err", err)
 		return refuse(gitClass(err), "fetching from the forge failed")
 	}
@@ -262,13 +267,11 @@ func (w *worker) gitAdopt(id, dir string, raw []byte) answer {
 	if _, err := os.Lstat(dir); err != nil {
 		return refuse(workspace.ClassNotFound, "the workspace is not open")
 	}
-	fs, done, err := w.mirrorFS(in.Mirror)
+	fs, done, err := w.lockedMirrorFS(in.Mirror)
 	if err != nil {
 		return refuse(workspace.ClassInvalid, "the mirror: %v", err)
 	}
 	defer done()
-	unlock := w.lockMirror(in.Mirror)
-	defer unlock()
 	m, err := gitrepo.OpenMirror(fs)
 	if err != nil {
 		return refuse(workspace.ClassFailed, "opening the mirror: %v", err)

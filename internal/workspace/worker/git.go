@@ -230,13 +230,11 @@ func (w *worker) gitFetch(ctx context.Context, id string, raw []byte) answer {
 	if a := decodeArgs(raw, &in); a.class != "" {
 		return a
 	}
-	fs, done, err := w.mirrorFS(in.Mirror)
+	fs, done, err := w.lockedMirrorFS(in.Mirror)
 	if err != nil {
 		return refuse(workspace.ClassInvalid, "the mirror: %v", err)
 	}
 	defer done()
-	unlock := w.lockMirror(in.Mirror)
-	defer unlock()
 	m, err := gitrepo.OpenMirror(fs)
 	if err != nil {
 		return refuse(workspace.ClassFailed, "opening the mirror: %v", err)
@@ -246,8 +244,15 @@ func (w *worker) gitFetch(ctx context.Context, id string, raw []byte) answer {
 		return refuse(workspace.ClassFailed, "%v", err)
 	}
 	defer cleanup()
+	capped, a := w.capFetch(in.Mirror, in.MaxMirrorBytes, &n)
+	if a.class != "" {
+		return a
+	}
 	res, err := m.Fetch(ctx, n)
 	if err != nil {
+		if capped && gitClass(err) == gitTooLarge {
+			return mirrorFull()
+		}
 		return refuse(gitClass(err), "fetching the mirror failed")
 	}
 	if in.Prove {
@@ -295,13 +300,11 @@ func (w *worker) gitOpen(ctx context.Context, id, dir string, raw []byte) answer
 	if _, err := os.Lstat(dir); err != nil {
 		return refuse(workspace.ClassNotFound, "the workspace is not open")
 	}
-	fs, done, err := w.mirrorFS(in.Mirror)
+	fs, done, err := w.lockedMirrorFS(in.Mirror)
 	if err != nil {
 		return refuse(workspace.ClassInvalid, "the mirror: %v", err)
 	}
 	defer done()
-	unlock := w.lockMirror(in.Mirror)
-	defer unlock()
 	m, err := gitrepo.OpenMirror(fs)
 	if err != nil {
 		return refuse(workspace.ClassFailed, "opening the mirror: %v", err)
@@ -340,13 +343,11 @@ func (w *worker) dropGit(id string) error {
 		_ = os.Remove(marker)
 		return nil
 	}
-	fs, done, err := w.mirrorFS(key)
+	fs, done, err := w.lockedMirrorFS(key)
 	if err != nil {
 		return err
 	}
 	defer done()
-	unlock := w.lockMirror(key)
-	defer unlock()
 	m, err := gitrepo.OpenMirror(fs)
 	if err != nil {
 		return err
@@ -368,7 +369,7 @@ func (w *worker) dropStrayPins(held map[string]bool) {
 		if !e.IsDir() || !gitrepo.ValidMirrorKey(e.Name()) {
 			continue
 		}
-		fs, done, err := w.mirrorFS(e.Name())
+		fs, done, err := w.lockedMirrorFS(e.Name())
 		if err != nil {
 			continue
 		}
@@ -389,6 +390,20 @@ func (w *worker) dropStrayPins(held map[string]bool) {
 			_ = os.Remove(p)
 		}
 	}
+}
+
+// lockedMirrorFS is mirrorFS under the mirror's lock, taken first, so the
+// idle sweep (sweepMirrors) can never remove a mirror an op is about to
+// use; it marks the mirror used. done releases both.
+func (w *worker) lockedMirrorFS(key string) (billy.Filesystem, func(), error) {
+	unlock := w.lockMirror(key)
+	fs, done, err := w.mirrorFS(key)
+	if err != nil {
+		unlock()
+		return nil, nil, err
+	}
+	w.touchMirror(key)
+	return fs, func() { done(); unlock() }, nil
 }
 
 // lockMirror serialises the ops on one mirror on this worker: go-git writes
