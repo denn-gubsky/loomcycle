@@ -18,10 +18,13 @@ package dispatch
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -31,6 +34,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
@@ -109,7 +113,11 @@ type Options struct {
 	// LocalTenant is the one tenant the local worker serves
 	// (workspace.local.tenant).
 	LocalTenant string
-	Logger      *slog.Logger
+	// PersonalWorkers reports whether workspace.personal_workers is on (RFC
+	// GW P13), read at every attach and recheck, so turning it off detaches
+	// every personal worker within one check. Nil is off.
+	PersonalWorkers func() bool
+	Logger          *slog.Logger
 }
 
 // Dispatcher is the workspace worker service and the registry behind it.
@@ -357,12 +365,18 @@ func (d *Dispatcher) authorize(ctx context.Context, bearer string) (owner string
 	if err != nil {
 		return "", att, status.Error(codes.PermissionDenied, err.Error())
 	}
-	// A personal worker (RFC GW P13) is served by its user: its own worker
-	// id, placement and ops held to (tenant, user). Until the dispatcher
-	// does that, one attaches nothing; read as a tenant worker it would
-	// take a tenant worker's id and serve every user of the tenant.
+	// A personal worker (RFC GW P13) attaches only where the operator turned
+	// personal workers on, read at every attach and recheck, and only from
+	// a loopback peer (D-P13-8, behind the boot check on worker_endpoint):
+	// a proxy or a later listener change cannot carry a remote one in.
 	if att.Personal {
-		return "", att, status.Error(codes.PermissionDenied, "this runtime does not serve personal workers yet")
+		if d.opt.PersonalWorkers == nil || !d.opt.PersonalWorkers() {
+			return "", att, status.Error(codes.PermissionDenied, "personal workers are off on this runtime (workspace.personal_workers)")
+		}
+		pr, ok := peer.FromContext(ctx)
+		if !ok || !LoopbackPeer(pr.Addr) {
+			return "", att, status.Error(codes.PermissionDenied, "a personal worker attaches only from this machine (a loopback address)")
+		}
 	}
 	return grantKey(att), att, nil
 }
@@ -389,6 +403,14 @@ func (d *Dispatcher) stillAuthorized(ctx context.Context, bearer, owner string) 
 func grantKey(att auth.WorkerAttach) string {
 	if att.Shared {
 		return "shared"
+	}
+	if att.Personal {
+		// "user:<tenant>/<h>", h the first 16 hex of SHA-256 of the user
+		// (D-P13-5): a subject may hold bytes an id may not, and the id
+		// names the grant, never the token, so a rotated token keeps its
+		// worker's rows. No other prefix starts "user:".
+		h := sha256.Sum256([]byte(att.UserID))
+		return "user:" + att.TenantID + "/" + hex.EncodeToString(h[:])[:16]
 	}
 	return "tenant:" + att.TenantID
 }
@@ -574,6 +596,17 @@ func (w *worker) servesTenant(tenant string) bool {
 		return w.local && !w.serves.Shared && w.serves.TenantID == ""
 	}
 	return w.serves.Serves(tenant)
+}
+
+// servesUser is servesTenant for user of tenant: a personal worker (RFC GW
+// P13) serves its own (tenant, user) only, and a request that names no user
+// is refused there (D-P13-12), so a call site that forgot it is never
+// served. Every other worker is user-blind.
+func (w *worker) servesUser(tenant, user string) bool {
+	if w.serves.Personal {
+		return w.serves.ServesUser(tenant, user)
+	}
+	return w.servesTenant(tenant)
 }
 
 // engineServes reports whether a worker on engine may hold workspaces for the
@@ -917,9 +950,13 @@ type PlaceRequest struct {
 	// TenantID is the tenant the workspace is for; a worker is placed only
 	// when it serves that tenant.
 	TenantID string
-	// UserID is the user the workspace is for. Unused until personal
-	// workers (RFC GW §4.5) exist.
+	// UserID is the user the workspace is for: a personal worker (RFC GW
+	// §4.5) is placed only for its own user.
 	UserID string
+	// Root, set, asks for a workspace on the user's folder of that name: only
+	// a personal worker of (TenantID, UserID) offering it is placed. Unset,
+	// no personal worker is (D-P13-4).
+	Root string
 	// Toolchains are the toolchains the worker must carry, all of them.
 	Toolchains []string
 	// Engine is the least isolating engine accepted; "" accepts any.
@@ -943,7 +980,13 @@ func (d *Dispatcher) Place(ctx context.Context, req PlaceRequest) ([]string, err
 	for _, w := range d.workers {
 		// engineServes is checked at attach too; again here so a shared
 		// host worker can never be handed a workspace, whatever let it in.
-		if !w.servesTenant(req.TenantID) || !engineServes(w.serves, w.engine) || workspace.EngineRank(w.engine) < workspace.EngineRank(req.Engine) {
+		if !w.servesUser(req.TenantID, req.UserID) || !engineServes(w.serves, w.engine) || workspace.EngineRank(w.engine) < workspace.EngineRank(req.Engine) {
+			continue
+		}
+		// A personal worker takes only its user's root workspaces, on a
+		// root it offers; any other worker never takes one (D-P13-4).
+		if w.serves.Personal != (req.Root != "") ||
+			(req.Root != "" && !slices.Contains(w.labels, workspace.RootLabelPrefix+req.Root)) {
 			continue
 		}
 		ok := true
@@ -957,7 +1000,9 @@ func (d *Dispatcher) Place(ctx context.Context, req PlaceRequest) ([]string, err
 	d.mu.Unlock()
 	if len(matched) == 0 {
 		detail := "no attached workspace worker serves this tenant with the toolchains and engine asked"
-		if req.TenantID == "" {
+		if req.Root != "" {
+			detail = fmt.Sprintf("no personal worker of yours is attached offering root %q", req.Root)
+		} else if req.TenantID == "" {
 			detail = "the run has no tenant, and only a local worker configured for the empty tenant (workspace.mode local, workspace.local.tenant unset, no authentication) serves one"
 		}
 		return nil, &OpError{Class: workspace.ClassNoWorker, Detail: detail}
@@ -992,12 +1037,19 @@ func (d *Dispatcher) Place(ctx context.Context, req PlaceRequest) ([]string, err
 }
 
 // Attached reports whether a worker of this id is attached to this replica
-// and serves tenant.
-func (d *Dispatcher) Attached(workerID, tenant string) bool {
+// and serves user of tenant.
+func (d *Dispatcher) Attached(workerID, tenant, user string) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	w := d.workers[workerID]
-	return w != nil && w.servesTenant(tenant)
+	return w != nil && w.servesUser(tenant, user)
+}
+
+// LoopbackPeer reports whether a is a loopback TCP address. Anything else,
+// no address included, is not.
+func LoopbackPeer(a net.Addr) bool {
+	t, ok := a.(*net.TCPAddr)
+	return ok && t != nil && t.IP.IsLoopback()
 }
 
 // WorkerInfo is one attached worker as its Hello described it.

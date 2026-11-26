@@ -250,7 +250,7 @@ func (d *Dispatcher) egressRow(ctx context.Context, w *worker, id string, states
 	for _, r := range rows {
 		// The query asks for both already; checked again so a store that
 		// ever answered wider cannot hand one worker another's workspace.
-		if r.ID == id && r.WorkerID == w.id && slices.Contains(states, r.State) && w.servesTenant(r.TenantID) {
+		if r.ID == id && r.WorkerID == w.id && slices.Contains(states, r.State) && w.servesUser(r.TenantID, r.UserID) {
 			return r, nil
 		}
 	}
