@@ -273,8 +273,7 @@ describe("the Graph settings", () => {
     expect(loadConfig({ ...base, TEAMS_BRIDGE_FILES_GRAPH: "App", TEAMS_BRIDGE_APP_ID: other.toUpperCase() }).graphFiles).toEqual({ mode: "app", appId: other });
   });
 
-  it("refuses delegated mode until it is built, an unknown mode and an app id that is not a GUID", () => {
-    expect(() => loadConfig({ ...base, TEAMS_BRIDGE_FILES_GRAPH: "delegated" })).toThrow(/not built yet \(RFC HF P2\)/);
+  it("refuses an unknown mode and an app id that is not a GUID", () => {
     expect(() => loadConfig({ ...base, TEAMS_BRIDGE_FILES_GRAPH: "yes" })).toThrow(/TEAMS_BRIDGE_FILES_GRAPH/);
     expect(() => loadConfig({ ...base, TEAMS_BRIDGE_FILES_GRAPH: "app", TEAMS_BRIDGE_APP_ID: "x' or 1 eq 1" })).toThrow(/TEAMS_BRIDGE_APP_ID/);
   });
