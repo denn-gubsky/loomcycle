@@ -3879,6 +3879,9 @@ export interface OntologyResponse {
   grammars?: OntologyGrammar[];
   /** The ontology root's revision — what facts written now are stamped with. */
   ontology_version?: number;
+  /** RFC GQ P3.1: the first 16 hex of a hash of what the ontology declares now;
+   *  "" when it could not be read whole. A release carries the one it had. */
+  content_version?: string;
   /** Tenant-scope facts by the ontology version they were written under (0 = unknown). */
   fact_versions?: { version: number; count: number }[];
   /** chunks.type values in use in the tenant scope that no class declares. */
@@ -4005,6 +4008,96 @@ export function setOntologyStatus(
     `/v1/_ontology${q}`,
     JSON.stringify({ status }),
   );
+}
+
+// ---- Ontology releases (RFC GQ P3.4: GET /v1/_ontology/releases…) ----
+//
+// The same shapes as @loomcycle/client's OntologyRelease family (adapters/ts
+// types.ts), declared here because the Web UI keeps its own api.ts. An
+// operator's read: a member gets 403 on every one of these routes.
+
+/** The header of one complete release: a copy of the ontology taken when it
+ *  was confirmed, when an accepted change was applied or rolled back, or
+ *  before either when the ontology had moved without one (catch_up). */
+export interface OntologyRelease {
+  seq: number;
+  content_version: string;
+  fingerprint: string;
+  reason: "confirm" | "apply" | "rollback" | "catch_up" | string;
+  /** The user who took it; absent when none was known. */
+  actor?: string;
+  /** Unix nanoseconds (beyond a JS number's exact range: display only). */
+  created_at: number;
+  /** How many chunks of the ontology document it copied. */
+  entries: number;
+}
+
+export interface ListOntologyReleasesResult {
+  tenant: string;
+  /** Newest first; at most the newest 50 are kept. */
+  releases: OntologyRelease[] | null;
+}
+
+export interface GetOntologyReleaseResult {
+  tenant: string;
+  release: OntologyRelease;
+  /** The plan summary of the change an `apply` release applied. */
+  plan_summary?: Record<string, unknown>;
+  /** The ontology the release copied, as Markdown. */
+  export_md: string;
+}
+
+/** One side of a diff: a release (`seq`) or the ontology in force (`current`). */
+export interface OntologyDiffSide {
+  seq?: number;
+  current?: boolean;
+  content_version: string;
+}
+
+/** An entry as one side declares it. `directives` is its parsed declaration
+ *  without name, status, meaning and parent. */
+export interface OntologyEntryState {
+  name: string;
+  parent?: string;
+  parent_name?: string;
+  status?: string;
+  meaning?: string;
+  directives: Record<string, unknown> | null;
+}
+
+export type OntologyEntryChange = "renamed" | "moved" | "kind" | "status" | "meaning" | "directives";
+
+/** One entry that differs, matched by chunk id (a rename is one changed entry). */
+export interface OntologyEntryDiff {
+  chunk_id: string;
+  kind: string;
+  change: "added" | "removed" | "changed";
+  changed?: OntologyEntryChange[];
+  before?: OntologyEntryState;
+  after?: OntologyEntryState;
+}
+
+export interface DiffOntologyReleasesResult {
+  tenant: string;
+  from: OntologyDiffSide;
+  to: OntologyDiffSide;
+  changes: OntologyEntryDiff[] | null;
+  /** What a side could not read (e.g. entries under an uncopied proposal). */
+  issues: string[] | null;
+}
+
+export function listOntologyReleases(): Promise<ListOntologyReleasesResult> {
+  return jsonFetch<ListOntologyReleasesResult>("/v1/_ontology/releases");
+}
+
+export function getOntologyRelease(seq: number): Promise<GetOntologyReleaseResult> {
+  return jsonFetch<GetOntologyReleaseResult>(`/v1/_ontology/releases/${encodeURIComponent(String(seq))}`);
+}
+
+/** Diff release `from` against release `to`, or against the ontology in force. */
+export function diffOntologyReleases(from: number, to: number | "current"): Promise<DiffOntologyReleasesResult> {
+  const q = new URLSearchParams({ from: String(from), to: String(to) });
+  return jsonFetch<DiffOntologyReleasesResult>(`/v1/_ontology/releases/diff?${q}`);
 }
 
 // ---- Ontology subject merge (POST /v1/_ontology/subjects/merge) ----
