@@ -8,10 +8,17 @@
 # byte from the worker: "A" (queued: 202) or "F" (the queue is full: 429).
 # A body over the bound (argv[1]) is 413; another path 404, another method
 # 405, all with no body. One request at a time.
+#
+# Before a 413 the relay reads and drops the body, up to DRAIN bytes, as
+# Go's net/http server does (256 KiB): a client still writing it then gets
+# the answer, not a broken pipe. A body longer than that is cut off with
+# the connection, so a server cannot make the relay read without end.
 import socket
 import struct
 import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
+
+DRAIN = 256 * 1024
 
 
 def main():
@@ -51,6 +58,12 @@ def main():
                 self._end(411)
                 return
             if n > limit:
+                left = min(n, DRAIN)
+                while left > 0:
+                    chunk = self.rfile.read(min(left, 65536))
+                    if not chunk:
+                        break
+                    left -= len(chunk)
                 self._end(413)
                 return
             body = self.rfile.read(n)
