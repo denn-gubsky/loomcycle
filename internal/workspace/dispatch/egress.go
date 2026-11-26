@@ -201,7 +201,9 @@ func (d *Dispatcher) egressRow(ctx context.Context, w *worker, id string) (store
 	for _, r := range rows {
 		// The query asks for both already; checked again so a store that
 		// ever answered wider cannot hand one worker another's workspace.
-		if r.ID == id && r.WorkerID == w.id && r.State == store.WorkspaceReady && w.servesTenant(r.TenantID) {
+		// A parked durable workspace (RFC GW P12) is ready but held by no
+		// run: whatever is left running in it sends nothing out.
+		if r.ID == id && r.WorkerID == w.id && r.State == store.WorkspaceReady && r.OwnerKind != store.WorkspaceOwnerParked && w.servesTenant(r.TenantID) {
 			return r, nil
 		}
 	}

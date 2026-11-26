@@ -66,6 +66,8 @@ func (w *Workspace) InputSchema() json.RawMessage {
 			"name":             {"type": "string", "description": "The workspace's name, your label for it within this run: 1-64 letters, digits, '.', '-', '_'. Every op but list takes it. A workspace shared with you: <name>@<owner agent id> (read, write, edit, glob, grep only)."},
 			"with":             {"type": "string", "description": "share/unshare: the agent id of the run to share with: your parent, a child, a sibling or another run of your user."},
 			"access":           {"type": "string", "enum": ["read","read_write"], "description": "share: read (read, glob, grep and copying files out) or read_write (also writing files in). Never commands."},
+			"lifetime":         {"type": "string", "enum": ["ephemeral","durable"], "description": "open: ephemeral (default, gone when your run ends) or durable (kept under your user and this name for your next run; needs workspace.durable)."},
+			"discard":          {"type": "boolean", "description": "release: delete a durable workspace, files and all, instead of keeping it (default false)."},
 			"connect":          {"type": "boolean", "description": "share: also let the peer send requests to the ports you exposed (needs your workspace.connect grant; default false)."},
 			"toolchain":        {"type": "string", "enum": ["python","node"], "description": "open: the toolchain the worker must have. Omit for a general workspace, on a worker with both."},
 			"egress":           {"type": "array", "items": {"type": "string"}, "description": "open: the egress routes the workspace may send requests out through, at http://egress/<route>/…, from those your grant names. Omit for all of them; [] for none."},
@@ -115,8 +117,8 @@ func (w *Workspace) InputSchema() json.RawMessage {
 // another op takes is refused, as a misspelt one is: silently dropping it
 // would do something the caller did not ask for.
 var workspaceOpArgs = map[string][]string{
-	"open":         {"name", "toolchain", "egress", "template"},
-	"release":      {"name"},
+	"open":         {"name", "toolchain", "egress", "template", "lifetime"},
+	"release":      {"name", "discard"},
 	"list":         {},
 	"status":       {"name"},
 	"exec":         {"name", "command", "cwd", "timeout_s"},
@@ -214,9 +216,13 @@ var workspaceOpGrant = map[string]string{
 }
 
 type workspaceInput struct {
-	Op              string `json:"op"`
-	Name            string `json:"name"`
-	Toolchain       string `json:"toolchain"`
+	Op        string `json:"op"`
+	Name      string `json:"name"`
+	Toolchain string `json:"toolchain"`
+	// Lifetime is open's: "" or ephemeral, or durable (RFC GW §4.2, P12).
+	Lifetime string `json:"lifetime"`
+	// Discard is release's: remove a durable workspace instead of parking it.
+	Discard         bool   `json:"discard"`
 	Command         string `json:"command"`
 	Cwd             string `json:"cwd"`
 	TimeoutS        int    `json:"timeout_s"`
@@ -315,6 +321,17 @@ func (w *Workspace) Execute(ctx context.Context, input json.RawMessage) (tools.R
 	if !granted {
 		return workspaceRefusal("not_granted", fmt.Sprintf("this agent's workspace grant does not allow %s", in.Op)), nil
 	}
+	switch in.Lifetime {
+	case "", store.WorkspaceLifetimeEphemeral:
+	case store.WorkspaceLifetimeDurable:
+		// A durable workspace outlives the run: its own grant (RFC GW P12
+		// ruling Q1), beside open.
+		if !pol.Durable {
+			return workspaceRefusal("not_granted", "this agent's workspace grant does not allow durable workspaces (workspace.durable)"), nil
+		}
+	default:
+		return workspaceRefusal("invalid_argument", fmt.Sprintf("lifetime %q: want ephemeral or durable", in.Lifetime)), nil
+	}
 	if w.Manager == nil {
 		return workspaceRefusal("workspaces_off", "this runtime serves no workspaces (workspace.mode is off)"), nil
 	}
@@ -333,6 +350,10 @@ func (w *Workspace) Execute(ctx context.Context, input json.RawMessage) (tools.R
 		}
 		if _, _, shared := lifecycle.SplitShared(in.Name); shared {
 			return workspaceRefusal("not_over_mcp", "shared workspaces are reached inside a run; over the MCP server only your own"), nil
+		}
+		// RFC GW P12 ruling Q3: no durable workspace over the MCP server.
+		if in.Lifetime == store.WorkspaceLifetimeDurable || in.Discard {
+			return workspaceRefusal("not_over_mcp", "durable workspaces are opened inside a run; over the MCP server a workspace ends by the session's release rule"), nil
 		}
 	}
 	switch in.Op {
@@ -357,15 +378,29 @@ func (w *Workspace) Execute(ctx context.Context, input json.RawMessage) (tools.R
 	// 2. The pin: the calling run's own workspace, or not found.
 	row, err := w.Manager.Get(ctx, owner, in.Name)
 	if err != nil {
+		// A durable workspace of the user that no live run holds is
+		// discarded by name (RFC GW §5: release {discard: true}).
+		if in.Op == "release" && in.Discard && errors.Is(err, lifecycle.ErrNotFound) {
+			if derr := w.Manager.DiscardParked(ctx, owner, in.Name); derr != nil {
+				return workspaceError(derr, in.Name), nil
+			}
+			return workspaceOK(map[string]any{"name": in.Name, "released": true, "discarded": true}), nil
+		}
 		return workspaceError(err, in.Name), nil
 	}
 	// 3. The worker.
 	switch in.Op {
 	case "release":
-		if err := w.Manager.Release(ctx, row); err != nil {
+		release, out := w.Manager.Release, map[string]any{"name": row.Name, "released": true}
+		if in.Discard {
+			release, out["discarded"] = w.Manager.ReleaseDiscard, true
+		} else if row.Lifetime == store.WorkspaceLifetimeDurable {
+			out["parked"] = true
+		}
+		if err := release(ctx, row); err != nil {
 			return workspaceError(err, in.Name), nil
 		}
-		return workspaceOK(map[string]any{"name": row.Name, "released": true}), nil
+		return workspaceOK(out), nil
 	case "status":
 		out := map[string]any{"name": row.Name, "state": string(row.State), "engine": row.Engine}
 		withEgress(out, row.Egress)
@@ -438,7 +473,20 @@ func decodeWorkspaceInput(input json.RawMessage) (workspaceInput, tools.Result, 
 // worker's own words come back as its class and detail; the core's are
 // explained.
 func workspaceError(err error, name string) tools.Result {
+	var held *lifecycle.HeldError
 	switch {
+	case errors.As(err, &held):
+		return workspaceRefusal("held", held.Error())
+	case errors.Is(err, lifecycle.ErrDurableOff):
+		return workspaceRefusal("durable_off", err.Error())
+	case errors.Is(err, lifecycle.ErrDurableLost):
+		return workspaceRefusal("lost", err.Error())
+	case errors.Is(err, lifecycle.ErrDurableGrant):
+		return workspaceRefusal("not_granted", err.Error())
+	case errors.Is(err, lifecycle.ErrDurableNoUser), errors.Is(err, lifecycle.ErrDurableTemplate):
+		return workspaceRefusal("invalid_argument", err.Error())
+	case errors.Is(err, lifecycle.ErrDurableOverMCP):
+		return workspaceRefusal("not_over_mcp", err.Error())
 	case errors.Is(err, lifecycle.ErrNotFound):
 		return workspaceRefusal("not_found", fmt.Sprintf("this run has no workspace named %q; open it first (list shows yours)", name))
 	case errors.Is(err, lifecycle.ErrInvalidName):
@@ -485,7 +533,7 @@ func (w *Workspace) open(ctx context.Context, o lifecycle.Owner, pol tools.Works
 	if !ok {
 		return refusal
 	}
-	req := lifecycle.OpenRequest{Name: in.Name, Engine: pol.Engine, Egress: routes}
+	req := lifecycle.OpenRequest{Name: in.Name, Engine: pol.Engine, Egress: routes, Lifetime: in.Lifetime}
 	if in.Template != "" {
 		if in.Toolchain != "" {
 			return workspaceRefusal("invalid_argument", "a template names its own toolchains; open it without toolchain")
@@ -563,6 +611,9 @@ func (w *Workspace) list(ctx context.Context, o lifecycle.Owner) tools.Result {
 	out := make([]map[string]any, 0, len(rows))
 	for _, r := range rows {
 		e := map[string]any{"name": r.Name, "state": string(r.State), "engine": r.Engine, "created_at": r.CreatedAt.Format(time.RFC3339)}
+		if r.Lifetime == store.WorkspaceLifetimeDurable {
+			e["lifetime"] = r.Lifetime
+		}
 		withEgress(e, r.Egress)
 		if len(r.Shares) > 0 {
 			shares := make([]map[string]any, 0, len(r.Shares))
