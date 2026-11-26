@@ -1655,6 +1655,35 @@ type OntologyJobStatus struct {
 	// ToTags is a concept re-tag's new tags, index-aligned with From (the old
 	// ones); To then joins them for reading.
 	ToTags []string `json:"to_tags,omitempty"`
+	// ScopesTotal is the scopes the job walks (the tenant scope and every user and
+	// agent scope of the tenant), and CreatedAt / UpdatedAt the job row's times (unix
+	// nanoseconds). Set by the status read and the resume (GetOntologyJob,
+	// ResumeOntologyJob); absent from the job an ontology write answers with.
+	ScopesTotal int   `json:"scopes_total,omitempty"`
+	CreatedAt   int64 `json:"created_at,omitempty"`
+	UpdatedAt   int64 `json:"updated_at,omitempty"`
+}
+
+// GetOntologyJobRequest reads a tenant's ontology job. Tenant: only an admin may
+// name one; for anyone else it is the caller's own tenant.
+type GetOntologyJobRequest struct {
+	Tenant string `json:"tenant,omitempty"`
+}
+
+// ResumeOntologyJobRequest gives the tenant's unfinished ontology job one slice of
+// work. ID, when set, must be that job's id: a resume aimed at a job that has since
+// finished is refused rather than carrying on another one.
+type ResumeOntologyJobRequest struct {
+	Tenant string `json:"tenant,omitempty"`
+	ID     string `json:"id,omitempty"`
+}
+
+// OntologyJobResult is a tenant's ontology job: the unfinished one when there is
+// one, else the one updated last. Job is nil when the tenant never had one (a status
+// read only; a resume without an unfinished job is refused).
+type OntologyJobResult struct {
+	Tenant string             `json:"tenant"`
+	Job    *OntologyJobStatus `json:"job"`
 }
 
 // PlanOntologyResult is a plan. It wrote nothing. Fingerprint identifies the

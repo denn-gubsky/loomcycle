@@ -184,12 +184,16 @@ type ontologyJob struct {
 	// Remain is the rows of the scope the job is at still under an old name when the
 	// slice ended.
 	Remain int
+	// ScopesTotal (the walk's length) and the row's times are set by the status read and the
+	// resume only (document_ontology_job_status.go).
+	ScopesTotal          int
+	CreatedAt, UpdatedAt int64
 }
 
 func (j *ontologyJob) status() *connector.OntologyJobStatus {
 	return &connector.OntologyJobStatus{ID: j.ID, Kind: j.Kind, Entry: j.Entry, From: j.From, To: j.To,
 		ToTags: j.ToTags, State: j.State, Step: j.Step, Done: j.Counts, Error: j.Error, Remain: j.Remain,
-		Scope: j.Scope, ScopesDone: j.ScopesDone}
+		Scope: j.Scope, ScopesDone: j.ScopesDone, ScopesTotal: j.ScopesTotal, CreatedAt: j.CreatedAt, UpdatedAt: j.UpdatedAt}
 }
 
 func (j *ontologyJob) unfinished() bool {
