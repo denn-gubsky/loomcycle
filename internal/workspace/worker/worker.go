@@ -35,6 +35,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/denn-gubsky/loomcycle/internal/convert"
+	"github.com/denn-gubsky/loomcycle/internal/gitsource"
 	"github.com/denn-gubsky/loomcycle/internal/safego"
 	"github.com/denn-gubsky/loomcycle/internal/workerlink"
 	"github.com/denn-gubsky/loomcycle/internal/workspace"
@@ -217,6 +218,18 @@ func Run(ctx context.Context, opt Options) error {
 	// (RFC GW §6.3); self is set below, before any session can start.
 	var self *worker
 	wireEgress(&opt, &self)
+	// A git workspace's session sees its mirror's objects read-only (RFC GW
+	// §4.2): the container engine asks which mirror when it makes one.
+	opt.Container.MirrorKeyFor = func(id string) string {
+		if self == nil {
+			return ""
+		}
+		return self.MirrorKeyOf(id)
+	}
+	// go-git's HTTP clients go through gitsource's dispatcher, which takes
+	// each operation's transport from its context: here, the op's Egress
+	// streams to the core.
+	gitsource.InstallTransport()
 	eng, err := newEngine(ctx, &opt, log)
 	if err != nil {
 		return err
@@ -237,7 +250,7 @@ func Run(ctx context.Context, opt Options) error {
 	// The checkpoint mechanism is the disk's, probed once and reported as a
 	// label (RFC GW §5.4).
 	mech := probeMechanism(root)
-	opt.Labels = append(opt.Labels, workspace.CheckpointLabelPrefix+mech)
+	opt.Labels = append(opt.Labels, workspace.CheckpointLabelPrefix+mech, workspace.GitLabel)
 	log.Info("checkpoints are recorded by this mechanism", "mechanism", mech)
 	w := &worker{opt: opt, log: log, engine: eng, mech: mech}
 	if opt.Personal {
@@ -338,6 +351,9 @@ type worker struct {
 	servers servers
 	// mu serialises open's capacity check with the directory it makes.
 	mu sync.Mutex
+	// mirrorMu guards mirrorLocks, one lock per mirror (git.go).
+	mirrorMu    sync.Mutex
+	mirrorLocks map[string]chan struct{}
 	// quotas is each workspace's disk count and write lock.
 	quotas quotas
 	// extra counts the one-op streams OpenStreams opened and still open.

@@ -10,7 +10,7 @@ import (
 // package manager pointed anywhere.
 func TestContainer_ASessionWithoutEgressHasNoNetwork(t *testing.T) {
 	c := testContainer(t, nil)
-	args := c.runArgs("ws1", "/w/ws1")
+	args := c.runArgs("ws1", "/w/ws1", "")
 	if !hasPair(args, "--network", "none") {
 		t.Fatalf("network: %q", args)
 	}
@@ -23,7 +23,7 @@ func TestContainer_ASessionWithoutEgressHasNoNetwork(t *testing.T) {
 // and has its package managers pointed at the routes.
 func TestContainer_ASessionWithEgressJoinsANetworkOfItsOwn(t *testing.T) {
 	c := testContainer(t, func(o *ContainerOptions) { o.Egress = &ContainerEgress{Dir: "/e"} })
-	a1, a2 := c.runArgs("ws1", "/w/ws1"), c.runArgs("ws2", "/w/ws2")
+	a1, a2 := c.runArgs("ws1", "/w/ws1", ""), c.runArgs("ws2", "/w/ws2", "")
 	if !hasPair(a1, "--network", "loomws-k1-ws1-net") || !hasPair(a2, "--network", "loomws-k1-ws2-net") {
 		t.Fatalf("networks: %q / %q", a1, a2)
 	}

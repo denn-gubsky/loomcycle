@@ -150,6 +150,11 @@ func (m *Manager) SaveTemplate(ctx context.Context, o Owner, src store.Workspace
 	if o.RunID == "" || src.OwnerRunID != o.RunID || src.TenantID != o.TenantID || src.OwnerKind != o.kind() {
 		return store.WorkspaceTemplateRow{}, ErrNotFound
 	}
+	// A template would carry the git directory, whose objects are the
+	// mirror's (RFC GW P11 plan: save_template is refused).
+	if src.Kind == store.WorkspaceKindGit {
+		return store.WorkspaceTemplateRow{}, fmt.Errorf("%w: save_template", ErrGitUnsupported)
+	}
 	if !ValidName(as) {
 		return store.WorkspaceTemplateRow{}, fmt.Errorf("%w: as: 1 to %d letters, digits, '.', '-' or '_', starting with a letter or digit", ErrInvalidName, MaxNameLen)
 	}

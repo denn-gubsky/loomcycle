@@ -217,6 +217,42 @@ func TestPlace_ChecksToolchainEngineAndCapacity(t *testing.T) {
 	}
 }
 
+// A git workspace goes only to a worker that reported the git label and
+// speaks the protocol git requests need: an older worker claiming the label
+// would have its git requests refused mid-open.
+func TestPlace_AGitWorkspaceNeedsTheLabelAndTheGitProtocol(t *testing.T) {
+	d, target := core(t, newMemStore(), dispatch.Options{})
+	ctx := context.Background()
+	git := dispatch.PlaceRequest{TenantID: "acme", Labels: []string{workspace.GitLabel}}
+	for _, c := range []struct {
+		id       string
+		protocol uint32
+		labels   []string
+	}{
+		{"nolabel", workspace.ProtocolVersion, nil},
+		{"old", workspace.GitProtocolVersion - 1, []string{workspace.GitLabel}},
+	} {
+		fw := dialFake(t, target, tokAcme)
+		if _, err := fw.hello(&workspacepb.Hello{WorkerId: c.id, ProtocolVersion: c.protocol, Engine: workspace.EngineHost, Capacity: 4, Labels: c.labels}); err != nil {
+			t.Fatal(err)
+		}
+		fw.heartbeat(time.Second)
+		waitAttached(t, d, acmeID(c.id))
+		if got, err := d.Place(ctx, git); dispatch.ClassOf(err) != workspace.ClassNoWorker {
+			t.Fatalf("worker %s placed a git workspace: %v, %v", c.id, got, err)
+		}
+	}
+	fw := dialFake(t, target, tokAcme)
+	if _, err := fw.hello(&workspacepb.Hello{WorkerId: "git", ProtocolVersion: workspace.GitProtocolVersion, Engine: workspace.EngineHost, Capacity: 4, Labels: []string{workspace.GitLabel}}); err != nil {
+		t.Fatal(err)
+	}
+	fw.heartbeat(time.Second)
+	waitAttached(t, d, acmeID("git"))
+	if got, err := d.Place(ctx, git); err != nil || len(got) != 1 || got[0] != acmeID("git") {
+		t.Fatalf("place a git workspace = %v, %v", got, err)
+	}
+}
+
 // A worker's pool refills: more ops than it keeps streams for run one after
 // another, and when the core runs low it asks for more streams.
 func TestPool_Refills(t *testing.T) {

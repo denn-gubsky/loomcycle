@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -381,6 +382,37 @@ func TestGitProxy_TheTokenIsInNoError(t *testing.T) {
 		}
 		if strings.Contains(err.Error(), gitToken) {
 			t.Fatalf("the token is in an error: %v", err)
+		}
+	}
+}
+
+// Whether a branch exists is read from the forge's own advertisement as it
+// passes, at any depth of it, and only from the refs: not from a later line
+// of the answer.
+func TestGitProxy_ReportsAWatchedRefFromTheAdvertisement(t *testing.T) {
+	var refs strings.Builder
+	for i := range 3000 {
+		refs.WriteString(pkt(oldID + " refs/heads/b" + strings.Repeat("x", 20) + fmt.Sprint(i) + "\n"))
+	}
+	adv := pkt("# service=git-upload-pack\n") + "0000" +
+		pkt(oldID+" HEAD\x00symref=HEAD:refs/heads/main\n") + refs.String() +
+		pkt(oldID+" refs/heads/feature\n") + "0000" + pkt(oldID+" refs/heads/after-the-refs\n")
+	f := newForge(t, func(w http.ResponseWriter, _ *http.Request, _ []byte) { _, _ = io.WriteString(w, adv) })
+	p := gitProxyTo(t, f)
+	for want, seen := range map[string]bool{"refs/heads/feature": true, "refs/heads/absent": false, "refs/heads/after-the-refs": false, "refs/heads/fea": false} {
+		g := gitGrant()
+		got := false
+		g.WatchRef, g.OnWatchedRef = want, func() { got = true }
+		resp, err := gitDo(t, p, g, GitRequest{Shape: GitAdvertiseUpload, Header: http.Header{}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		if string(body) != adv {
+			t.Fatal("the advertisement changed on the way")
+		}
+		if got != seen {
+			t.Errorf("%s: seen = %v, want %v", want, got, seen)
 		}
 	}
 }
