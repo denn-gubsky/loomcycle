@@ -12,7 +12,7 @@ For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
 *Workspaces become a place an agent keeps working in. A workspace can outlive its run (durable, RFC GW P12), travel in a snapshot and survive a worker's restart, and run on several replicas. It can start from a template and fork for each sub-agent (P6), serve a page to its user and take the person's updates back from it (P9), and show the agent a screenshot of that page (P10). It can open on a git branch over the tenant's mirror (P11, opening only) and run on a user's own machine (personal workers, P13). Egress gains the host engine's port, routes for MCP workspaces, and git request shapes. The `Bash` tool, Bashbox, the sandbox sidecar's tools and `shell_credentials` are deprecated in favour of workspaces (P14): boot, `doctor`, `Context op=self` and a metric say where they are used. The tenant ontology gains releases, rollback, and resumable rename and re-tag jobs (RFC GQ). Bridges get Teams files through Graph (RFC HF).*
 
-The v1.169 line: #2909, #2911 to #2995, #2997 to #2999, #3001 and #3003.
+The v1.169 line: #2909, #2911 to #2999, #3001 and #3003.
 - `@loomcycle/client` 1.169.0: `SurfaceInfo` and the `surface` / `surface_closed` events; `listOntologyReleases()`, `getOntologyRelease()`, `diffOntologyReleases()`, `rollbackOntology()`, `getOntologyJob()` and `resumeOntologyJob()`. The Python adapter moves to 1.169.0 (`python-v1.169.0`): `SurfaceInfo` on the run's events, and `list_ontology_releases()`, `diff_ontology_releases()`, `rollback_ontology()`, `get_ontology_job()` and `resume_ontology_job()` over gRPC.
 - Proto: the ontology release, rollback and job RPCs, and `Event.surface` (`SurfaceInfo`). The internal worker protocol (`workspace.proto`) moves to version 3: `EgressStart.git_shape` and `ticket`.
 - Postgres migrations 0141 (`workspace_exposures`), 0142 (`workspace_templates`), 0143 (durable workspace rows), 0144 (`workspaces.root`) and 0145 (`workspaces.git`). SQLite mirrors each.
@@ -91,7 +91,9 @@ The v1.169 line: #2909, #2911 to #2995, #2997 to #2999, #3001 and #3003.
 
 - See the upgrade notes. The examples' commands run without `Bash` (#2980), and the docs mark `Bash`, Bashbox and the sandbox deprecated (#2997).
 
-### Ontology (RFC GQ: #2922, #2925, #2928, #2933, #2936, #2937, #2941, #2942, #2943, #2947, #2957, #2960, #2961, #2963, #2965, #2966, #2968, #2971, #2978, #2988, #2990, #2994)
+### Ontology (RFC GQ: #2922, #2925, #2928, #2933, #2936, #2937, #2941, #2942, #2943, #2947, #2957, #2960, #2961, #2963, #2965, #2966, #2968, #2971, #2978, #2988, #2990, #2994, #2996)
+
+- **A concept move or rename plans its re-tag job (#2996).** The plan of a concept rename or move, or a scheme rename, now carries the same `job` block a class rename does (`OntologyRenameJobPlan`, with `kind` and `tag_moves`): which tags the `concept_retag` job would move and how many rows it would rewrite, before the change is made.
 
 - **Releases.** A content version of the ontology in force, stored on each row. A release kept on confirm and apply. List, get and diff releases over HTTP, MCP and gRPC, a Releases tab with a diff view, and rollback to a release from it (P3.1 to P3.7).
 - **Rename jobs.** A class's former name reads as the class (P5.1). A class rename job for the tenant scope, then for every scope (P5.3, P5.4). A concept re-tag job follows a moved concept (P5.5). Job status and resume on every transport (P5.6). The release lock holds across replicas (#2994).
