@@ -12,7 +12,7 @@ For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
 *Workspaces become a place an agent keeps working in. A workspace can outlive its run (durable, RFC GW P12), travel in a snapshot and survive a worker's restart, and run on several replicas. It can start from a template and fork for each sub-agent (P6), serve a page to its user and take the person's updates back from it (P9), and show the agent a screenshot of that page (P10). It can open on a git branch over the tenant's mirror (P11, opening only) and run on a user's own machine (personal workers, P13). Egress gains the host engine's port, routes for MCP workspaces, and git request shapes. The `Bash` tool, Bashbox, the sandbox sidecar's tools and `shell_credentials` are deprecated in favour of workspaces (P14): boot, `doctor`, `Context op=self` and a metric say where they are used. The tenant ontology gains releases, rollback, and resumable rename and re-tag jobs (RFC GQ). Bridges get Teams files through Graph (RFC HF).*
 
-The v1.169 line: #2909, #2911 to #2995, #2997, #2999, #3001 and #3003.
+The v1.169 line: #2909, #2911 to #2995, #2997 to #2999, #3001 and #3003.
 - `@loomcycle/client` 1.169.0: `SurfaceInfo` and the `surface` / `surface_closed` events; `listOntologyReleases()`, `getOntologyRelease()`, `diffOntologyReleases()`, `rollbackOntology()`, `getOntologyJob()` and `resumeOntologyJob()`. The Python adapter moves to 1.169.0 (`python-v1.169.0`): `SurfaceInfo` on the run's events, and `list_ontology_releases()`, `diff_ontology_releases()`, `rollback_ontology()`, `get_ontology_job()` and `resume_ontology_job()` over gRPC.
 - Proto: the ontology release, rollback and job RPCs, and `Event.surface` (`SurfaceInfo`). The internal worker protocol (`workspace.proto`) moves to version 3: `EgressStart.git_shape` and `ticket`.
 - Postgres migrations 0141 (`workspace_exposures`), 0142 (`workspace_templates`), 0143 (durable workspace rows), 0144 (`workspaces.root`) and 0145 (`workspaces.git`). SQLite mirrors each.
@@ -35,6 +35,7 @@ The v1.169 line: #2909, #2911 to #2995, #2997, #2999, #3001 and #3003.
 - **`screenshot` needs `exec` and `connect` (#2999).** This narrows RFC GW §5.8, which named `connect` alone: the page's scripts run in the session as a command does. It works only on a container-engine worker whose session image carries the browser (`Dockerfile.workspace --target browser`).
 - **Git workspaces open but do not yet fetch, pull or push (#2986).** `Workspace open {repo, branch, base, credential}` makes a working tree on its own branch over the tenant's mirror. Commands that reach the forge, and fork, template and durable of a git workspace, are refused until later P11 PRs.
 - **Ontology job resume needs its id (#2990).** `POST /v1/_ontology/job/resume` without `id` is `400`; gRPC `ResumeOntologyJob` without one is `INVALID_ARGUMENT`. On gRPC, `job_busy` and `partially_applied` are now `FAILED_PRECONDITION`, not `ABORTED`; their ErrorInfo reason is unchanged.
+- **Root workspaces need `workspace.roots` (#2998).** A new agent grant key, default false, beside `open`: without it `Workspace open {root}` is refused `not_granted`.
 - **Personal worker tokens (#2979).** A tenant operator mints one with `POST /v1/_users/{subject}/tokens {"purpose": "personal_worker"}` while `workspace.personal_workers` is on. It is scoped `[workers:attach]` with `worker_personal`, frozen, and named `u-<subject>-worker`. A user never mints their own.
 - **The update relay answers 413 (#3001).** A body over 64 KiB that a server posts in a container session to `LOOMCYCLE_UPDATE_URL` now gets a 413, not a reset connection.
 - **Bundles (#2977, #2983, #2992).** The `chat`, `team-examples` and `agent-teams` agents gain `Workspace` and keep their shell tools for now. The new `dev-workspace` bundle's `dev/exec` runs in a workspace, beside the old `sandbox` + `dev-exec` pair.
@@ -80,10 +81,11 @@ The v1.169 line: #2909, #2911 to #2995, #2997, #2999, #3001 and #3003.
 - On several replicas, a release finishes on any replica the worker is attached to (#2989).
 - A workspace's row travels in a snapshot and starts `lost` until its worker comes back. Only rows that point at their own tenant's worker, run and routes are restored. A personal worker's row is restored only for its own user (#2985, #2995).
 
-### Workspaces: personal workers (RFC GW P13: #2954, #2956, #2958, #2979, #2981, #2995)
+### Workspaces: personal workers (RFC GW P13: #2954, #2956, #2958, #2979, #2981, #2995, #2998)
 
 - A user's own machine attaches as a worker of that user's runs: `loomcycle worker --role workspace --personal --root name=path`. Only on a loopback worker endpoint, and only with `workspace.personal_workers` on (#2954, #2956, #2981).
 - The personal worker token and its per-user mint (#2979). The root on a workspace's row (#2958).
+- `Workspace open {root}` opens a workspace on one of the user's roots on their personal worker, with the `workspace.roots` grant. A root is the user's folder as it is, never a git workspace: `repo` and `root` together are refused (#2998).
 
 ### Workspaces: deprecations and bundles (RFC GW P14: #2959, #2962, #2964, #2970, #2977, #2980, #2983, #2992, #2997)
 
