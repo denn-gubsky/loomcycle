@@ -2372,13 +2372,16 @@ export interface BindSubjectPrincipalResult {
 
 /** One change {@link LoomcycleClient.planOntology} is asked about: a direct
  *  change of an entry, or an open proposal by its chunk id. */
-export type OntologyChange = OntologyEntryChange | OntologyProposalChange;
+export type OntologyChange = OntologyEntryChange | OntologyProposalChange | OntologyReleaseChange;
 
 /** A direct change. `entry` is an in-force entry of the tenant ontology by its
- *  chunk id. */
+ *  chunk id; for `unretire` a retired one; for `add` a chunk id of release
+ *  `seq` that is not in force now (RFC GQ P5.7). */
 export interface OntologyEntryChange {
-  op: "retire" | "rename" | "move" | "edit" | "delete";
+  op: "retire" | "unretire" | "rename" | "move" | "edit" | "delete" | "add";
   entry: string;
+  /** add: the release the entry is added back from. */
+  seq?: number;
   /** rename: the new name, one line. */
   name?: string;
   /** move: the new parent's chunk id (an entry of the same section, or the section). */
@@ -2394,6 +2397,15 @@ export interface OntologyEntryChange {
 export interface OntologyProposalChange {
   op: "proposal";
   id: string;
+}
+
+/** Rolling the ontology back to release `seq` (RFC GQ P5.7), the request's only
+ *  change: the plan lists the direct changes that make the ontology declare what
+ *  the release declared, each carrying `release`. Apply it with
+ *  {@link LoomcycleClient.rollbackOntology} and the plan's fingerprint. */
+export interface OntologyReleaseChange {
+  op: "release";
+  seq: number;
 }
 
 /** An entry of the ontology as a plan names it. */
@@ -2432,6 +2444,125 @@ export interface OntologyPlannedChange {
   /** The proposal's chunk id when the change is one accepting it makes;
    *  absent for a direct change. */
   proposal?: string;
+  /** What the class-rename job would do for a rename of a class something
+   *  rests on; absent for every other change. */
+  job?: OntologyRenameJobPlan;
+  /** The release a rollback plans toward (op `release`), on every change it
+   *  expands to; absent otherwise. */
+  release?: number;
+}
+
+/** One write a rollback made. */
+export interface OntologyRollbackStep {
+  op: string;
+  /** The entry's chunk id. */
+  entry: string;
+  name: string;
+  /** add: the chunk the entry was added back as. */
+  new_id?: string;
+}
+
+/** What rolling the ontology back to a release did. */
+export interface OntologyRollbackReport {
+  release: number;
+  /** What the release declared, and what the ontology in force declares now. */
+  release_content_version: string;
+  content_version: string;
+  /** Whether the two are equal: not after an entry was added back under a new
+   *  chunk id, or a class renamed through the rename job kept `@renamed_from`. */
+  matches: boolean;
+  risk: "destroys" | "stales" | "none";
+  applied: OntologyRollbackStep[];
+  /** The class-rename jobs the rollback's renames started. */
+  rename_jobs?: OntologyJobStatus[];
+  /** The release taken of the ontology the rollback left. */
+  rollback_release?: number;
+  notes?: string[];
+  warnings?: string[];
+}
+
+/** Result of {@link LoomcycleClient.rollbackOntology}. */
+export interface ApplyOntologyRollbackResult {
+  tenant: string;
+  rollback: OntologyRollbackReport;
+}
+
+/** The class-rename job a rename would start (RFC GQ P5): the rows each step
+ *  rewrites, whether it can run now, and the stored keys that would collide
+ *  under the new name. `blocked` says why the rename is refused
+ *  (`rename_job_pending`); collisions refuse it too
+ *  (`rename_identity_collision`). */
+export interface OntologyRenameJobPlan {
+  steps: OntologyRenameJobStep[];
+  runnable: boolean;
+  blocked?: string[];
+  /** The tenant scope's first five colliding keys. */
+  collisions?: OntologyRenameCollision[];
+  collisions_total: number;
+  /** The part of `collisions_total` in user and agent scopes, counted and
+   *  never listed. */
+  collisions_other_scopes?: number;
+  /** The user and agent scopes the plan could not count. */
+  scopes_not_counted: number;
+  /** The tenant's unfinished job, when one exists: a second rename waits for it. */
+  running?: OntologyJobStatus;
+  notes?: string[];
+}
+
+/** One step of the rename job: the stored rows under the old name. */
+export interface OntologyRenameJobStep {
+  name: string;
+  tenant_scope: number;
+  other_scopes?: number;
+}
+
+/** A stored key the rename would turn into a key another row already holds. */
+export interface OntologyRenameCollision {
+  column: "identity_key" | "natural_key";
+  key: string;
+  into: string;
+  holder: string;
+}
+
+/** A job carrying an ontology change through the stored rows of the tenant
+ *  scope and every user and agent scope (RFC GQ P5): a class rename or a
+ *  concept re-tag. */
+export interface OntologyJobStatus {
+  id: string;
+  kind: "class_rename" | "concept_retag";
+  /** The renamed or moved entry's chunk id. */
+  entry: string;
+  /** The old names (a class rename) or the old tags (a re-tag). */
+  from: string[];
+  /** The new name; for a re-tag the new tags joined by ", ". */
+  to: string;
+  /** A re-tag's new tags, index-aligned with `from`. */
+  to_tags?: string[];
+  state: "pending" | "running" | "blocked" | "done" | "abandoned";
+  /** The step it is at; absent once done. */
+  step?: string;
+  /** Rows rewritten so far, by step. */
+  done?: Record<string, number>;
+  /** Why a blocked job cannot go on. */
+  error?: string;
+  /** Rows still under an old name in the scope the job is at. */
+  remaining: number;
+  /** The kind of scope the job is at. */
+  scope?: "tenant" | "user" | "agent";
+  scopes_done?: number;
+  /** The scopes the job walks; set by the status read and the resume. */
+  scopes_total?: number;
+  /** Unix nanoseconds; set by the status read and the resume. */
+  created_at?: number;
+  updated_at?: number;
+}
+
+/** Result of {@link LoomcycleClient.getOntologyJob} and
+ *  {@link LoomcycleClient.resumeOntologyJob}: the unfinished job, else the one
+ *  updated last; `null` when the tenant never had one (the status read only). */
+export interface OntologyJobResult {
+  tenant: string;
+  job: OntologyJobStatus | null;
 }
 
 /** Result of {@link LoomcycleClient.planOntology}. It wrote nothing. */

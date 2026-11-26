@@ -1655,6 +1655,79 @@ type OntologyJobStatus struct {
 	// ToTags is a concept re-tag's new tags, index-aligned with From (the old
 	// ones); To then joins them for reading.
 	ToTags []string `json:"to_tags,omitempty"`
+	// ScopesTotal is the scopes the job walks (the tenant scope and every user and
+	// agent scope of the tenant), and CreatedAt / UpdatedAt the job row's times (unix
+	// nanoseconds). Set by the status read and the resume (GetOntologyJob,
+	// ResumeOntologyJob); absent from the job an ontology write answers with.
+	ScopesTotal int   `json:"scopes_total,omitempty"`
+	CreatedAt   int64 `json:"created_at,omitempty"`
+	UpdatedAt   int64 `json:"updated_at,omitempty"`
+}
+
+// GetOntologyJobRequest reads a tenant's ontology job. Tenant: only an admin may
+// name one; for anyone else it is the caller's own tenant.
+type GetOntologyJobRequest struct {
+	Tenant string `json:"tenant,omitempty"`
+}
+
+// ResumeOntologyJobRequest gives the tenant's unfinished ontology job one slice of
+// work. ID, when set, must be that job's id: a resume aimed at a job that has since
+// finished is refused rather than carrying on another one.
+type ResumeOntologyJobRequest struct {
+	Tenant string `json:"tenant,omitempty"`
+	ID     string `json:"id,omitempty"`
+}
+
+// OntologyJobResult is a tenant's ontology job: the unfinished one when there is
+// one, else the one updated last. Job is nil when the tenant never had one (a status
+// read only; a resume without an unfinished job is refused).
+type OntologyJobResult struct {
+	Tenant string             `json:"tenant"`
+	Job    *OntologyJobStatus `json:"job"`
+}
+
+// ApplyOntologyRollbackRequest applies the plan of rolling the tenant ontology back
+// to release Seq (RFC GQ P5.7): PlanFingerprint is the fingerprint of the plan of
+// {op: release, seq}, which the rollback computes again and refuses unless it is
+// the same. Tenant: only an admin may name one.
+type ApplyOntologyRollbackRequest struct {
+	Tenant          string `json:"tenant,omitempty"`
+	Seq             int64  `json:"seq"`
+	PlanFingerprint string `json:"plan_fingerprint"`
+}
+
+// OntologyRollbackStep is one write a rollback made: the op, the entry's chunk id
+// and name.
+type OntologyRollbackStep struct {
+	Op    string `json:"op"`
+	Entry string `json:"entry"`
+	Name  string `json:"name"`
+	// NewID is the chunk an entry added back was written as (ruling Q6).
+	NewID string `json:"new_id,omitempty"`
+}
+
+// OntologyRollbackReport says what rolling the ontology back to a release did.
+type OntologyRollbackReport struct {
+	Release int64 `json:"release"`
+	// ReleaseContentVersion is what the release declared; ContentVersion what the
+	// ontology in force declares after the rollback. Matches is their equality.
+	ReleaseContentVersion string                 `json:"release_content_version"`
+	ContentVersion        string                 `json:"content_version"`
+	Matches               bool                   `json:"matches"`
+	Risk                  string                 `json:"risk"`
+	Applied               []OntologyRollbackStep `json:"applied"`
+	// RenameJobs are the class-rename jobs the rollback's renames started.
+	RenameJobs []OntologyJobStatus `json:"rename_jobs,omitempty"`
+	// RollbackRelease is the release taken of the ontology the rollback left.
+	RollbackRelease int64    `json:"rollback_release,omitempty"`
+	Notes           []string `json:"notes,omitempty"`
+	Warnings        []string `json:"warnings,omitempty"`
+}
+
+// ApplyOntologyRollbackResult is an applied rollback.
+type ApplyOntologyRollbackResult struct {
+	Tenant   string                 `json:"tenant"`
+	Rollback OntologyRollbackReport `json:"rollback"`
 }
 
 // PlanOntologyResult is a plan. It wrote nothing. Fingerprint identifies the

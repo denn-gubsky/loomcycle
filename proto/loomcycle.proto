@@ -368,6 +368,24 @@ service Loomcycle {
   // Mirrors POST /v1/_ontology/plan.
   rpc PlanOntology(PlanOntologyRequest) returns (PlanOntologyResponse);
 
+  // ApplyOntologyRollback applies the plan of rolling the tenant ontology
+  // back to a release (a PlanOntology change {op: release, seq}). It plans
+  // again and is refused unless plan_fingerprint is still that plan's; the
+  // writes go through the ontology's own guards, and a write by anyone else
+  // stops it. Never automatic.
+  //
+  // Operator-only, as PlanOntology. A refusal carries a google.rpc.ErrorInfo
+  // whose reason is the code HTTP returns. What HTTP's 409 body carries
+  // beside the code is in the ErrorInfo's metadata: `fingerprint` (the
+  // ontology's current one) on plan_required and plan_stale
+  // (FAILED_PRECONDITION), and `applied` (the writes made, as HTTP's JSON
+  // array) on partially_applied (ABORTED). rename_job_pending and
+  // entry_locked are FAILED_PRECONDITION, invalid_request INVALID_ARGUMENT;
+  // the plan's own refusals map as PlanOntology's.
+  //
+  // Mirrors POST /v1/_ontology/rollback.
+  rpc ApplyOntologyRollback(ApplyOntologyRollbackRequest) returns (ApplyOntologyRollbackResponse);
+
   // ListOntologyReleases lists the tenant ontology's releases — the copies
   // taken when it was confirmed and on each applied or rolled-back change,
   // the newest 50 kept — newest first. It writes nothing.
@@ -391,6 +409,33 @@ service Loomcycle {
   //
   // Mirrors GET /v1/_ontology/releases/diff.
   rpc DiffOntologyReleases(DiffOntologyReleasesRequest) returns (DiffOntologyReleasesResponse);
+
+  // GetOntologyJob reads the tenant's ontology job — the class rename or
+  // concept re-tag carrying a change through the stored rows of the tenant
+  // scope and every user and agent scope: the unfinished one, else the one
+  // updated last; job is absent when the tenant never had one. It writes
+  // nothing.
+  //
+  // Operator-only, as PlanOntology: the job rewrites rows in every scope of
+  // the tenant. An admin may name another tenant. A refusal carries a
+  // google.rpc.ErrorInfo whose reason is the code HTTP returns (forbidden,
+  // unavailable).
+  //
+  // Mirrors GET /v1/_ontology/job.
+  rpc GetOntologyJob(GetOntologyJobRequest) returns (OntologyJobResponse);
+
+  // ResumeOntologyJob gives the tenant's unfinished ontology job one slice of
+  // work under the ontology rename lease, from the scope and step it is at,
+  // as the next class rename or concept move would; a job whose change never
+  // reached the ontology is marked abandoned. Answers with the job as the
+  // slice left it.
+  //
+  // Operator-only, as GetOntologyJob. A refusal carries a google.rpc.ErrorInfo
+  // whose reason is the code HTTP returns (job_not_found, job_busy,
+  // forbidden, unavailable).
+  //
+  // Mirrors POST /v1/_ontology/job/resume.
+  rpc ResumeOntologyJob(ResumeOntologyJobRequest) returns (OntologyJobResponse);
 
   // ListReviewQueue lists a document scope's statements awaiting review
   // (proposed unless the filter names another status), narrowed by the queue
@@ -2690,9 +2735,11 @@ message BindSubjectPrincipalResponse {
 
 // OntologyChange is one change a plan is asked about.
 message OntologyChange {
-  // retire | rename | move | edit | delete | proposal
+  // retire | unretire | rename | move | edit | delete | add | release |
+  // proposal
   string op = 1;
-  // The entry's chunk id (every op but proposal).
+  // The entry's chunk id (every op but proposal and release); for add, a
+  // chunk id of release seq that is not in force now.
   string entry = 2;
   // rename: the new name.
   string name = 3;
@@ -2705,6 +2752,12 @@ message OntologyChange {
   // retire proposal plans as the direct changes accepting it makes; an add
   // proposal as op "add", risk none.
   string id = 6;
+  // release (its only other field, the request's only change): roll back to
+  // this release — the plan lists the direct changes that make the ontology
+  // declare what it declared, each carrying `release`. add: the release the
+  // entry is added back from. Apply a release's plan with
+  // ApplyOntologyRollback.
+  int64 seq = 7;
 }
 
 message PlanOntologyRequest {
@@ -2752,6 +2805,152 @@ message OntologyPlannedChange {
   // The proposal's chunk id when the change is one accepting it makes; empty
   // for a direct change.
   string proposal = 7;
+  // What the class-rename job would do for a rename of a class something
+  // rests on (HTTP's `job`); absent for every other change.
+  OntologyRenameJobPlan job = 8;
+  // The release a rollback plans toward (op release), on every change it
+  // expands to; 0 for any other change.
+  int64 release = 9;
+}
+
+message ApplyOntologyRollbackRequest {
+  // Whose ontology. Only an admin may name a tenant; for anyone else it is
+  // the caller's own.
+  string tenant = 1;
+  // The release to roll back to.
+  int64 seq = 2;
+  // The fingerprint of the plan of {op: release, seq} (PlanOntology).
+  string plan_fingerprint = 3;
+}
+
+// OntologyRollbackStep is one write a rollback made.
+message OntologyRollbackStep {
+  string op = 1;
+  string entry = 2;
+  string name = 3;
+  // add: the chunk the entry was added back as.
+  string new_id = 4;
+}
+
+// OntologyRollbackReport says what rolling the ontology back did.
+message OntologyRollbackReport {
+  int64 release = 1;
+  // What the release declared, and what the ontology in force declares after
+  // the rollback; matches is their equality.
+  string release_content_version = 2;
+  string content_version = 3;
+  bool matches = 4;
+  // destroys | stales | none
+  string risk = 5;
+  repeated OntologyRollbackStep applied = 6;
+  // The class-rename jobs the rollback's renames started.
+  repeated OntologyJobStatus rename_jobs = 7;
+  // The release taken of the ontology the rollback left; 0 when none was.
+  int64 rollback_release = 8;
+  repeated string notes = 9;
+  repeated string warnings = 10;
+}
+
+message ApplyOntologyRollbackResponse {
+  string tenant = 1;
+  OntologyRollbackReport rollback = 2;
+}
+
+// OntologyRenameJobPlan is the class-rename job a rename would start: the
+// rows each step rewrites, whether it can run now, and the stored keys that
+// would collide under the new name.
+message OntologyRenameJobPlan {
+  repeated OntologyRenameJobStep steps = 1;
+  bool runnable = 2;
+  // Why the rename is refused (rename_job_pending).
+  repeated string blocked = 3;
+  // The tenant scope's first five colliding keys (rename_identity_collision).
+  repeated OntologyRenameCollision collisions = 4;
+  // Every collision; collisions_other_scopes is the part in user and agent
+  // scopes, counted and never listed.
+  int32 collisions_total = 5;
+  int32 collisions_other_scopes = 6;
+  // The user and agent scopes the plan could not count.
+  int32 scopes_not_counted = 7;
+  // The tenant's unfinished job, when one exists: a second rename waits for
+  // it.
+  OntologyJobStatus running = 8;
+  repeated string notes = 9;
+}
+
+// OntologyRenameJobStep is one step of the rename job: the stored rows under
+// the old name, in the tenant scope and in user and agent scopes.
+message OntologyRenameJobStep {
+  string name = 1;
+  int32 tenant_scope = 2;
+  int32 other_scopes = 3;
+}
+
+// OntologyRenameCollision is a stored key the rename would turn into a key
+// another row already holds.
+message OntologyRenameCollision {
+  // identity_key | natural_key
+  string column = 1;
+  string key = 2;
+  string into = 3;
+  string holder = 4;
+}
+
+// OntologyJobStatus is a job carrying an ontology change through stored rows
+// (HTTP's job object).
+message OntologyJobStatus {
+  string id = 1;
+  // class_rename | concept_retag
+  string kind = 2;
+  // The renamed or moved entry's chunk id.
+  string entry = 3;
+  // The old names (a class rename) or the old tags (a re-tag).
+  repeated string from = 4;
+  // The new name; for a re-tag the new tags joined by ", ".
+  string to = 5;
+  // pending | running | blocked | done | abandoned
+  string state = 6;
+  // The step it is at; empty once done.
+  string step = 7;
+  // Rows rewritten so far, by step.
+  map<string, int32> done = 8;
+  // Why a blocked job cannot go on.
+  string error = 9;
+  // Rows still under an old name in the scope the job is at (HTTP's
+  // `remaining`).
+  int32 remaining = 10;
+  // The kind of scope the job is at (tenant, user, agent), and the scopes it
+  // has finished.
+  string scope = 11;
+  int32 scopes_done = 12;
+  // A re-tag's new tags, index-aligned with from.
+  repeated string to_tags = 13;
+  // The scopes the job walks, and the job row's times (unix nanoseconds): set
+  // by GetOntologyJob and ResumeOntologyJob.
+  int32 scopes_total = 14;
+  int64 created_at = 15;
+  int64 updated_at = 16;
+}
+
+message GetOntologyJobRequest {
+  // Whose ontology. Only an admin may name a tenant; for anyone else it is
+  // the caller's own.
+  string tenant = 1;
+}
+
+message ResumeOntologyJobRequest {
+  // Whose ontology, as GetOntologyJobRequest.tenant.
+  string tenant = 1;
+  // The job's id from GetOntologyJob: the resume is refused (job_not_found)
+  // unless that job is still the unfinished one. Empty resumes whichever job
+  // is unfinished.
+  string id = 2;
+}
+
+message OntologyJobResponse {
+  string tenant = 1;
+  // Absent when the tenant never had a job (GetOntologyJob only).
+  OntologyJobStatus job = 2;
 }
 
 message PlanOntologyResponse {

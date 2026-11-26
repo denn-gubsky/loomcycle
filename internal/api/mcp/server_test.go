@@ -71,6 +71,15 @@ type mockConnector struct {
 	relDiffRes connector.DiffOntologyReleasesResult
 	relErr     error
 
+	jobGetReq    connector.GetOntologyJobRequest
+	jobResumeReq connector.ResumeOntologyJobRequest
+	jobRes       connector.OntologyJobResult
+	jobErr       error
+
+	rollbackReq connector.ApplyOntologyRollbackRequest
+	rollbackRes connector.ApplyOntologyRollbackResult
+	rollbackErr error
+
 	dirTenant atomic.Value
 	// identityTool, when set, answers Identity calls as the server would
 	// (the builtin, on the ctx the handler stamped); identityTenant records
@@ -2146,6 +2155,24 @@ func (m *mockConnector) GetOntologyRelease(context.Context, connector.GetOntolog
 func (m *mockConnector) DiffOntologyReleases(_ context.Context, req connector.DiffOntologyReleasesRequest) (connector.DiffOntologyReleasesResult, error) {
 	m.relDiffReq = req
 	return m.relDiffRes, m.relErr
+}
+
+// GetOntologyJob and ResumeOntologyJob record the request and answer with the
+// configured result.
+func (m *mockConnector) GetOntologyJob(_ context.Context, req connector.GetOntologyJobRequest) (connector.OntologyJobResult, error) {
+	m.jobGetReq = req
+	return m.jobRes, m.jobErr
+}
+
+func (m *mockConnector) ResumeOntologyJob(_ context.Context, req connector.ResumeOntologyJobRequest) (connector.OntologyJobResult, error) {
+	m.jobResumeReq = req
+	return m.jobRes, m.jobErr
+}
+
+// ApplyOntologyRollback records the request and answers with the configured result.
+func (m *mockConnector) ApplyOntologyRollback(_ context.Context, req connector.ApplyOntologyRollbackRequest) (connector.ApplyOntologyRollbackResult, error) {
+	m.rollbackReq = req
+	return m.rollbackRes, m.rollbackErr
 }
 
 // ListReviewQueue, RuleStatements and RevertRuling record the request and answer

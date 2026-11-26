@@ -149,7 +149,7 @@ describe("the Teams file port", () => {
   });
 
   it("refuses a sign-in page and a body over the cap", async () => {
-    const big = "https://contoso-my.sharepoint.com/big";
+    const big = "https://contoso-my.sharepoint.com/big?tempauth=x";
     const host = fakeHost(
       new Map([
         [LINK, { headers: { "content-type": "text/html; charset=utf-8" }, body: new TextEncoder().encode("<html>sign in</html>") }],

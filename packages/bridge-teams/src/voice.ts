@@ -6,11 +6,15 @@
 // stay text: the port has no sendVoice.
 //
 // The file sits in the person's own OneDrive. The activity carries a
-// pre-authorised downloadUrl that lives a few minutes, so it is fetched at
-// once, with no credential of ours, and only from the SharePoint hosts the
-// operator allows.
+// downloadUrl that lives a few minutes, so it is fetched at once, and only
+// from the SharePoint hosts the operator allows. A link with a `tempauth`
+// query (every link until 2027-03-01) is pre-authorised and fetched with no
+// credential of ours; a link without one is fetched with the bot's file token
+// for that host (RFC HF §3.7, filetoken.ts), sent on the first request only.
 
 import { downloadPinned, PinnedDownloadError, type FileIn, type FilePort, type Logger, type VoiceIn, type VoicePort } from "@loomcycle/bridge-core";
+
+import { FileTokenError, type FileTokenSource } from "./filetoken.js";
 
 export const FILE_DOWNLOAD_INFO = "application/vnd.microsoft.teams.file.download.info";
 
@@ -91,11 +95,12 @@ export function hostAllowed(url: URL, suffixes: readonly string[]): boolean {
 }
 
 /** A download that did not happen. It never carries the link, whose query
- *  is a credential while it lives: only the host refused, or the status. */
+ *  is a credential while it lives, nor a token: only the host refused, the
+ *  status, or (reason "token") why the file token was not acquired. */
 export class TeamsFileError extends Error {
   constructor(
-    readonly reason: "host" | "redirect" | "status" | "type" | "size",
-    readonly detail: { host?: string; status?: number } = {},
+    readonly reason: "host" | "redirect" | "status" | "type" | "size" | "token",
+    readonly detail: { host?: string; status?: number; cause?: string } = {},
   ) {
     super(`teams file download refused: ${reason}`);
     this.name = "TeamsFileError";
@@ -107,6 +112,9 @@ export interface TeamsVoicePortOptions<TRef> {
   hosts: readonly string[];
   /** The fetch downloads go through (tests). */
   fetch?: typeof fetch;
+  /** The bot's file token, for a link without tempauth (RFC HF). Without
+   *  one such a link is refused. */
+  token?: FileTokenSource;
   /** The "listening" indicator: Teams' typing activity. */
   typing?: (ref: TRef) => Promise<void>;
   /** Where a refused download is logged, with its reason and host, so an
@@ -126,7 +134,7 @@ export function teamsVoicePort<TRef>(opts: TeamsVoicePortOptions<TRef>): VoicePo
       const ref = v.ref as TeamsAudioRef;
       let bytes: Uint8Array;
       try {
-        bytes = await download(doFetch, ref.url, opts.hosts, maxBytes, signal);
+        bytes = await download(doFetch, ref.url, opts.hosts, maxBytes, signal, opts.token);
       } catch (err) {
         if (err instanceof TeamsFileError) opts.log?.warn("teams file download refused", { reason: err.reason, ...err.detail });
         throw err;
@@ -141,14 +149,16 @@ export interface TeamsFilePortOptions {
   hosts: readonly string[];
   /** The fetch downloads go through (tests). */
   fetch?: typeof fetch;
+  /** The bot's file token, for a link without tempauth (RFC HF). */
+  token?: FileTokenSource;
   /** Where a refused download is logged, with its reason and host. */
   log?: Logger;
 }
 
 /** teamsFilePort downloads an attached file (RFC HE) the way the voice port
- *  downloads a recording: the pre-authorised link, no credential, only the
- *  allowed hosts on every hop, a sign-in page refused, the cap while
- *  reading. A body over the cap throws a TeamsFileError with reason
+ *  downloads a recording: the link, with the file token only when it has no
+ *  tempauth and only on the first request, only the allowed hosts on every
+ *  hop, a sign-in page refused, the cap while reading. A body over the cap throws a TeamsFileError with reason
  *  "size", which the core tells the person is too large. */
 export function teamsFilePort(opts: TeamsFilePortOptions): FilePort {
   const doFetch = opts.fetch ?? fetch;
@@ -156,7 +166,7 @@ export function teamsFilePort(opts: TeamsFilePortOptions): FilePort {
     async download(f, maxBytes, signal) {
       const ref = f.ref as TeamsFileRef;
       try {
-        return { bytes: await download(doFetch, ref.url, opts.hosts, maxBytes, signal) };
+        return { bytes: await download(doFetch, ref.url, opts.hosts, maxBytes, signal, opts.token) };
       } catch (err) {
         if (err instanceof TeamsFileError) opts.log?.warn("teams file download refused", { reason: err.reason, ...err.detail });
         throw err;
@@ -165,10 +175,65 @@ export function teamsFilePort(opts: TeamsFilePortOptions): FilePort {
   };
 }
 
-/** download fetches a pre-authorised link with no credential and no added
- *  header, following a redirect only to another allowed host, and reads at
- *  most maxBytes (more is an error, found while streaming). */
-async function download(doFetch: typeof fetch, link: string, hosts: readonly string[], maxBytes: number, signal: AbortSignal): Promise<Uint8Array> {
+/** hasTempauth says a link is pre-authorised: it carries a `tempauth`
+ *  query, as every Teams file link does until 2027-03-01. */
+export function hasTempauth(url: URL): boolean {
+  for (const k of url.searchParams.keys()) if (k.toLowerCase() === "tempauth") return true;
+  return false;
+}
+
+/** isPersonalSite says a URL is in a OneDrive personal site: a host whose
+ *  first label is `<tenant>-my` (`contoso-my.sharepoint.com`, or the same
+ *  under a sovereign suffix) and a path under `/personal/`, which is where a
+ *  file a person attaches in a 1:1 chat lives.
+ *
+ *  It bounds the bot's file token. That token reaches whatever SharePoint the
+ *  bot's app is permitted, so a crafted downloadUrl would otherwise make the
+ *  bot a confused deputy that fetches any file the app may read. The app is
+ *  meant to hold only the File.ReadSelected.User RSC permission (files people
+ *  shared with the bot) and no SharePoint application role; this check keeps
+ *  the token off team sites whatever the app holds. It does not tell whose
+ *  OneDrive the URL names: that is the sender's-own-drive check RFC HF P1 makes
+ *  for Graph app mode, a follow-up for this path. */
+export function isPersonalSite(url: URL): boolean {
+  const first = url.hostname.toLowerCase().split(".")[0] ?? "";
+  return first.length > "-my".length && first.endsWith("-my") && url.pathname.toLowerCase().startsWith("/personal/");
+}
+
+/** download fetches a link, following a redirect only to another allowed
+ *  host, and reads at most maxBytes (more is an error, found while
+ *  streaming). A pre-authorised link goes with no credential and no added
+ *  header. Any other link goes with the file token for its own host, which is
+ *  acquired only after the host passed the allowed list and the link is in a
+ *  OneDrive personal site (isPersonalSite), and sent on the first
+ *  request alone: a redirect, even to the same host, drops it. */
+async function download(
+  doFetch: typeof fetch,
+  link: string,
+  hosts: readonly string[],
+  maxBytes: number,
+  signal: AbortSignal,
+  token: FileTokenSource | undefined,
+): Promise<Uint8Array> {
+  let fetchVia = doFetch;
+  let url: URL | undefined;
+  try {
+    url = new URL(link);
+  } catch {
+    // downloadPinned refuses it below, as a link that is not a URL.
+  }
+  if (url && !hasTempauth(url)) {
+    if (!hostAllowed(url, hosts) || !isPersonalSite(url)) throw new TeamsFileError("host", { host: url.hostname });
+    if (!token) throw new TeamsFileError("token", { cause: "none" });
+    let bearer: string;
+    try {
+      bearer = await token(`https://${url.host}/.default`);
+    } catch (err) {
+      const e = err instanceof FileTokenError ? err : undefined;
+      throw new TeamsFileError("token", { cause: e?.reason ?? "failed", ...(e?.detail.status !== undefined ? { status: e.detail.status } : {}) });
+    }
+    fetchVia = firstRequestWith(doFetch, url.href, `Bearer ${bearer}`);
+  }
   try {
     const got = await downloadPinned(link, {
       allowed: (u) => hostAllowed(u, hosts),
@@ -176,7 +241,7 @@ async function download(doFetch: typeof fetch, link: string, hosts: readonly str
       accept: (ct) => !ct.toLowerCase().startsWith("text/html"),
       maxBytes,
       signal,
-      fetch: doFetch,
+      fetch: fetchVia,
     });
     return got.bytes;
   } catch (err) {
@@ -193,4 +258,21 @@ async function download(doFetch: typeof fetch, link: string, hosts: readonly str
         throw new TeamsFileError(err.reason);
     }
   }
+}
+
+/** firstRequestWith is doFetch with an Authorization header on its first
+ *  call, and only when that call is for href; every later call (a redirect)
+ *  goes without it. downloadPinned checks each URL against the allowed hosts
+ *  before it calls this. */
+function firstRequestWith(doFetch: typeof fetch, href: string, authorization: string): typeof fetch {
+  let first = true;
+  return ((input: string | URL | Request, init?: RequestInit) => {
+    const at = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    const send = first && at === href;
+    first = false;
+    if (!send) return doFetch(input, init);
+    const headers = new Headers(init?.headers);
+    headers.set("authorization", authorization);
+    return doFetch(input, { ...init, headers });
+  }) as typeof fetch;
 }

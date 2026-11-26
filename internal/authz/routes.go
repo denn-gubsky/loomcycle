@@ -427,6 +427,9 @@ var httpRoutes = []Route{
 	row("GET /v1/_ontology/releases/diff", ScopeTenant, false, q("read", "document", "*")),
 	row("GET /v1/_ontology/releases/{seq}", ScopeTenant, false, q("read", "document", "*")),
 	row("POST /v1/_ontology/rollback", ScopeTenant, false, q("write", "document", "*")),
+	// RFC GQ P5.6: the ontology job's status and its resume, the operator's as the rename is.
+	row("GET /v1/_ontology/job", ScopeTenant, false, q("read", "document", "*")),
+	row("POST /v1/_ontology/job/resume", ScopeTenant, false, q("write", "document", "*")),
 	row("POST /v1/_ontology/subjects/merge", ScopeTenant, false, q("write", "document", "*")),
 	row("POST /v1/_ontology/subjects/principal", ScopeTenant, false, q("write", "document", "*")),
 	// Token minting: a tenant operator only for its own tenant's scrape

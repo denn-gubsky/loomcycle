@@ -833,6 +833,18 @@ func (m *httpMockConnector) DiffOntologyReleases(context.Context, connector.Diff
 	return connector.DiffOntologyReleasesResult{}, nil
 }
 
+func (m *httpMockConnector) GetOntologyJob(context.Context, connector.GetOntologyJobRequest) (connector.OntologyJobResult, error) {
+	return connector.OntologyJobResult{}, nil
+}
+
+func (m *httpMockConnector) ResumeOntologyJob(context.Context, connector.ResumeOntologyJobRequest) (connector.OntologyJobResult, error) {
+	return connector.OntologyJobResult{}, nil
+}
+
+func (m *httpMockConnector) ApplyOntologyRollback(context.Context, connector.ApplyOntologyRollbackRequest) (connector.ApplyOntologyRollbackResult, error) {
+	return connector.ApplyOntologyRollbackResult{}, nil
+}
+
 func (m *httpMockConnector) ListReviewQueue(context.Context, connector.ListReviewQueueRequest) (connector.ListReviewQueueResult, error) {
 	return connector.ListReviewQueueResult{}, nil
 }

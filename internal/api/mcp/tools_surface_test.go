@@ -30,7 +30,7 @@ func TestToolSurface_DescriptionsListEveryOp(t *testing.T) {
 		{"crypto", "../../tools/builtin/crypto.go", 13},
 		{"credentialdef", "../../tools/builtin/credentialdef.go", 10},
 		// The ontology tool's enum lives beside its handler, not in a builtin.
-		{"ontology", "ontology.go", 5},
+		{"ontology", "ontology.go", 8},
 	} {
 		t.Run(tc.tool, func(t *testing.T) {
 			src, err := os.ReadFile(tc.src)

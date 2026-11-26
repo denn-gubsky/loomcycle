@@ -70,6 +70,26 @@ describe("HealthSection configured teams", () => {
     expect(byName["release"]?.textContent).toContain("made over the API");
   });
 
+  it("lists the deployment's deprecations and this replica's run counts", async () => {
+    stub({
+      teams: [],
+      deprecations: {
+        config: ["LOOMCYCLE_BASH_ENABLED is set, which will be removed in a future release: turn on workspaces"],
+        runs: [{ kind: "tool", name: "Bashbox", count: 3 }],
+      },
+    });
+    mounted = await mount();
+    expect(mounted.el.textContent).toContain("Deprecated");
+    expect(mounted.el.querySelector(".deprecations-config")?.textContent).toContain("LOOMCYCLE_BASH_ENABLED is set");
+    expect(mounted.el.querySelector(".deprecations-runs")?.textContent).toContain("Bashbox3 runs on this replica");
+  });
+
+  it("shows no deprecations heading when nothing deprecated is used", async () => {
+    stub({ teams: [], deprecations: { config: [], runs: [] } });
+    mounted = await mount();
+    expect(mounted.el.textContent).not.toContain("Deprecated");
+  });
+
   it("shows liveness alone when the server has no such route", async () => {
     stub(null);
     mounted = await mount();

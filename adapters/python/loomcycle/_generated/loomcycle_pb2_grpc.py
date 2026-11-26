@@ -238,6 +238,11 @@ class LoomcycleStub:
                 request_serializer=loomcycle__pb2.PlanOntologyRequest.SerializeToString,
                 response_deserializer=loomcycle__pb2.PlanOntologyResponse.FromString,
                 _registered_method=True)
+        self.ApplyOntologyRollback = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/ApplyOntologyRollback',
+                request_serializer=loomcycle__pb2.ApplyOntologyRollbackRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.ApplyOntologyRollbackResponse.FromString,
+                _registered_method=True)
         self.ListOntologyReleases = channel.unary_unary(
                 '/loomcycle.v1.Loomcycle/ListOntologyReleases',
                 request_serializer=loomcycle__pb2.ListOntologyReleasesRequest.SerializeToString,
@@ -247,6 +252,16 @@ class LoomcycleStub:
                 '/loomcycle.v1.Loomcycle/DiffOntologyReleases',
                 request_serializer=loomcycle__pb2.DiffOntologyReleasesRequest.SerializeToString,
                 response_deserializer=loomcycle__pb2.DiffOntologyReleasesResponse.FromString,
+                _registered_method=True)
+        self.GetOntologyJob = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/GetOntologyJob',
+                request_serializer=loomcycle__pb2.GetOntologyJobRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.OntologyJobResponse.FromString,
+                _registered_method=True)
+        self.ResumeOntologyJob = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/ResumeOntologyJob',
+                request_serializer=loomcycle__pb2.ResumeOntologyJobRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.OntologyJobResponse.FromString,
                 _registered_method=True)
         self.ListReviewQueue = channel.unary_unary(
                 '/loomcycle.v1.Loomcycle/ListReviewQueue',
@@ -1049,6 +1064,28 @@ class LoomcycleServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def ApplyOntologyRollback(self, request, context):
+        """ApplyOntologyRollback applies the plan of rolling the tenant ontology
+        back to a release (a PlanOntology change {op: release, seq}). It plans
+        again and is refused unless plan_fingerprint is still that plan's; the
+        writes go through the ontology's own guards, and a write by anyone else
+        stops it. Never automatic.
+
+        Operator-only, as PlanOntology. A refusal carries a google.rpc.ErrorInfo
+        whose reason is the code HTTP returns. What HTTP's 409 body carries
+        beside the code is in the ErrorInfo's metadata: `fingerprint` (the
+        ontology's current one) on plan_required and plan_stale
+        (FAILED_PRECONDITION), and `applied` (the writes made, as HTTP's JSON
+        array) on partially_applied (ABORTED). rename_job_pending and
+        entry_locked are FAILED_PRECONDITION, invalid_request INVALID_ARGUMENT;
+        the plan's own refusals map as PlanOntology's.
+
+        Mirrors POST /v1/_ontology/rollback.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def ListOntologyReleases(self, request, context):
         """ListOntologyReleases lists the tenant ontology's releases — the copies
         taken when it was confirmed and on each applied or rolled-back change,
@@ -1076,6 +1113,41 @@ class LoomcycleServicer:
         (invalid_request, forbidden, release_not_found, unavailable).
 
         Mirrors GET /v1/_ontology/releases/diff.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetOntologyJob(self, request, context):
+        """GetOntologyJob reads the tenant's ontology job — the class rename or
+        concept re-tag carrying a change through the stored rows of the tenant
+        scope and every user and agent scope: the unfinished one, else the one
+        updated last; job is absent when the tenant never had one. It writes
+        nothing.
+
+        Operator-only, as PlanOntology: the job rewrites rows in every scope of
+        the tenant. An admin may name another tenant. A refusal carries a
+        google.rpc.ErrorInfo whose reason is the code HTTP returns (forbidden,
+        unavailable).
+
+        Mirrors GET /v1/_ontology/job.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ResumeOntologyJob(self, request, context):
+        """ResumeOntologyJob gives the tenant's unfinished ontology job one slice of
+        work under the ontology rename lease, from the scope and step it is at,
+        as the next class rename or concept move would; a job whose change never
+        reached the ontology is marked abandoned. Answers with the job as the
+        slice left it.
+
+        Operator-only, as GetOntologyJob. A refusal carries a google.rpc.ErrorInfo
+        whose reason is the code HTTP returns (job_not_found, job_busy,
+        forbidden, unavailable).
+
+        Mirrors POST /v1/_ontology/job/resume.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -2010,6 +2082,11 @@ def add_LoomcycleServicer_to_server(servicer, server):
                     request_deserializer=loomcycle__pb2.PlanOntologyRequest.FromString,
                     response_serializer=loomcycle__pb2.PlanOntologyResponse.SerializeToString,
             ),
+            'ApplyOntologyRollback': grpc.unary_unary_rpc_method_handler(
+                    servicer.ApplyOntologyRollback,
+                    request_deserializer=loomcycle__pb2.ApplyOntologyRollbackRequest.FromString,
+                    response_serializer=loomcycle__pb2.ApplyOntologyRollbackResponse.SerializeToString,
+            ),
             'ListOntologyReleases': grpc.unary_unary_rpc_method_handler(
                     servicer.ListOntologyReleases,
                     request_deserializer=loomcycle__pb2.ListOntologyReleasesRequest.FromString,
@@ -2019,6 +2096,16 @@ def add_LoomcycleServicer_to_server(servicer, server):
                     servicer.DiffOntologyReleases,
                     request_deserializer=loomcycle__pb2.DiffOntologyReleasesRequest.FromString,
                     response_serializer=loomcycle__pb2.DiffOntologyReleasesResponse.SerializeToString,
+            ),
+            'GetOntologyJob': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetOntologyJob,
+                    request_deserializer=loomcycle__pb2.GetOntologyJobRequest.FromString,
+                    response_serializer=loomcycle__pb2.OntologyJobResponse.SerializeToString,
+            ),
+            'ResumeOntologyJob': grpc.unary_unary_rpc_method_handler(
+                    servicer.ResumeOntologyJob,
+                    request_deserializer=loomcycle__pb2.ResumeOntologyJobRequest.FromString,
+                    response_serializer=loomcycle__pb2.OntologyJobResponse.SerializeToString,
             ),
             'ListReviewQueue': grpc.unary_unary_rpc_method_handler(
                     servicer.ListReviewQueue,
@@ -3401,6 +3488,33 @@ class Loomcycle:
             _registered_method=True)
 
     @staticmethod
+    def ApplyOntologyRollback(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/ApplyOntologyRollback',
+            loomcycle__pb2.ApplyOntologyRollbackRequest.SerializeToString,
+            loomcycle__pb2.ApplyOntologyRollbackResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
     def ListOntologyReleases(request,
             target,
             options=(),
@@ -3444,6 +3558,60 @@ class Loomcycle:
             '/loomcycle.v1.Loomcycle/DiffOntologyReleases',
             loomcycle__pb2.DiffOntologyReleasesRequest.SerializeToString,
             loomcycle__pb2.DiffOntologyReleasesResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetOntologyJob(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/GetOntologyJob',
+            loomcycle__pb2.GetOntologyJobRequest.SerializeToString,
+            loomcycle__pb2.OntologyJobResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ResumeOntologyJob(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/ResumeOntologyJob',
+            loomcycle__pb2.ResumeOntologyJobRequest.SerializeToString,
+            loomcycle__pb2.OntologyJobResponse.FromString,
             options,
             channel_credentials,
             insecure,

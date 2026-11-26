@@ -25,9 +25,11 @@ import { App, ExpressAdapter } from "@microsoft/teams.apps";
 
 import { parseCardAction, renderCard } from "./cards.js";
 import type { TeamsConfig } from "./config.js";
+import { attachmentsSummary, dumpFields } from "./dump.js";
+import { chooseFileToken, SECRET_ONLY_WARNING, type FileTokenSource } from "./filetoken.js";
 import { groupsOf, identify, uninstalledSub } from "./identity.js";
 import { routeMessage, seenOf } from "./inbound.js";
-import { teamsFilePort, teamsVoicePort } from "./voice.js";
+import { filesOf, teamsFilePort, teamsVoicePort } from "./voice.js";
 
 const ADAPTIVE_CARD = "application/vnd.microsoft.card.adaptive";
 
@@ -73,6 +75,9 @@ export type TeamsBridgeOptions = BridgeOptions<ConversationRef> & {
   app?: TeamsAppOptions;
   /** The fetch attached files are downloaded with (tests). */
   fileFetch?: typeof fetch;
+  /** The bot's file token for a link without tempauth (tests); by default
+   *  the certificate or the SDK's non-secret credential (filetoken.ts). */
+  fileToken?: FileTokenSource;
 };
 
 /** LoopbackExpressAdapter is the SDK's Express adapter listening on one
@@ -134,6 +139,14 @@ export function createTeamsBridge(cfg: TeamsConfig, opts: TeamsBridgeOptions = {
   });
   // The bridge's gate name in loomcycle; unset for a bridge with a token.
   const gate = shared.gate?.name;
+  // The bot's token for a file link without tempauth (RFC HF §3.7).
+  const fileToken = opts.fileToken
+    ? { kind: "token" as const, source: opts.fileToken }
+    : chooseFileToken({
+        certificate: cfg.fileCertificate && { ...cfg.fileCertificate, loginEndpoint: app.cloud.loginEndpoint },
+        credentials: app.credentials,
+        app: app.tokenProvider,
+      });
 
   const adapter: BridgeAdapter<ConversationRef> = {
     platform: { name: "teams", label: "Teams" },
@@ -156,16 +169,41 @@ export function createTeamsBridge(cfg: TeamsConfig, opts: TeamsBridgeOptions = {
     voice: teamsVoicePort<ConversationRef>({
       hosts: cfg.fileHosts,
       fetch: opts.fileFetch,
+      token: fileToken.source,
       typing: (ref) => app.sendTo(ref, { type: "typing" }),
       log: opts.logger ?? consoleLogger,
     }),
     // Attached files (RFC HE), from the same hosts as recordings. The core
     // uses it only with BRIDGE_FILES=1.
-    files: teamsFilePort({ hosts: cfg.fileHosts, fetch: opts.fileFetch, log: opts.logger ?? consoleLogger }),
+    files: teamsFilePort({ hosts: cfg.fileHosts, fetch: opts.fileFetch, token: fileToken.source, log: opts.logger ?? consoleLogger }),
     async start(ctx) {
+      if ((ctx.config.files?.enabled || ctx.config.voice?.enabled) && fileToken.kind === "secret") ctx.log.warn(SECRET_ONLY_WARNING);
+      if (cfg.dumpActivities) {
+        // Registered first, so it sees every activity that passed the SDK's
+        // request check, whatever its type, before any handler runs.
+        app.use(async ({ activity, next }) => {
+          ctx.log.info("teams activity", dumpFields(activity as never));
+          return next();
+        });
+        ctx.log.warn("TEAMS_BRIDGE_DUMP_ACTIVITIES is on: every inbound activity is logged, what people write included");
+      }
       app.on("message", async ({ activity, ref }) => {
         // Card submits from older clients arrive as messages with no text.
         const text = stripMentionsText(activity) ?? "";
+        // A message whose attachments held no file a bot can download (only
+        // file.download.info is one) is logged, by count and content type,
+        // when it looks like a file the bot never got: no text beside it, or
+        // an attachment other than the text/html body Teams adds to a
+        // formatted message. A plain message is not logged.
+        const atts = activity.attachments ?? [];
+        const unread = atts.some((a) => !(a.contentType ?? "").toLowerCase().startsWith("text/html"));
+        if (atts.length > 0 && filesOf(atts, false).length === 0 && (unread || !text.trim())) {
+          ctx.log.info("teams message carried no file", {
+            conversation: activity.conversation?.id,
+            conversationType: activity.conversation?.conversationType,
+            ...attachmentsSummary(activity.attachments),
+          });
+        }
         await routeMessage(
           ctx.router,
           identify(activity, cfg.allowedTenants, gate),

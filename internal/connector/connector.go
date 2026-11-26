@@ -261,6 +261,26 @@ type Connector interface {
 	GetOntologyRelease(ctx context.Context, req GetOntologyReleaseRequest) (GetOntologyReleaseResult, error)
 	DiffOntologyReleases(ctx context.Context, req DiffOntologyReleasesRequest) (DiffOntologyReleasesResult, error)
 
+	// GetOntologyJob reads the tenant's ontology job (RFC GQ P5): the class
+	// rename or concept re-tag carrying a change through stored rows — the
+	// unfinished one, else the one updated last — and writes nothing.
+	// ResumeOntologyJob gives the unfinished job one slice of work under the
+	// ontology rename lease, as the next rename would. Operator-only on every
+	// transport. Errors wrap the ErrOntologyJob* sentinels; OntologyJobCode
+	// names them. Reachable via GET /v1/_ontology/job and POST
+	// /v1/_ontology/job/resume.
+	GetOntologyJob(ctx context.Context, req GetOntologyJobRequest) (OntologyJobResult, error)
+	ResumeOntologyJob(ctx context.Context, req ResumeOntologyJobRequest) (OntologyJobResult, error)
+
+	// ApplyOntologyRollback applies the plan of rolling the tenant ontology
+	// back to a release (RFC GQ P5.7): it plans {op: release, seq} again,
+	// refuses unless the request carries that plan's fingerprint, and makes
+	// the writes through the ontology's own guards. Operator-only on every
+	// transport. A rollback that did not complete is an
+	// *OntologyRollbackRefusal; the plan's own refusals wrap the
+	// ErrOntologyPlan* sentinels. Reachable via POST /v1/_ontology/rollback.
+	ApplyOntologyRollback(ctx context.Context, req ApplyOntologyRollbackRequest) (ApplyOntologyRollbackResult, error)
+
 	// ListReviewQueue lists a document scope's statements awaiting review
 	// (status proposed unless the filter names another), narrowed by the queue
 	// filters, or with req.Summarize their counts grouped by kind × method ×
