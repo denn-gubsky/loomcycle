@@ -357,6 +357,9 @@ func columnsSection2() schemaPlan {
 		// The user's folder a workspace is, on a personal worker (RFC GW
 		// P13); none for every row before. Mirrors postgres 0144.
 		`ALTER TABLE workspaces ADD COLUMN root TEXT NOT NULL DEFAULT ''`,
+		// A git workspace's repository (RFC GW P11); none for every row
+		// before. Mirrors postgres 0145.
+		`ALTER TABLE workspaces ADD COLUMN git TEXT NOT NULL DEFAULT ''`,
 	}}
 }
 

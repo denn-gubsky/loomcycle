@@ -43,7 +43,10 @@ func (s WorkspaceState) IsValid() bool {
 // durable ones (P12); the store does not restrict the values, so those phases
 // need no store change for them.
 const (
-	WorkspaceKindGeneral       = "general"
+	WorkspaceKindGeneral = "general"
+	// WorkspaceKindGit is a git working tree over a mirror (RFC GW §4.2,
+	// P11); its row carries Git.
+	WorkspaceKindGit           = "git"
 	WorkspaceLifetimeEphemeral = "ephemeral"
 	// WorkspaceLifetimeDurable (RFC GW §4.2, P12): kept under the tenant,
 	// the user and the name past its run; unique on those three among
@@ -94,9 +97,35 @@ type WorkspaceRow struct {
 	// Root is the name of the user's folder a personal worker offers, for a
 	// workspace that is that folder (RFC GW §4.5, P13); empty for every
 	// other workspace. A root workspace has a user and is not durable.
-	Root      string
+	Root string
+	// Git is a git workspace's repository (RFC GW §4.2, P11): what the
+	// supervisor is told of its remote and branch, never read back from the
+	// workspace. nil for every other workspace.
+	Git       *WorkspaceGit
 	CreatedAt time.Time
 	UpdatedAt time.Time
+}
+
+// WorkspaceGit is a git workspace's repository, as the core holds it. It
+// names a credential, never holds one.
+type WorkspaceGit struct {
+	// URL is the repository: https, a host, no user, query or fragment.
+	URL string `json:"url"`
+	// Branch is the workspace's own branch, the one ref a push may move.
+	Branch string `json:"branch"`
+	// BaseRef is the ref the workspace was opened from; Base the commit it
+	// resolved to in the mirror.
+	BaseRef string `json:"base_ref,omitempty"`
+	Base    string `json:"base,omitempty"`
+	// DefaultBranch is the forge's default branch as the core read it from
+	// the forge's own advertisement; "" until read.
+	DefaultBranch string `json:"default_branch,omitempty"`
+	// Credential is the credential reference the workspace's git ops use
+	// ("$cred:<name>" or "$ghapp:<name>"); "" for none.
+	Credential string `json:"credential,omitempty"`
+	// Mirror is the worker's mirror key (gitrepo.MirrorKey of the tenant and
+	// the URL).
+	Mirror string `json:"mirror"`
 }
 
 // The owner kinds of a workspace (RFC GW D35, P12).
@@ -163,6 +192,10 @@ type WorkspaceStore interface {
 	// bumps updated_at. It reports false, and changes nothing, when the row
 	// is absent or not in from — so of two replicas moving one row, one wins.
 	WorkspaceSetState(ctx context.Context, tenantID, id string, from, to WorkspaceState) (bool, error)
+	// WorkspaceSetGit replaces a git workspace's repository record (the
+	// forge's default branch, the base commit, as the core learns them) on
+	// the tenant's row. It reports false when there is no such row.
+	WorkspaceSetGit(ctx context.Context, tenantID, id string, git WorkspaceGit) (bool, error)
 	// WorkspaceDelete removes the tenant's row and reports whether it was
 	// there. It never touches the worker's disk.
 	WorkspaceDelete(ctx context.Context, tenantID, id string) (bool, error)
