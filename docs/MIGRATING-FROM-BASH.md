@@ -11,7 +11,9 @@ Why they go:
 
 A workspace keeps commands off the core's machine, and a credential never enters it: the core adds it to the requests that leave.
 
-loomcycle warns about each use at boot. Each warning names the item, says what replaces it, and links a section below.
+loomcycle warns about each use at boot, and `loomcycle doctor` lists them under its "Deprecated" check. Each warning names the item, says what replaces it, and links a section below.
+
+Agent definitions stored at run time (`AgentDef`, `register_agent`) are seen only when a run is given one. Each such run is counted in `loomcycle_deprecated_use_total{kind,name}`. The first run per tenant and agent in a process also logs one warning, which names the agent and the items, never a credential.
 
 The workspaces guide (`docs/WORKSPACES.md`) covers turning workspaces on (`workspace.mode`), the agent's `workspace` grant, and egress routes.
 

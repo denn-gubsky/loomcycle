@@ -172,6 +172,9 @@ type Server struct {
 	// toolPanics counts the tool calls recovered from a panic, on every
 	// dispatcher this server builds, for loomcycle_tool_panics_total.
 	toolPanics *tools.PanicCounter
+	// deprecatedUse counts the runs given what a future release removes
+	// (RFC GW §9, P14) and logs the first per tenant and agent.
+	deprecatedUse *deprecatedUse
 	// reviewAudit records bulk statement rulings and their reverts
 	// (SetStatementReviewAudit); nil = logged only.
 	reviewAudit audit.Sink
@@ -844,6 +847,7 @@ func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem
 		hookDispatcher: hooks.NewDispatcherWithPrivateHosts(nil, nil, cfg.Hooks.PrivateHostAllowlist),
 		startedAt:      time.Now(),
 		toolPanics:     tools.NewPanicCounter(),
+		deprecatedUse:  newDeprecatedUse(slog.Default()),
 	}
 	// RFC BH: the turn-cancel registry builds its cancel cause via loop.TurnCancelCause
 	// (the loop recognizes it to PARK the run instead of terminating). Injected here
