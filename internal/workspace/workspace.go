@@ -5,7 +5,9 @@
 // internal/workspace/worker.
 package workspace
 
-import "strings"
+import (
+	"strings"
+)
 
 // ProtocolVersion is the workspace worker protocol this build speaks (RFC GW
 // §8). 2 added the worker-to-core Egress stream (RFC GW P4): an older worker

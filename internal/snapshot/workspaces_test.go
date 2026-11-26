@@ -312,6 +312,14 @@ func TestSnapshotWorkspaces_APersonalWorkerIsOnlyItsOwnUsers(t *testing.T) {
 	if workerOfOwner("user:acme/"+personalHash("")+"/laptop", "acme", "") {
 		t.Error("a row with no user points at a personal worker")
 	}
+	// Each user's row restores onto that user's own worker, not only alice's.
+	if !workerOfOwner("user:acme/"+personalHash("bob")+"/laptop", "acme", "bob") {
+		t.Error("bob's row was refused his own personal worker")
+	}
+	// The key alone names no worker: a worker's id carries the id it declares.
+	if workerOfOwner("user:acme/"+personalHash("alice")+"/", "acme", "alice") {
+		t.Error("a personal worker id with no declared id was accepted")
+	}
 }
 
 func personalHash(user string) string {
