@@ -90,8 +90,18 @@ describe("the messages waiting for a sign-in", () => {
     const p = new PendingSignIns<string>();
     expect(p.hold("k", msg("one"))).toBe(true);
     expect(p.hold("k", msg("two"))).toBe(false);
-    expect(p.take("k")?.text).toBe("two");
+    expect(p.take("k")?.msg?.text).toBe("two");
     expect(p.take("k")).toBeUndefined();
+  });
+
+  it("records a card for a text message without holding it, and keeps a waiting message over one", () => {
+    const p = new PendingSignIns<string>();
+    expect(p.hold("k")).toBe(true);
+    expect(p.hold("k")).toBe(false);
+    expect(p.take("k")).toEqual({});
+    p.hold("k", msg("file"));
+    expect(p.hold("k")).toBe(false);
+    expect(p.take("k")?.msg?.text).toBe("file");
   });
 
   it("forgets a message that waited too long, counted from its card", () => {
@@ -113,7 +123,7 @@ describe("the messages waiting for a sign-in", () => {
     p.hold("c", msg("c"));
     expect(p.size).toBe(2);
     expect(p.take("a")).toBeUndefined();
-    expect(p.take("c")?.text).toBe("c");
+    expect(p.take("c")?.msg?.text).toBe("c");
   });
 
   it("keys a message by conversation and person", () => {
@@ -358,24 +368,66 @@ describe("teams bridge in delegated Graph mode", () => {
     expect(said).toEqual([]);
   });
 
-  it("replaces the waiting message with a later one, with no second card, and processes it after SSO", async () => {
+  /** postFile sends a message shaped like a file (no text, an empty
+   *  text/html) under a known activity id. */
+  const postFile = (id: string) => send(activity({ type: "message", id, text: "", attachments: [{ contentType: "text/html", content: "" }] }));
+
+  it("replaces a waiting file-like message with a later one, with no second card, and processes it after SSO", async () => {
     await start();
-    await post("", "");
+    await postFile("file-1");
     await waitFor(() => cards.length > 0, "the sign-in card");
-    expect((await post("check this")).status).toBe(200);
+    expect((await postFile("file-2")).status).toBe(200);
     expect(cards).toHaveLength(1);
     expect(lc.runs).toEqual([]);
     expect((await exchange()).status).toBe(200);
     await openRun();
     await waitFor(() => lc.callsTo("sendRunInput").length > 0, "the file block");
     expect(lc.runs).toHaveLength(1);
-    expect(JSON.stringify(lc.runs[0]!.opts)).toContain("check this");
     expect(lc.callsTo("putInboxFile")).toHaveLength(1);
     // The message looked up is the second one, by its own activity id.
     const reads = graph.requests.filter((r) => r.url.includes("/messages/"));
-    expect(reads).toHaveLength(1);
-    expect(reads[0]!.url).toContain(`/messages/in-`);
+    expect(reads.map((r) => new URL(r.url).pathname.split("/").pop())).toEqual(["file-2"]);
     expect(graph.requests.filter(onGraph).every((r) => r.auth === `Bearer ${USER_TOKEN}`)).toBe(true);
+    expect(cards).toHaveLength(1);
+    tokensKept();
+  });
+
+  it("routes a text message before sign-in to the agent at once, with one sign-in card beside it", async () => {
+    await start();
+    expect((await post("hello there")).status).toBe(200);
+    await waitFor(() => lc.runs.length > 0, "a run");
+    expect(JSON.stringify(lc.runs[0]!.opts)).toContain("hello there");
+    expect(cards).toEqual([SIGN_IN_TEXT]);
+    expect(graph.requests).toEqual([]);
+    expect(said).toEqual([]);
+  });
+
+  it("sends no second card for a second text message while the sign-in is outstanding, and holds neither", async () => {
+    await start();
+    await post("first");
+    await waitFor(() => lc.runs.length > 0, "a run");
+    await openRun();
+    await post("second");
+    await waitFor(() => JSON.stringify(lc.calls).includes("second"), "the second message");
+    expect(cards).toHaveLength(1);
+    // Nothing waits, so the sign-in releases nothing and says nothing.
+    expect((await exchange()).status).toBe(200);
+    expect(said).toEqual([]);
+    expect(graph.requests).toEqual([]);
+    expect(lc.runs).toHaveLength(1);
+  });
+
+  it("holds a file-like message sent after a text one, with no second card, and releases it after sign-in", async () => {
+    await start();
+    await post("first");
+    await waitFor(() => lc.runs.length > 0, "a run");
+    await openRun();
+    await postFile("file-1");
+    expect(cards).toHaveLength(1);
+    expect(graph.requests).toEqual([]);
+    await exchange();
+    await waitFor(() => lc.callsTo("putInboxFile").length > 0, "the file");
+    expect(lc.inbox![0]!.bytes).toEqual(PDF);
     expect(cards).toHaveLength(1);
     tokensKept();
   });
