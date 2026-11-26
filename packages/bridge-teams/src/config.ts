@@ -33,13 +33,17 @@ export interface TeamsConfig {
 /** How the bridge reaches a file Teams sent no file.download.info for
  *  (RFC HF §3.1). Read only with BRIDGE_FILES=1; off otherwise. */
 export interface GraphFilesConfig {
-  /** TEAMS_BRIDGE_FILES_GRAPH: off (the default) or app. delegated is
-   *  refused at load until RFC HF P2 builds it. */
-  mode: "off" | "app";
+  /** TEAMS_BRIDGE_FILES_GRAPH: off (the default), app (the bot's own
+   *  tenant-wide Graph token) or delegated (each person signs in once, and
+   *  a lookup uses their own token). */
+  mode: "off" | "app" | "delegated";
   /** The Teams app's manifest id (TEAMS_BRIDGE_APP_ID, default CLIENT_ID,
    *  which the shipped manifest uses as its id), lower-cased: how the bridge
-   *  finds the person's chat with the bot in Graph. Set in app mode. */
+   *  finds the person's chat with the bot in Graph. Set with Graph on. */
   appId?: string;
+  /** TEAMS_BRIDGE_GRAPH_CONNECTION: the OAuth connection setting on the
+   *  Azure Bot a person signs in through. Set in delegated mode. */
+  connection?: string;
   /** TEAMS_BRIDGE_NO_FILE_HINT: what the bridge adds to its reply when a
    *  message looked like a file and none came (RFC HF §3.8). */
   noFileHint?: string;
@@ -121,16 +125,17 @@ function loadGraphFiles(r: EnvReader, filesOn: boolean): GraphFilesConfig {
   const noFileHint = hint ? { noFileHint: hint } : {};
   const raw = r.get("TEAMS_BRIDGE_FILES_GRAPH")?.trim().toLowerCase();
   if (!raw || raw === "off") return { mode: "off", ...noFileHint };
-  if (raw === "delegated") {
-    r.problems.push("TEAMS_BRIDGE_FILES_GRAPH=delegated is not built yet (RFC HF P2): use app or off");
-    return { mode: "off", ...noFileHint };
-  }
-  if (raw !== "app") {
-    r.problems.push('TEAMS_BRIDGE_FILES_GRAPH must be one of "off", "app"');
+  if (raw !== "app" && raw !== "delegated") {
+    r.problems.push('TEAMS_BRIDGE_FILES_GRAPH must be one of "off", "app", "delegated"');
     return { mode: "off", ...noFileHint };
   }
   const appId = (r.get("TEAMS_BRIDGE_APP_ID") ?? r.get("CLIENT_ID") ?? "").trim().toLowerCase();
-  if (!appId) r.problems.push("TEAMS_BRIDGE_FILES_GRAPH=app needs TEAMS_BRIDGE_APP_ID (the Teams app's manifest id) or CLIENT_ID");
+  if (!appId) r.problems.push(`TEAMS_BRIDGE_FILES_GRAPH=${raw} needs TEAMS_BRIDGE_APP_ID (the Teams app's manifest id) or CLIENT_ID`);
   else if (!GUID.test(appId)) r.problems.push("TEAMS_BRIDGE_APP_ID must be the Teams app's manifest id, a GUID");
-  return { mode: "app", appId, ...noFileHint };
+  if (raw === "app") return { mode: "app", appId, ...noFileHint };
+  // Without a connection there is nothing to sign in through and every
+  // lookup would fail, so the bridge refuses to start rather than run so.
+  const connection = r.get("TEAMS_BRIDGE_GRAPH_CONNECTION")?.trim();
+  if (!connection) r.problems.push("TEAMS_BRIDGE_FILES_GRAPH=delegated needs TEAMS_BRIDGE_GRAPH_CONNECTION, the OAuth connection setting on the Azure Bot");
+  return { mode: "delegated", appId, connection, ...noFileHint };
 }

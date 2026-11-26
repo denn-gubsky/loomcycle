@@ -185,6 +185,11 @@ func (b *boot) startWorkspace() *wsdispatch.Dispatcher {
 		return nil
 	}
 	opt := wsdispatch.Options{BuildVersion: buildVersion, Logger: slog.Default()}
+	// RFC GW P13: read through the server's live config at each attach and
+	// recheck. The server is built after this, but before Activate, and the
+	// dispatcher reads its activation first on every attach, so nothing
+	// asks before b.srv is set; nil is off.
+	opt.PersonalWorkers = func() bool { return b.srv != nil && b.srv.PersonalWorkersOn() }
 	var token, tenant, why string
 	if ws.LocalWorker() {
 		var err error

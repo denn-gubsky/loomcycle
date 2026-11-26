@@ -103,6 +103,10 @@ type Sections struct {
 	// under the target's own dynamic root and creates the empty directory.
 	// Before the defs and runs that bind a volume by name.
 	VolumeDefs VolumeDefsSection `json:"volume_defs"`
+	// Workspaces carry each workspace's row, never its files (RFC GW P12):
+	// restored after the runs that own them, every row lost until its
+	// worker lists it.
+	Workspaces WorkspacesSection `json:"workspaces"`
 	// Memory-backend and document-source defs name an endpoint the target
 	// dials and an env var whose value is sent there, so restore re-runs the
 	// authoring validators on every body. Both precede memory: a routing def

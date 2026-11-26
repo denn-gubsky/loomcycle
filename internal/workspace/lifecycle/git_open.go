@@ -130,7 +130,7 @@ func (m *Manager) openGit(ctx context.Context, row *store.WorkspaceRow, g GitOpe
 			return fmt.Errorf("%w: no valid branch name for %q under workspace.push.ref_prefixes; name one", ErrGitBranch, row.Name)
 		}
 	}
-	if err := m.disp.OpenWith(ctx, row.TenantID, row.WorkerID, row.ID, workspace.OpenArgs{DiskQuotaBytes: m.limits.DiskQuotaBytes}); err != nil {
+	if err := m.disp.OpenWith(ctx, row.TenantID, row.UserID, row.WorkerID, row.ID, workspace.OpenArgs{DiskQuotaBytes: m.limits.DiskQuotaBytes}); err != nil {
 		return err
 	}
 	var exists atomic.Bool
@@ -149,7 +149,7 @@ func (m *Manager) openGit(ctx context.Context, row *store.WorkspaceRow, g GitOpe
 	if err != nil {
 		return err
 	}
-	_, fetchErr := m.disp.Do(ctx, row.WorkerID, dispatch.Request{TenantID: row.TenantID, WorkspaceID: row.ID, Op: workspace.OpGitFetch, Args: fetchArgs})
+	_, fetchErr := m.disp.Do(ctx, row.WorkerID, dispatch.Request{TenantID: row.TenantID, UserID: row.UserID, WorkspaceID: row.ID, Op: workspace.OpGitFetch, Args: fetchArgs})
 	// The proof is the forge's answers as the core read them; a worker that
 	// answers success without them opens nothing.
 	if !tk.Proved() {
@@ -185,7 +185,7 @@ func (m *Manager) openGit(ctx context.Context, row *store.WorkspaceRow, g GitOpe
 	if err != nil {
 		return err
 	}
-	res, err := m.disp.Do(ctx, row.WorkerID, dispatch.Request{TenantID: row.TenantID, WorkspaceID: row.ID, Op: workspace.OpGitOpen, Args: openArgs})
+	res, err := m.disp.Do(ctx, row.WorkerID, dispatch.Request{TenantID: row.TenantID, UserID: row.UserID, WorkspaceID: row.ID, Op: workspace.OpGitOpen, Args: openArgs})
 	if err != nil {
 		return err
 	}

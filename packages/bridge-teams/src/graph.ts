@@ -1,5 +1,5 @@
 // The Graph fallback for files Teams does not send (RFC HF §3.2–3.4, app-only
-// mode): on a live tenant a file attached in a 1:1 chat reached the bot as
+// and delegated modes; delegated.ts holds the sign-in): on a live tenant a file attached in a 1:1 chat reached the bot as
 // one message with an empty text/html attachment and no
 // file.download.info, so the bridge reads the same message through
 // Microsoft Graph and takes its `reference` attachments.
@@ -41,6 +41,9 @@ export interface GraphFileRef {
   tenantId?: string;
   /** The sender's Entra object id: the file must be in their OneDrive. */
   userId?: string;
+  /** The sender's Bot Framework user id (`29:…`), which the token service
+   *  keeps a delegated token under. Not a credential. */
+  botUserId?: string;
 }
 
 export function isGraphFileRef(ref: unknown): ref is GraphFileRef {
@@ -57,6 +60,8 @@ export interface GraphLookup {
   userId: string;
   /** The activity id. */
   messageId: string;
+  /** The sender's Bot Framework user id, for a delegated token. */
+  botUserId?: string;
 }
 
 export interface GraphFilesOptions {
@@ -64,8 +69,11 @@ export interface GraphFilesOptions {
   base: string;
   /** The Teams app's manifest id. */
   appId: string;
-  /** The app-only Graph token for a tenant; undefined when there is none. */
-  token(tenantId?: string): Promise<string | undefined>;
+  /** The Graph token for a file's download: in app mode the app token for
+   *  the tenant, in delegated mode the sender's own, asked of the token
+   *  service by their Bot Framework id each time. undefined when there is
+   *  none. */
+  token(tenantId?: string, botUserId?: string): Promise<string | undefined>;
   /** Allowed host suffixes for files (TEAMS_BRIDGE_FILE_HOSTS). */
   hosts: readonly string[];
   log: Logger;
@@ -121,17 +129,18 @@ export class GraphFiles {
 
   /** lookup is the files the message carries in Graph, or none. It never
    *  throws: a failure or a timeout is logged and the message goes on as
-   *  text. */
-  async lookup(q: GraphLookup): Promise<FileIn[]> {
+   *  text. `userToken` is the person's delegated token the caller already
+   *  holds for this one lookup; without it the lookup asks token(). */
+  async lookup(q: GraphLookup, userToken?: string): Promise<FileIn[]> {
     const signal = AbortSignal.timeout(this.o.timeoutMs ?? DEFAULT_LOOKUP_TIMEOUT_MS);
     try {
-      const token = await abortable(this.o.token(q.tenantId), signal);
+      const token = userToken ?? (await abortable(this.o.token(q.tenantId, q.botUserId), signal));
       if (!token) throw new LookupStop("token");
       const chatId = await this.chatOf(q, token, signal);
       const msg = await this.messageOf(chatId, q.messageId, token, signal);
       const from = msg.from?.user?.id;
       if (typeof from !== "string" || from.toLowerCase() !== q.userId.toLowerCase()) throw new LookupStop("sender");
-      const files = referencesOf(msg, q.tenantId, q.userId);
+      const files = referencesOf(msg, q.tenantId, q.userId, q.botUserId);
       this.o.log.info("teams graph lookup", { conversation: q.conversationId, files: files.length });
       return files;
     } catch (err) {
@@ -152,7 +161,11 @@ export class GraphFiles {
    *  taken only from the sender's own OneDrive, where Teams keeps a file
    *  attached from a device ("Microsoft Teams Chat Files"). A file attached
    *  from SharePoint or a team site is refused in app mode. ASSUMPTION (RFC
-   *  HF P0): a file attached from a device is in the sender's own drive. */
+   *  HF P0): a file attached from a device is in the sender's own drive.
+   *
+   *  In delegated mode the token is the sender's own, so Graph already keeps
+   *  them to files they can read and the deputy is gone. The check still
+   *  applies there: the same rule in both modes, and stricter. */
   async download(ref: GraphFileRef, maxBytes: number, signal: AbortSignal): Promise<Uint8Array> {
     let content: URL;
     try {
@@ -162,7 +175,7 @@ export class GraphFiles {
     }
     if (!hostAllowed(content, this.o.hosts)) throw new TeamsFileError("host", { host: content.hostname });
     if (!ref.userId) throw new GraphFileRefusal("not_sender_drive");
-    const token = await this.o.token(ref.tenantId);
+    const token = await this.o.token(ref.tenantId, ref.botUserId);
     if (!token) throw new Error("teams graph token unavailable");
     let item: { id?: unknown; parentReference?: { driveId?: unknown } | null };
     let own: string;
@@ -283,13 +296,13 @@ export class GraphFiles {
  *  how Graph shows a file attached in a 1:1 chat. The type is the name's
  *  extension, which the core checks against BRIDGE_FILES_TYPES and the
  *  file's bytes as for any other file. */
-export function referencesOf(msg: GraphMessage, tenantId?: string, userId?: string): FileIn[] {
+export function referencesOf(msg: GraphMessage, tenantId?: string, userId?: string, botUserId?: string): FileIn[] {
   const out: FileIn[] = [];
   for (const a of Array.isArray(msg.attachments) ? (msg.attachments as unknown[]) : []) {
     const att = a as { contentType?: unknown; contentUrl?: unknown; name?: unknown } | null;
     if (!att || att.contentType !== "reference") continue;
     if (typeof att.contentUrl !== "string" || !att.contentUrl || typeof att.name !== "string" || !att.name) continue;
-    const ref: GraphFileRef = { graph: "reference", contentUrl: att.contentUrl, name: att.name, ...(tenantId ? { tenantId } : {}), ...(userId ? { userId } : {}) };
+    const ref: GraphFileRef = { graph: "reference", contentUrl: att.contentUrl, name: att.name, ...(tenantId ? { tenantId } : {}), ...(userId ? { userId } : {}), ...(botUserId ? { botUserId } : {}) };
     const type = extensionOf(att.name);
     out.push({ ref, name: att.name, ...(type ? { type } : {}) });
   }
@@ -383,8 +396,9 @@ async function readCapped(res: Response, maxBytes: number): Promise<Uint8Array> 
   return out;
 }
 
-/** abortable settles with p, or rejects once signal aborts. */
-function abortable<T>(p: Promise<T>, signal: AbortSignal): Promise<T> {
+/** abortable settles with p, or rejects once signal aborts: what bounds a
+ *  call that takes no signal of its own. */
+export function abortable<T>(p: Promise<T>, signal: AbortSignal): Promise<T> {
   if (signal.aborted) return Promise.reject(signal.reason);
   return new Promise<T>((resolve, reject) => {
     const onAbort = () => reject(signal.reason);

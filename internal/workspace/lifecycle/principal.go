@@ -41,7 +41,7 @@ func (m *Manager) SweepPrincipals(ctx context.Context, rule PrincipalRule) (int,
 	valid := map[string]bool{}
 	n := 0
 	for _, r := range rows {
-		if r.State == store.WorkspaceReleasing && !m.disp.Attached(r.WorkerID, r.TenantID) {
+		if r.State == store.WorkspaceReleasing && !m.disp.Attached(r.WorkerID, r.TenantID, r.UserID) {
 			continue
 		}
 		why := m.principalEnded(ctx, r, rule, now, valid)
