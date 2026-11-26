@@ -782,7 +782,13 @@ func gitSignOrLocalRefusal(err error) tools.Result {
 // signature is who the tool commits as: the operator's identity, else the
 // agent's name at an address that can never be delivered.
 func (g *Git) signature(ctx context.Context) gitrepo.Signature {
-	name, email := g.AuthorName, g.AuthorEmail
+	return commitSignature(ctx, g.AuthorName, g.AuthorEmail)
+}
+
+// commitSignature is who a commit an agent makes is by: the operator's name
+// and address (LOOMCYCLE_GIT_AUTHOR_NAME / _EMAIL), else the agent's name
+// and an address under .invalid. Never the model's choice.
+func commitSignature(ctx context.Context, name, email string) gitrepo.Signature {
 	agent := tools.AgentName(ctx)
 	if agent == "" {
 		agent = "loomcycle"
