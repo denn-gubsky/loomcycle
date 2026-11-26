@@ -17,6 +17,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/gitsource"
 	"github.com/denn-gubsky/loomcycle/internal/gitsource/gitrepo"
 	"github.com/denn-gubsky/loomcycle/internal/gitsource/rootbilly"
+	"github.com/denn-gubsky/loomcycle/internal/safego"
 	"github.com/denn-gubsky/loomcycle/internal/workspace"
 	"github.com/denn-gubsky/loomcycle/internal/workspace/engine"
 	"github.com/denn-gubsky/loomcycle/internal/workspace/workspacepb"
@@ -88,6 +89,7 @@ func (w *worker) MirrorKeyOf(id string) string {
 	if !workspace.ValidID(id) {
 		return ""
 	}
+	// #nosec G304 -- id is a ValidID (no separator, no dot), so the path is a marker beside the workspaces in the worker's root
 	b, err := os.ReadFile(filepath.Join(w.opt.Root, id+gitMarkerSuffix))
 	if err != nil {
 		return ""
@@ -190,7 +192,10 @@ func (t *gitTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 		resp.Header.Add(h.GetName(), h.GetValue())
 	}
 	pr, pw := io.Pipe()
-	go func() {
+	safego.Go(r.Context(), "workspace.worker.git-answer", func() {
+		// After a panic go-git's read must still end: a no-op once the pipe
+		// is closed below.
+		defer pw.CloseWithError(errors.New("the core's answer ended early"))
 		for {
 			m, err := s.Recv()
 			if err != nil {
@@ -214,7 +219,7 @@ func (t *gitTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 				return
 			}
 		}
-	}()
+	})
 	resp.Body = pr
 	return resp, nil
 }
