@@ -178,7 +178,7 @@ func (w *worker) run(ctx context.Context, start *workspacepb.OpStart, input []by
 		if err := w.engine.Forget(ctx, id); err != nil {
 			return refuse(workspace.ClassFailed, "ending the workspace's session: %v", err)
 		}
-		if err := os.RemoveAll(dir); err != nil {
+		if err := w.removeOwnDir(id); err != nil {
 			return refuse(workspace.ClassFailed, "removing the workspace: %v", err)
 		}
 		// Its checkpoints go with it (RFC GW §5.4).
@@ -204,17 +204,21 @@ func (w *worker) run(ctx context.Context, start *workspacepb.OpStart, input []by
 		if bad := w.onRoot(id, start.GetOp()); bad != nil {
 			return *bad
 		}
-		return hidePaths(w.forkOp(ctx, id, dir, start.GetArgs()), false, dir, w.opt.Root)
+		own := filepath.Join(w.opt.Root, id)
+		return hidePaths(w.forkOp(ctx, id, own, start.GetArgs()), false, own, w.opt.Root)
 	case workspace.OpTemplateOpen:
 		if bad := w.onRoot(id, start.GetOp()); bad != nil {
 			return *bad
 		}
-		return hidePaths(w.templateOpenOp(ctx, id, dir, start.GetArgs()), false, dir, w.opt.Root)
+		own := filepath.Join(w.opt.Root, id)
+		return hidePaths(w.templateOpenOp(ctx, id, own, start.GetArgs()), false, own, w.opt.Root)
 	case workspace.OpCheckpoint, workspace.OpCheckpoints, workspace.OpDeleteCheckpoint, workspace.OpRestore:
 		if bad := w.onRoot(id, start.GetOp()); bad != nil {
 			return *bad
 		}
-		dir, real, a := w.workspaceDir(id)
+		// The id's own folder, never wsDir: a bind landing after onRoot
+		// must not have a restore swap out the user's root.
+		dir, real, a := w.workspaceDirAt(id, filepath.Join(w.opt.Root, id))
 		if a.class == "" {
 			a = w.checkpointOps(ctx, id, dir, real, start.GetOp(), start.GetArgs())
 		}

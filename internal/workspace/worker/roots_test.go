@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -248,5 +249,56 @@ func TestRoots_RunRefusesABadPersonalStart(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "root") && !strings.Contains(err.Error(), "personal") {
 			t.Errorf("%s: Run = %v, want a refusal of the roots", name, err)
 		}
+	}
+}
+
+// Removes of a bound id racing each other (and a rebind) never delete a
+// file of the root: the first unbinds, and a later one that no longer sees
+// the binding must not take the root's folder for the id's own.
+func TestRoots_RacingRemovesNeverDeleteTheRoot(t *testing.T) {
+	w, _, user := newPersonalWorker(t)
+	for i := 0; i < 20; i++ {
+		mustOK(t, openRoot(t, w, "ws1", "work"), "open")
+		var wg sync.WaitGroup
+		for g := 0; g < 8; g++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				_ = w.run(context.Background(), &workspacepb.OpStart{WorkspaceId: "ws1", Op: workspace.OpRemove}, nil)
+				_ = openRoot(t, w, "ws1", "work")
+			}()
+		}
+		wg.Wait()
+		if _, err := os.Stat(filepath.Join(user, "keep.txt")); err != nil {
+			t.Fatalf("round %d: the root's file: %v", i, err)
+		}
+		_ = w.run(context.Background(), &workspacepb.OpStart{WorkspaceId: "ws1", Op: workspace.OpRemove}, nil)
+	}
+}
+
+// The last guard before a workspace's folder is deleted: never a declared
+// root, nothing inside one or holding one, nothing outside the state folder.
+func TestRoots_RemovingAPathOfARootIsRefused(t *testing.T) {
+	w, state, user := newPersonalWorker(t)
+	if err := os.Mkdir(filepath.Join(user, "sub"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(user, filepath.Join(state, "ws7")); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{user, filepath.Join(user, "sub"), filepath.Dir(user), filepath.Join(state, "ws7"), t.TempDir(), state} {
+		if err := w.removable(p); err == nil {
+			t.Errorf("removable(%q) = nil, want refused", p)
+		}
+	}
+	if err := w.removable(filepath.Join(state, "ws8")); err != nil {
+		t.Errorf("a workspace's own folder: %v", err)
+	}
+	// A link in the state folder to the root: the remove fails closed.
+	if a := fop(t, w, "ws7", workspace.OpRemove, struct{}{}); a.class != workspace.ClassFailed {
+		t.Errorf("a remove of a link to the root = %q %q, want %s", a.class, a.detail, workspace.ClassFailed)
+	}
+	if _, err := os.Stat(filepath.Join(user, "keep.txt")); err != nil {
+		t.Fatalf("the root's file: %v", err)
 	}
 }

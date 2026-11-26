@@ -246,3 +246,58 @@ func (w *worker) onRoot(id, op string) *answer {
 	}
 	return nil
 }
+
+// removeOwnDir deletes workspace id's own folder, <state>/<id>, for a
+// remove or a reconciliation. It never takes the folder from wsDir: a
+// remove that raced another and no longer sees id's binding would find the
+// root's path there. The binding is checked again, and the folder chosen
+// and deleted, under rootMu, so no bind lands in between.
+func (w *worker) removeOwnDir(id string) error {
+	w.rootMu.Lock()
+	defer w.rootMu.Unlock()
+	if name, ok := w.bound[id]; ok {
+		return fmt.Errorf("the workspace was bound to root %q meanwhile", name)
+	}
+	dir := filepath.Join(w.opt.Root, id)
+	if err := w.removable(dir); err != nil {
+		w.logger().Error("refused to delete a workspace's folder", "workspace_id", id, "err", err)
+		return err
+	}
+	return os.RemoveAll(dir)
+}
+
+// removable is the last check before a workspace's folder is deleted: it
+// must be a direct child of the worker's state folder and neither be, hold
+// nor lie inside a declared root, through any link (D-P13-7 keeps them
+// apart; this holds even if that were ever got wrong). Fails closed: a path
+// it cannot resolve is refused.
+func (w *worker) removable(dir string) error {
+	state, err := filepath.EvalSymlinks(w.opt.Root)
+	if err != nil {
+		// The error names the path; an answer may not (hidePaths).
+		w.logger().Error("cannot resolve the state folder before a removal", "err", err)
+		return errors.New("cannot resolve the worker's state folder")
+	}
+	parent, err := filepath.EvalSymlinks(filepath.Dir(dir))
+	if err != nil || parent != state || !workspace.ValidID(filepath.Base(dir)) {
+		return errors.New("not a workspace folder in the worker's state folder")
+	}
+	paths := []string{filepath.Join(state, filepath.Base(dir))}
+	if real, err := filepath.EvalSymlinks(dir); err == nil {
+		paths = append(paths, real)
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		w.logger().Error("cannot resolve a workspace's folder before its removal", "err", err)
+		return errors.New("cannot resolve the workspace's folder")
+	}
+	for _, p := range paths {
+		for _, r := range w.opt.Roots {
+			if pathWithin(p, r.Path) || pathWithin(r.Path, p) {
+				return fmt.Errorf("the folder is, holds or lies inside root %q", r.Name)
+			}
+		}
+		if !pathWithin(p, state) || p == state {
+			return errors.New("the folder lies outside the worker's state folder")
+		}
+	}
+	return nil
+}

@@ -64,8 +64,16 @@ func (w *worker) workspaceDir(id string) (dir, real string, a answer) {
 	if !workspace.ValidID(id) {
 		return "", "", refuse(workspace.ClassInvalid, "malformed workspace id")
 	}
-	// The id holds no separator, so dir is a direct child of the root.
-	dir = w.wsDir(id)
+	// The id holds no separator, so dir is a direct child of the root, or
+	// the root id is bound to on a personal worker.
+	return w.workspaceDirAt(id, w.wsDir(id))
+}
+
+// workspaceDirAt is workspaceDir at a folder the caller chose for id.
+func (w *worker) workspaceDirAt(id, dir string) (_, real string, a answer) {
+	if !workspace.ValidID(id) {
+		return "", "", refuse(workspace.ClassInvalid, "malformed workspace id")
+	}
 	st, err := os.Lstat(dir)
 	if err != nil || !st.IsDir() {
 		return "", "", refuse(workspace.ClassNotFound, "the workspace is not on this worker")

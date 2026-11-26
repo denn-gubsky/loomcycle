@@ -534,7 +534,7 @@ func (w *worker) removeAll(ids []string, log *slog.Logger) []string {
 			log.Warn("cannot end the session of a workspace the dispatcher released", "workspace_id", id, "err", err)
 			continue
 		}
-		if err := os.RemoveAll(filepath.Join(w.opt.Root, id)); err != nil {
+		if err := w.removeOwnDir(id); err != nil {
 			log.Warn("cannot remove a workspace the dispatcher released", "workspace_id", id, "err", err)
 			continue
 		}
