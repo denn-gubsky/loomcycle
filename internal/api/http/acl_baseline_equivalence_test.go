@@ -145,6 +145,7 @@ var baselineWiderThanGateRoutes = map[string]string{
 	// RFC FY Part B: the ontology's decisions and subject merge/binding.
 	"member-full|POST /v1/_ontology/adopt":              memberOperatorRoute,
 	"member-full|POST /v1/_ontology/proposals":          memberOperatorRoute,
+	"member-full|POST /v1/_ontology/rollback":           memberOperatorRoute,
 	"member-full|POST /v1/_ontology/subjects/merge":     memberOperatorRoute,
 	"member-full|POST /v1/_ontology/subjects/principal": memberOperatorRoute,
 	// The document maintenance routes (RFC FY P6 decides their member reach).
