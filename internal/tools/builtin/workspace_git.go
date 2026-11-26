@@ -14,6 +14,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/gitsource"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
+	"github.com/denn-gubsky/loomcycle/internal/workspace"
 	"github.com/denn-gubsky/loomcycle/internal/workspace/dispatch"
 	"github.com/denn-gubsky/loomcycle/internal/workspace/lifecycle"
 )
@@ -234,4 +235,70 @@ func (w *Workspace) recordGit(ev audit.Event, res tools.Result) {
 	if err := w.GitAudit.Record(ev); err != nil {
 		slog.Error("workspace: git audit record failed", "err", err)
 	}
+}
+
+// ---- the local ops ----
+
+// The bounds of the local ops' answers (P11 plan §3.7).
+const (
+	gitDiffMaxBytes = 1 << 20
+	gitLogDefault   = 50
+	gitLogCeiling   = 200
+)
+
+// gitLogMax is a log's commit count: the default when none is asked, at
+// most the ceiling.
+func gitLogMax(n int) int {
+	switch {
+	case n <= 0:
+		return gitLogDefault
+	case n > gitLogCeiling:
+		return gitLogCeiling
+	}
+	return n
+}
+
+// gitLocal runs git_status, git_diff, git_log, git_commit, git_branch or
+// git_checkout on row's repository. mayWrite is whether the caller may
+// change it: the owner with the write grant. A commit, a checkout and a new
+// branch are refused without it here too, whatever let the call this far
+// (a share reaches this with mayWrite false).
+func (w *Workspace) gitLocal(ctx context.Context, row store.WorkspaceRow, in workspaceInput, mayWrite bool) tools.Result {
+	if row.Kind != store.WorkspaceKindGit || row.Git == nil {
+		return workspaceRefusal("not_a_git_workspace", fmt.Sprintf("%q is no git workspace; open one with repo", row.Name))
+	}
+	changes := in.Op == "git_commit" || in.Op == "git_checkout" || (in.Op == "git_branch" && in.Create != "")
+	if changes && !mayWrite {
+		return workspaceRefusal("not_granted", in.Op+" changes the repository: it needs the owner's workspace write grant")
+	}
+	a := workspace.GitLocalArgs{Mirror: row.Git.Mirror, URL: row.Git.URL, Branch: row.Git.Branch, Op: strings.TrimPrefix(in.Op, "git_")}
+	switch in.Op {
+	case "git_diff":
+		a.Path, a.Staged, a.Rev, a.MaxBytes = in.Path, in.Staged, in.Rev, gitDiffMaxBytes
+	case "git_log":
+		a.Rev, a.Max = in.Rev, gitLogMax(in.Max)
+	case "git_commit":
+		sig := commitSignature(ctx, w.GitAuthorName, w.GitAuthorEmail)
+		a.Message, a.Paths, a.All = withRunTrailer(in.Message, tools.RunID(ctx)), in.Paths, in.All
+		a.AuthorName, a.AuthorEmail, a.When = sig.Name, sig.Email, sig.When.Unix()
+	case "git_branch":
+		a.Create, a.From = in.Create, in.From
+	case "git_checkout":
+		if (in.Branch == "") == (in.Rev == "") {
+			return workspaceRefusal("invalid_argument", "git_checkout takes branch, or rev for a detached checkout")
+		}
+		a.To, a.Detach = in.Branch, in.Rev != ""
+		if a.Detach {
+			a.To = in.Rev
+		}
+	}
+	b, err := json.Marshal(a)
+	if err != nil {
+		return workspaceRefusal("failed", "could not encode the op")
+	}
+	res, err := w.Manager.Do(ctx, row, dispatch.Request{Op: workspace.OpGitLocal, Args: b, MaxOutput: 2 * gitDiffMaxBytes})
+	if err != nil {
+		return workspaceError(err, row.Name)
+	}
+	return tools.Result{Text: string(res.Output)}
 }

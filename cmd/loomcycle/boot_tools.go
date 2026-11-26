@@ -459,6 +459,9 @@ func (b *boot) buildToolsFiles(httpTool *builtin.HTTP) {
 		ExecMax:     time.Duration(ws.Exec.MaxTimeoutS) * time.Second,
 		KernelGrace: time.Duration(ws.Kernel.InterruptGraceSeconds) * time.Second,
 		GitPush:     ws.Push,
+		// A git workspace's commits are signed as the Git tool's are.
+		GitAuthorName:  cfg.Env.GitAuthorName,
+		GitAuthorEmail: cfg.Env.GitAuthorEmail,
 	}
 	b.allTools = append(b.allTools, b.workspaceTool)
 
