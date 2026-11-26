@@ -506,3 +506,203 @@ describe("OntologySection rename job (RFC GQ P5.6)", () => {
     expect(panel(mounted.el)).toBeNull();
   });
 });
+
+describe("OntologySection rollback to a release (RFC GQ P5.7)", () => {
+  let mounted: { root: Root; el: HTMLElement } | null = null;
+  afterEach(() => {
+    if (mounted) act(() => mounted!.root.unmount());
+    mounted?.el.remove();
+    mounted = null;
+    vi.unstubAllGlobals();
+  });
+
+  const releases = [
+    { seq: 3, content_version: "cccccccccccccccc", fingerprint: "f3", reason: "apply", created_at: 1764000000000000000, entries: 12 },
+    { seq: 2, content_version: "bbbbbbbbbbbbbbbb", fingerprint: "f2", reason: "confirm", created_at: 1763990000000000000, entries: 11 },
+  ];
+  const applied = [
+    { op: "rename", entry: "c-note", name: "Memo" },
+    { op: "add", entry: "c-old", name: "Ticket", new_id: "c-new" },
+  ];
+
+  // stubRollback answers the release list, each plan with the next fingerprint (fp1,
+  // fp2, …), and the rollback with rollback(fingerprint): a status and a body.
+  function stubRollback(calls: Call[], rollback: (fp: string) => [number, unknown]) {
+    let plans = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : undefined;
+        calls.push({ url, body });
+        if (url === "/v1/_ontology/releases") return new Response(JSON.stringify({ tenant: "t", releases }), { status: 200 });
+        if (url === "/v1/_ontology/job") return new Response(JSON.stringify({ tenant: "t", job: null }), { status: 200 });
+        if (url === "/v1/_ontology/plan") {
+          plans++;
+          const counts = { typed_documents: { n: 4, effect: "stale", tenant_scope: 4 } };
+          const changes = [
+            {
+              op: "rename",
+              entry: { chunk_id: "c-note", name: "Note", section: "classes", kind: "class" },
+              risk: "stales",
+              counts,
+              release: 2,
+            },
+            {
+              op: "add",
+              entry: { chunk_id: "c-old", name: "Ticket", section: "classes", kind: "class" },
+              risk: "none",
+              counts: {},
+              release: 2,
+              notes: ["added back under a new chunk id: no writer keeps a removed chunk's id (RFC GQ ruling Q6)"],
+            },
+          ];
+          return new Response(JSON.stringify({ tenant: "t", fingerprint: `fp${plans}`, complete: true, changes }), { status: 200 });
+        }
+        if (url === "/v1/_ontology/rollback") {
+          const [status, answer] = rollback(String(body?.plan_fingerprint));
+          return new Response(JSON.stringify(answer), { status });
+        }
+        if (url.startsWith("/v1/_ontology")) return new Response(JSON.stringify(state), { status: 200 });
+        return new Response("404 page not found", { status: 404 });
+      }),
+    );
+  }
+
+  const ok = (): [number, unknown] => [
+    200,
+    {
+      tenant: "t",
+      rollback: {
+        release: 2,
+        release_content_version: "bbbbbbbbbbbbbbbb",
+        content_version: "dddddddddddddddd",
+        matches: false,
+        risk: "stales",
+        applied,
+        rename_jobs: [{ id: "j9", kind: "class_rename", entry: "c-note", from: ["Note"], to: "Memo", state: "running", remaining: 4 }],
+        rollback_release: 5,
+      },
+    },
+  ];
+
+  function buttonByText(el: Element, label: string): HTMLButtonElement | undefined {
+    return Array.from(el.querySelectorAll("button")).find((x) => x.textContent === label);
+  }
+  const rowOfRelease = (el: HTMLElement, seq: number) =>
+    Array.from(el.querySelectorAll("table.ontology-releases tbody tr")).find(
+      (r) => r.querySelector("td")?.textContent === String(seq),
+    )!;
+  const planView = (el: HTMLElement) => el.querySelector("[aria-label='rollback plan']");
+  const result = (el: HTMLElement) => el.querySelector("[aria-label='rollback result']");
+
+  async function planTo2(el: HTMLElement) {
+    await act(async () => buttonByText(rowOfRelease(el, 2), "roll back to this release")!.click());
+    await settle();
+  }
+  async function apply(el: HTMLElement) {
+    await act(async () => buttonByText(planView(el)!, "Apply rollback to release 2")!.click());
+    await settle();
+  }
+
+  it("plans the rollback and shows every change with its risk and counts before anything is applied", async () => {
+    const calls: Call[] = [];
+    stubRollback(calls, ok);
+    mounted = await mount(operator, "/?section=releases");
+    await planTo2(mounted.el);
+    expect(calls.find((c) => c.url === "/v1/_ontology/plan")?.body).toEqual({ changes: [{ op: "release", seq: 2 }] });
+    expect(calls.some((c) => c.url === "/v1/_ontology/rollback")).toBe(false);
+    const p = planView(mounted.el)!;
+    const cells = Array.from(p.querySelectorAll("tbody tr")).map((tr) =>
+      Array.from(tr.querySelectorAll("td")).map((td) => td.textContent),
+    );
+    expect(cells[0].slice(0, 4)).toEqual(["rename", "Note class", "stales", "stale: typed documents 4"]);
+    expect(cells[1].slice(0, 4)).toEqual(["add", "Ticket class", "none", "nothing"]);
+    expect(cells[1][4]).toContain("added back under a new chunk id");
+    expect(p.querySelector("[role=alert]")?.textContent).toContain("stale");
+  });
+
+  it("applies with the fingerprint of the plan shown, and reports the release taken and why the version differs", async () => {
+    const calls: Call[] = [];
+    stubRollback(calls, ok);
+    mounted = await mount(operator, "/?section=releases");
+    const listReads = () => calls.filter((c) => c.url === "/v1/_ontology/releases").length;
+    const jobReads = () => calls.filter((c) => c.url === "/v1/_ontology/job").length;
+    const [lists, jobs] = [listReads(), jobReads()];
+    await planTo2(mounted.el);
+    await apply(mounted.el);
+    const posts = calls.filter((c) => c.url === "/v1/_ontology/rollback");
+    expect(posts.map((c) => c.body)).toEqual([{ seq: 2, plan_fingerprint: "fp1" }]);
+    const r = result(mounted.el)!;
+    expect(r.textContent).toContain("Rolled back to release 2");
+    expect(r.textContent).toContain("Release 5 was taken");
+    expect(r.textContent).toContain("added back under a new id");
+    expect(r.textContent).toContain("rename job");
+    expect(Array.from(r.querySelectorAll("li")).map((li) => li.textContent)).toEqual([
+      "rename Memo",
+      "add Ticket (added back as c-new)",
+    ]);
+    expect(planView(mounted.el)).toBeNull();
+    // The list and the job panel are read again: the rollback took a release and its
+    // class rename started a job.
+    expect(listReads()).toBe(lists + 1);
+    expect(jobReads()).toBe(jobs + 1);
+  });
+
+  it("plans again on plan_stale and shows the new plan without applying it", async () => {
+    const calls: Call[] = [];
+    stubRollback(calls, (fp) =>
+      fp === "fp1" ? [409, { code: "plan_stale", error: "the ontology changed since the plan", fingerprint: "fp-now" }] : ok(),
+    );
+    mounted = await mount(operator, "/?section=releases");
+    await planTo2(mounted.el);
+    await apply(mounted.el);
+    expect(calls.filter((c) => c.url === "/v1/_ontology/rollback")).toHaveLength(1);
+    expect(calls.filter((c) => c.url === "/v1/_ontology/plan")).toHaveLength(2);
+    const p = planView(mounted.el)!;
+    expect(p.querySelector("[role=status]")?.textContent).toContain("was not applied");
+    expect(result(mounted.el)).toBeNull();
+    // The confirm now carries the new plan's fingerprint.
+    await apply(mounted.el);
+    expect(calls.filter((c) => c.url === "/v1/_ontology/rollback").map((c) => c.body?.plan_fingerprint)).toEqual([
+      "fp1",
+      "fp2",
+    ]);
+  });
+
+  it("shows what a partly applied rollback wrote and why it stopped", async () => {
+    stubRollback([], () => [
+      409,
+      { code: "partially_applied", error: "another write changed the ontology; plan it again", applied: [applied[0]] },
+    ]);
+    mounted = await mount(operator, "/?section=releases");
+    await planTo2(mounted.el);
+    await apply(mounted.el);
+    const r = result(mounted.el)!;
+    expect(r.querySelector("h4")?.textContent).toContain("stopped part of the way");
+    expect(r.querySelector(".settings-error")?.textContent).toBe(
+      "partially_applied — another write changed the ontology; plan it again",
+    );
+    expect(Array.from(r.querySelectorAll("li")).map((li) => li.textContent)).toEqual(["rename Memo"]);
+  });
+
+  it("shows any other refusal's code", async () => {
+    stubRollback([], () => [409, { code: "rename_job_pending", error: "a class rename job is unfinished" }]);
+    mounted = await mount(operator, "/?section=releases");
+    await planTo2(mounted.el);
+    await apply(mounted.el);
+    const r = result(mounted.el)!;
+    expect(r.querySelector("h4")?.textContent).toContain("refused");
+    expect(r.querySelector(".settings-error code")?.textContent).toBe("rename_job_pending");
+    expect(r.querySelector("li")).toBeNull();
+  });
+
+  it("offers a member no rollback", async () => {
+    stubRollback([], ok);
+    mounted = await mount(member, "/?section=releases");
+    expect(mounted.el.querySelectorAll("table.ontology-releases tbody tr")).toHaveLength(2);
+    expect(
+      Array.from(mounted.el.querySelectorAll("button")).some((b) => b.textContent === "roll back to this release"),
+    ).toBe(false);
+  });
+});
