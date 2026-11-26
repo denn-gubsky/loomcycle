@@ -39,6 +39,8 @@ export interface GraphFileRef {
   name: string;
   /** The Entra tenant the token is asked for: the activity's. */
   tenantId?: string;
+  /** The sender's Entra object id: the file must be in their OneDrive. */
+  userId?: string;
 }
 
 export function isGraphFileRef(ref: unknown): ref is GraphFileRef {
@@ -81,6 +83,15 @@ class GraphStatusError extends Error {
   }
 }
 
+/** A Graph file refused before any content was fetched. The core tells the
+ *  person it could not download the file; the log says the reason only. */
+export class GraphFileRefusal extends Error {
+  constructor(readonly reason: "not_sender_drive") {
+    super(`teams graph file refused: ${reason}`);
+    this.name = "GraphFileRefusal";
+  }
+}
+
 /** A lookup that stopped short, for the log. */
 class LookupStop extends Error {
   constructor(readonly reason: "token" | "chat" | "sender") {
@@ -100,6 +111,8 @@ export class GraphFiles {
   /** Graph chat id per (person, Bot Framework conversation). In memory: a
    *  restart costs one more resolution per conversation. */
   private readonly chats = new Map<string, string>();
+  /** The OneDrive drive id per sender, kept the same way. */
+  private readonly drives = new Map<string, string>();
 
   constructor(private readonly o: GraphFilesOptions) {
     this.doFetch = o.fetch ?? fetch;
@@ -118,7 +131,7 @@ export class GraphFiles {
       const msg = await this.messageOf(chatId, q.messageId, token, signal);
       const from = msg.from?.user?.id;
       if (typeof from !== "string" || from.toLowerCase() !== q.userId.toLowerCase()) throw new LookupStop("sender");
-      const files = referencesOf(msg, q.tenantId);
+      const files = referencesOf(msg, q.tenantId, q.userId);
       this.o.log.info("teams graph lookup", { conversation: q.conversationId, files: files.length });
       return files;
     } catch (err) {
@@ -127,9 +140,18 @@ export class GraphFiles {
     }
   }
 
-  /** download fetches a Graph file: the shares endpoint with the token, then
-   *  its redirect to SharePoint with no credential, only to an allowed host.
-   *  Refusals are TeamsFileErrors, as the attachment path throws. */
+  /** download fetches a Graph file: its metadata through the shares
+   *  endpoint, then its content by item with the token, then the redirect to
+   *  SharePoint with no credential, only to an allowed host. Refusals are
+   *  TeamsFileErrors, as the attachment path throws, or a GraphFileRefusal.
+   *
+   *  The app token reads every file in the tenant, and a sender can post a
+   *  chat message through Graph whose reference points at any of them, one
+   *  they cannot read included (a confused deputy; every tenant file is on
+   *  *.sharepoint.com, so the host check does not stop it). So a file is
+   *  taken only from the sender's own OneDrive, where Teams keeps a file
+   *  attached from a device ("Microsoft Teams Chat Files"). A file attached
+   *  from SharePoint or a team site is refused in app mode. */
   async download(ref: GraphFileRef, maxBytes: number, signal: AbortSignal): Promise<Uint8Array> {
     let content: URL;
     try {
@@ -138,9 +160,21 @@ export class GraphFiles {
       throw new TeamsFileError("host");
     }
     if (!hostAllowed(content, this.o.hosts)) throw new TeamsFileError("host", { host: content.hostname });
+    if (!ref.userId) throw new GraphFileRefusal("not_sender_drive");
     const token = await this.o.token(ref.tenantId);
     if (!token) throw new Error("teams graph token unavailable");
-    const url = `${this.base}/v1.0/shares/${shareId(ref.contentUrl)}/driveItem/content`;
+    let item: { id?: unknown; parentReference?: { driveId?: unknown } | null };
+    let own: string;
+    try {
+      item = (await this.get(`/v1.0/shares/${shareId(ref.contentUrl)}/driveItem?$select=id,name,parentReference`, token, signal)) as typeof item;
+      own = await this.driveOf(ref.userId, token, signal);
+    } catch (err) {
+      if (err instanceof GraphStatusError) throw new TeamsFileError("status", { status: err.status });
+      throw err;
+    }
+    const driveId = item.parentReference?.driveId;
+    if (typeof item.id !== "string" || !item.id || typeof driveId !== "string" || driveId !== own) throw new GraphFileRefusal("not_sender_drive");
+    const url = `${this.base}/v1.0/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(item.id)}/content`;
     const res = await this.doFetch(url, { method: "GET", headers: { Authorization: `Bearer ${token}` }, redirect: "manual", signal });
     if (res.status >= 300 && res.status < 400) {
       await res.body?.cancel().catch(() => undefined);
@@ -183,12 +217,29 @@ export class GraphFiles {
     // The chat between this person and the bot, and no other: a group chat
     // would let a lookup read what others wrote.
     if (typeof chat.id !== "string" || !chat.id || chat.chatType !== "oneOnOne") throw new LookupStop("chat");
-    if (this.chats.size >= (this.o.maxChats ?? DEFAULT_MAX_CHATS)) {
-      const oldest = this.chats.keys().next().value;
-      if (oldest !== undefined) this.chats.delete(oldest);
-    }
-    this.chats.set(key, chat.id);
+    this.remember(this.chats, key, chat.id);
     return chat.id;
+  }
+
+  /** driveOf is the id of the sender's own OneDrive. */
+  private async driveOf(userId: string, token: string, signal: AbortSignal): Promise<string> {
+    const key = userId.toLowerCase();
+    const cached = this.drives.get(key);
+    if (cached) return cached;
+    const drive = (await this.get(`/v1.0/users/${encodeURIComponent(userId)}/drive?$select=id`, token, signal)) as { id?: unknown };
+    if (typeof drive.id !== "string" || !drive.id) throw new GraphFileRefusal("not_sender_drive");
+    this.remember(this.drives, key, drive.id);
+    return drive.id;
+  }
+
+  /** remember keeps a value in a cache bounded to maxChats entries, dropping
+   *  the oldest. */
+  private remember(cache: Map<string, string>, key: string, value: string): void {
+    if (cache.size >= (this.o.maxChats ?? DEFAULT_MAX_CHATS)) {
+      const oldest = cache.keys().next().value;
+      if (oldest !== undefined) cache.delete(oldest);
+    }
+    cache.set(key, value);
   }
 
   /** messageOf reads the message, re-reading a few times while Graph does
@@ -231,13 +282,13 @@ export class GraphFiles {
  *  how Graph shows a file attached in a 1:1 chat. The type is the name's
  *  extension, which the core checks against BRIDGE_FILES_TYPES and the
  *  file's bytes as for any other file. */
-export function referencesOf(msg: GraphMessage, tenantId?: string): FileIn[] {
+export function referencesOf(msg: GraphMessage, tenantId?: string, userId?: string): FileIn[] {
   const out: FileIn[] = [];
   for (const a of Array.isArray(msg.attachments) ? (msg.attachments as unknown[]) : []) {
     const att = a as { contentType?: unknown; contentUrl?: unknown; name?: unknown } | null;
     if (!att || att.contentType !== "reference") continue;
     if (typeof att.contentUrl !== "string" || !att.contentUrl || typeof att.name !== "string" || !att.name) continue;
-    const ref: GraphFileRef = { graph: "reference", contentUrl: att.contentUrl, name: att.name, ...(tenantId ? { tenantId } : {}) };
+    const ref: GraphFileRef = { graph: "reference", contentUrl: att.contentUrl, name: att.name, ...(tenantId ? { tenantId } : {}), ...(userId ? { userId } : {}) };
     const type = extensionOf(att.name);
     out.push({ ref, name: att.name, ...(type ? { type } : {}) });
   }
@@ -260,6 +311,7 @@ export function withGraphFiles(base: FilePort, graph: GraphFiles, log: Logger): 
         return { bytes: await graph.download(f.ref, maxBytes, signal) };
       } catch (err) {
         if (err instanceof TeamsFileError) log.warn("teams file download refused", { reason: err.reason, via: "graph", ...err.detail });
+        else if (err instanceof GraphFileRefusal) log.warn("teams file download refused", { reason: err.reason, via: "graph" });
         throw err;
       }
     },

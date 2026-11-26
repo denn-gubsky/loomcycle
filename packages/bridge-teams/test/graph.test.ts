@@ -8,11 +8,11 @@ import net from "node:net";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { MemoryStore, type FileIn, type FilePort } from "@loomcycle/bridge-core";
+import { FILE_TEXT, MemoryStore, type FileIn, type FilePort } from "@loomcycle/bridge-core";
 
 import { createTeamsBridge, type TeamsBridge, type TeamsBridgeOptions } from "../src/bridge.js";
 import { loadConfig } from "../src/config.js";
-import { GraphFiles, shareId, withGraphFiles, type GraphFileRef, type GraphFilesOptions } from "../src/graph.js";
+import { GraphFileRefusal, GraphFiles, shareId, withGraphFiles, type GraphFileRef, type GraphFilesOptions } from "../src/graph.js";
 import { looksLikeFile, NO_FILE_TEXT, noFileText } from "../src/inbound.js";
 import { FILE_DOWNLOAD_INFO, TeamsFileError, type TeamsAttachment } from "../src/voice.js";
 import { FakeLoomcycle, RecordingLogger, silentLogger, waitFor } from "./fakes.js";
@@ -38,8 +38,12 @@ interface World {
   message: { from: { user: { id: string } | null } | null; attachments: unknown[] };
   /** How many reads of the message answer 404 first. */
   misses: number;
-  /** Where the shares endpoint redirects. */
+  /** The drive the shared file is in; each user's own is drive-<object id>. */
+  itemDrive: string;
+  /** Where the item's content redirects. */
   redirect?: string;
+  /** With no redirect: the bytes Graph serves itself. */
+  direct?: Uint8Array;
   /** What SharePoint serves, by URL. */
   files: Map<string, { body: Uint8Array; headers?: Record<string, string> }>;
   /** The message read never answers (until aborted). */
@@ -52,6 +56,7 @@ function world(over: Partial<World> = {}): World {
     chat: { id: CHAT, chatType: "oneOnOne" },
     message: { from: { user: { id: ALICE } }, attachments: [reference()] },
     misses: 0,
+    itemDrive: `drive-${ALICE}`,
     redirect: SP_LINK,
     files: new Map([[SP_LINK, { body: PDF }]]),
     ...over,
@@ -83,7 +88,13 @@ function fakeGraph(w: World) {
         }
         return json(w.message);
       }
-      if (path.startsWith("/v1.0/shares/") && w.redirect) return new Response(null, { status: 302, headers: { location: w.redirect } });
+      if (path.startsWith("/v1.0/shares/") && path.endsWith("/driveItem")) return json({ id: "item-1", name: "a.pdf", parentReference: { driveId: w.itemDrive } });
+      const drive = /^\/v1\.0\/users\/([^/]+)\/drive$/.exec(path);
+      if (drive) return json({ id: `drive-${drive[1]}` });
+      if (path === `/v1.0/drives/${w.itemDrive}/items/item-1/content`) {
+        if (w.redirect) return new Response(null, { status: 302, headers: { location: w.redirect } });
+        if (w.direct) return new Response(w.direct, { status: 200, headers: { "content-type": "application/pdf" } });
+      }
       return new Response("{}", { status: 404 });
     }
     const f = w.files.get(href);
@@ -117,7 +128,7 @@ describe("the Graph lookup", () => {
   it("finds the chat through the installed app, reads the message and turns its references into files", async () => {
     const { files, requests } = graphFiles(world());
     expect(await files.lookup(lookup("1700000000001"))).toEqual([
-      { ref: { graph: "reference", contentUrl: CONTENT_URL, name: "a.pdf", tenantId: TENANT }, name: "a.pdf", type: "pdf" },
+      { ref: { graph: "reference", contentUrl: CONTENT_URL, name: "a.pdf", tenantId: TENANT, userId: ALICE }, name: "a.pdf", type: "pdf" },
     ]);
     const urls = requests.map((r) => decodeURIComponent(r.url));
     expect(urls).toEqual([
@@ -209,14 +220,40 @@ describe("the Graph lookup", () => {
 
 describe("the Graph download", () => {
   const signal = () => AbortSignal.timeout(5_000);
-  const ref = (contentUrl = CONTENT_URL): GraphFileRef => ({ graph: "reference", contentUrl, name: "a.pdf", tenantId: TENANT });
+  const ref = (contentUrl = CONTENT_URL): GraphFileRef => ({ graph: "reference", contentUrl, name: "a.pdf", tenantId: TENANT, userId: ALICE });
 
-  it("asks the shares endpoint with the token and follows its redirect to SharePoint with none", async () => {
+  it("checks the file is in the sender's OneDrive, fetches it by item with the token and follows the redirect with none", async () => {
     const { files, requests } = graphFiles(world());
     expect(await files.download(ref(), 1000, signal())).toEqual(PDF);
-    expect(requests.map((r) => r.url)).toEqual([`${GRAPH}/v1.0/shares/${shareId(CONTENT_URL)}/driveItem/content`, SP_LINK]);
-    expect(requests[0]!.auth).toBe(`Bearer ${TOKEN}`);
-    expect(requests[1]!.auth).toBeNull();
+    expect(requests.map((r) => decodeURIComponent(r.url))).toEqual([
+      `${GRAPH}/v1.0/shares/${shareId(CONTENT_URL)}/driveItem?$select=id,name,parentReference`,
+      `${GRAPH}/v1.0/users/${ALICE}/drive?$select=id`,
+      `${GRAPH}/v1.0/drives/drive-${ALICE}/items/item-1/content`,
+      SP_LINK,
+    ]);
+    expect(requests.slice(0, 3).every((r) => r.auth === `Bearer ${TOKEN}`)).toBe(true);
+    expect(requests[3]!.auth).toBeNull();
+  });
+
+  it("refuses a file in another user's drive without fetching any content", async () => {
+    const { files, requests, log } = graphFiles(world({ itemDrive: `drive-${MALLORY}` }));
+    const port = withGraphFiles({ download: async () => ({ bytes: PDF }) }, files, log);
+    await expect(port.download({ ref: ref(), name: "a.pdf", type: "pdf" }, 1000, signal())).rejects.toBeInstanceOf(GraphFileRefusal);
+    expect(requests.some((r) => r.url.includes("/content") || !r.url.startsWith(GRAPH))).toBe(false);
+    expect(log.lines).toEqual([{ level: "warn", msg: "teams file download refused", attrs: { reason: "not_sender_drive", via: "graph" } }]);
+  });
+
+  it("refuses a Graph file with no sender without asking Graph", async () => {
+    const { files, requests } = graphFiles(world());
+    await expect(files.download({ ...ref(), userId: undefined }, 1000, signal())).rejects.toMatchObject({ reason: "not_sender_drive" });
+    expect(requests).toEqual([]);
+  });
+
+  it("asks for the sender's drive once", async () => {
+    const { files, requests } = graphFiles(world());
+    await files.download(ref(), 1000, signal());
+    await files.download(ref(), 1000, signal());
+    expect(requests.filter((r) => r.url.includes("/drive?")).length).toBe(1);
   });
 
   it("encodes a sharing URL as unpadded base64url", () => {
@@ -234,7 +271,7 @@ describe("the Graph download", () => {
   it("refuses a redirect off the allowed hosts without fetching it", async () => {
     const { files, requests } = graphFiles(world({ redirect: "https://evil.example/steal" }));
     await expect(files.download(ref(), 1000, signal())).rejects.toMatchObject({ reason: "redirect", detail: { host: "evil.example" } });
-    expect(requests).toHaveLength(1);
+    expect(requests.some((r) => r.url.includes("evil.example"))).toBe(false);
   });
 
   it("refuses a sign-in page and a body over the cap behind the redirect", async () => {
@@ -245,10 +282,7 @@ describe("the Graph download", () => {
   });
 
   it("caps a body Graph serves itself", async () => {
-    const w = world({ redirect: undefined });
-    const g = graphFiles(w, {
-      fetch: (async () => new Response(new Uint8Array(4096), { status: 200, headers: { "content-type": "application/pdf" } })) as typeof fetch,
-    });
+    const g = graphFiles(world({ redirect: undefined, direct: new Uint8Array(4096) }));
     await expect(g.files.download(ref(), 1000, signal())).rejects.toMatchObject({ reason: "size" });
   });
 
@@ -455,6 +489,16 @@ describe("teams bridge with the Graph fallback", () => {
     expect(JSON.stringify(lc.runs[0]!.opts)).toContain("check this");
     expect(lc.callsTo("putInboxFile")).toHaveLength(1);
     expect(said).toEqual([]);
+  });
+
+  it("refuses, in words, a file the message points at outside the sender's own OneDrive", async () => {
+    w.itemDrive = `drive-${MALLORY}`;
+    await start(graphOn);
+    await post("", "");
+    await waitFor(() => said.length > 0, "the download refusal");
+    expect(said).toEqual([FILE_TEXT.download(1)]);
+    expect(lc.callsTo("putInboxFile")).toEqual([]);
+    expect(graph.requests.some((r) => r.url.includes("/content") || !r.url.startsWith(GRAPH))).toBe(false);
   });
 
   it("tells the person no file came when Graph is off, with the operator's hint", async () => {
