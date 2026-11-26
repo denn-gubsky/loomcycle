@@ -24,7 +24,9 @@ package builtin
 // as a change, and a rollback leaves it as it is.
 //
 // Matched by the rule the plan sets (3.2): the entry's fields.registry_key is a bound
-// subject's natural key, or its chunk id is the instance chunk the subject records. Not
+// subject's natural key, or its chunk id is the instance chunk the subject records; and
+// either way only an entry its release's reader parses as an instance (a subject root's
+// fields are not runtime-only, so an instance_chunk naming a class must not erase it). Not
 // reached, and reported: a release's plan_summary (the accept or rollback report it was
 // taken with) may name the entry and is not rewritten; another entry whose own text names
 // the subject is that entry's, and stays; and a subject deleted before the erasure is no
@@ -33,10 +35,12 @@ package builtin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
 
+	"github.com/denn-gubsky/loomcycle/internal/connector"
 	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -97,7 +101,11 @@ func (d *Document) EraseSubjectsFromReleases(ctx context.Context, subjects []Sub
 		return out, err
 	}
 	defer unlock()
-	matches, err := d.releaseEntriesOf(ctx, key, keys, chunks)
+	candidates, err := d.releaseEntriesOf(ctx, key, keys, chunks)
+	if err != nil {
+		return out, err
+	}
+	matches, err := d.instanceEntriesOnly(ctx, key, candidates)
 	if err != nil {
 		return out, err
 	}
@@ -107,7 +115,7 @@ func (d *Document) EraseSubjectsFromReleases(ctx context.Context, subjects []Sub
 		chunks[m.chunkID] = true
 	}
 	out.Entries, out.Releases = len(matches), len(bySeq)
-	if out.InForce, err = d.inForceOf(ctx, key, chunks); err != nil {
+	if out.InForce, err = d.inForceOf(ctx, chunks); err != nil {
 		return out, err
 	}
 	if out.SummariesNaming, err = d.summariesNaming(ctx, key, matches, keys); err != nil {
@@ -238,19 +246,47 @@ func (d *Document) releaseEntriesOf(ctx context.Context, key sqlmem.ScopeKey, ke
 	return out, nil
 }
 
-// inForceOf counts the chunks of chunks still in the ontology document in force.
-func (d *Document) inForceOf(ctx context.Context, key sqlmem.ScopeKey, chunks map[string]bool) (int, error) {
-	docID, err := d.resolveOntologyID(ctx, key)
-	if err != nil || docID == "" {
-		return 0, err
+// instanceEntriesOnly keeps the candidates that are instance entries of their release,
+// as the reader parses it. The chunk ids come from a subject root's
+// fields.instance_chunk, which is not runtime-only, and a key may sit in any entry's
+// fields; neither may redact a class, a concept or a section of a release. A release
+// that cannot be read (incomplete, its copy cut off, which the next release removes)
+// is not redacted.
+func (d *Document) instanceEntriesOnly(ctx context.Context, key sqlmem.ScopeKey, candidates []releaseMatch) ([]releaseMatch, error) {
+	kinds := map[int64]map[string]diffItem{}
+	var out []releaseMatch
+	for _, m := range candidates {
+		items, ok := kinds[m.seq]
+		if !ok {
+			rel, err := d.loadRelease(ctx, key, m.seq)
+			if errors.Is(err, connector.ErrOntologyReleaseNotFound) {
+				kinds[m.seq] = nil
+				continue
+			}
+			if err != nil {
+				return nil, err
+			}
+			items = rel.items
+			kinds[m.seq] = items
+		}
+		if items[m.chunkID].kind == planKindInstance {
+			out = append(out, m)
+		}
+	}
+	return out, nil
+}
+
+// inForceOf counts the instance entries of the ontology in force among chunks.
+func (d *Document) inForceOf(ctx context.Context, chunks map[string]bool) (int, error) {
+	read, ok := d.tenantOntologyRead(ctx)
+	if !ok {
+		return 0, nil
 	}
 	var n int
-	for id := range chunks {
-		res, err := d.query(ctx, key, `SELECT 1 FROM chunks WHERE id = ? AND document_id = ?`, id, docID)
-		if err != nil {
-			return 0, err
+	for _, in := range read.Instances {
+		if chunks[in.ChunkID] {
+			n++
 		}
-		n += len(res.Rows)
 	}
 	return n, nil
 }

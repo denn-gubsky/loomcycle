@@ -211,8 +211,9 @@ func (s *Service) eraseReleaseCopies(ctx context.Context, tenant string, bound [
 func (s *Service) eraseReleaseCopiesFirst(ctx context.Context, tenant, subject string, res *Result, fail func(string, error)) bool {
 	bound, err := s.BoundSubjects(ctx, tenant, subject)
 	if err != nil {
-		// ClearBoundSubjects reads them again and reports its own failure.
-		return true
+		// Fail closed: the copies were not redacted, so the bindings that find them stay.
+		fail("ontology_releases", errReleaseCopiesUnread)
+		return false
 	}
 	return s.eraseReleaseCopies(ctx, tenant, bound, false, res, fail)
 }

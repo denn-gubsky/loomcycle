@@ -162,3 +162,44 @@ func TestReleaseErasure_DiffReportsTheEntryAsErased(t *testing.T) {
 		}
 	})
 }
+
+// TestReleaseErasure_OnlyInstanceEntriesAreRedacted (minimal pair): a subject root's
+// instance_chunk is an ordinary field an operator write can set, and a key can sit in
+// any entry's fields. With Acme's subject pointing at the Document class and the class
+// carrying Acme's key, the erasure still redacts Acme's instance copies and leaves the
+// class in every release untouched.
+func TestReleaseErasure_OnlyInstanceEntriesAreRedacted(t *testing.T) {
+	statementsBothTiers(t, func(t *testing.T, d *Document, base context.Context) {
+		f, bound := releaseErasureFixture(t, d, base)
+		key := mustTenantKey(t, d, f.ctx)
+		class, acme := f.chunk("Document"), f.chunk("Acme")
+		if err := d.mergeSubjectFields(f.ctx, key, "tenant", bound[0].RootChunkID, map[string]any{"instance_chunk": class}); err != nil {
+			t.Fatalf("point the subject at the class: %v", err)
+		}
+		if msg := f.update(f.ctx, class, map[string]any{"fields": map[string]any{"registry_key": bound[0].NaturalKey}}); msg != "" {
+			t.Fatalf("put the key on the class: %s", msg)
+		}
+		takeRelease(t, d, f.ctx, OntologyReleaseApply)
+		rels := listedReleases(t, d, f.ctx)
+
+		got, err := d.EraseSubjectsFromReleases(f.ctx, bound, false)
+		if err != nil {
+			t.Fatalf("erase: %v", err)
+		}
+		// Acme by its key in the three releases taken after adoption; the copy from
+		// before adoption is reached only by its chunk id, which the subject no longer
+		// names.
+		if got.Entries != 3 {
+			t.Errorf("erasure = %+v, want Acme's 3 copies that record its key", got)
+		}
+		for _, rel := range rels {
+			e := releaseEntries(t, d, f.ctx, rel.Seq)
+			if c, ok := e[class]; !ok || c.title != "Document" || !strings.Contains(c.body, "`title` text") {
+				t.Errorf("release %d: the class entry = %+v (stored %v), want it untouched", rel.Seq, c, ok)
+			}
+		}
+		if n := releaseCount(t, d, f.ctx, `SELECT count(*) FROM ontology_release_entries WHERE chunk_id = ? AND body_sha = ?`, acme, releaseErasedSHA); n != 3 {
+			t.Errorf("%d of Acme's copies erased, want 3", n)
+		}
+	})
+}
