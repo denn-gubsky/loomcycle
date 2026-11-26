@@ -364,6 +364,9 @@ type Config struct {
 	// bundledWorkspace names the agents whose workspace grant an embedded
 	// bundle gave and no operator layer changed (bundledWorkspaceGrants).
 	bundledWorkspace map[string]bool
+	// bundledGitRemote names the agents whose git_remote an embedded bundle
+	// gave and no operator layer changed (bundledGitRemotes).
+	bundledGitRemote map[string]bool
 
 	// UndrainedMemory lists the memory scopes agents can enqueue into with
 	// Memory op=add (or by banking evicted context) while no enabled schedule
@@ -5188,6 +5191,7 @@ func LoadLayersWith(opts LoadOptions, layers ...Layer) (*Config, error) {
 	cfg.Deprecations = append(deprecatedEnvWarnings(os.Environ()), deprecationWarnings(cfg, layers)...)
 	cfg.Warnings = append(cfg.Warnings, cfg.Deprecations...)
 	cfg.bundledWorkspace = bundledWorkspaceGrants(cfg, layers)
+	cfg.bundledGitRemote = bundledGitRemotes(cfg, layers)
 
 	if err := applyEnvStorage(cfg, opts.OfflineTool); err != nil {
 		return nil, err
@@ -8695,18 +8699,22 @@ func shellCredentialWarnings(name string, a AgentDef, env Env) []string {
 }
 
 // gitRemoteWarnings advises on an agent's git_remote (RFC FB), never fatally:
-// it reaches nothing on an agent without the Git tool, and a push needs a
-// host in LOOMCYCLE_GIT_PUSH_HOSTS, so with that list empty every push is
-// refused whatever the agent lists.
-func gitRemoteWarnings(name string, a AgentDef, env Env) []string {
+// it reaches nothing on an agent with neither the Git tool nor Workspace
+// (whose git workspaces it governs too, RFC GW P11), and a push needs a host
+// in LOOMCYCLE_GIT_PUSH_HOSTS, so with that list empty every push is refused
+// whatever the agent lists. bundled says an embedded bundle gave the agent
+// this git_remote and no operator layer changed it: a default install loads
+// without advising on what the operator has not asked for (RFC GW P14, as
+// D-P14-18 for a bundle's workspace grant).
+func gitRemoteWarnings(name string, a AgentDef, env Env, bundled bool) []string {
 	if len(a.GitRemote) == 0 {
 		return nil
 	}
 	var out []string
-	if !slices.Contains(a.Tools, "Git") {
-		out = append(out, fmt.Sprintf("agent %q: git_remote is set but Git is not in tools, so it allows nothing", name))
+	if !slices.Contains(a.Tools, "Git") && !slices.Contains(a.Tools, "Workspace") {
+		out = append(out, fmt.Sprintf("agent %q: git_remote is set but neither Git nor Workspace is in tools, so it allows nothing", name))
 	}
-	if slices.Contains(a.GitRemote, "push") && len(env.GitPushHosts) == 0 {
+	if slices.Contains(a.GitRemote, "push") && len(env.GitPushHosts) == 0 && !bundled {
 		out = append(out, fmt.Sprintf("agent %q: git_remote lists push but LOOMCYCLE_GIT_PUSH_HOSTS is empty, so every push will be refused", name))
 	}
 	return out
