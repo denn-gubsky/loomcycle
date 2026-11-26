@@ -207,10 +207,27 @@ export interface ConfigTeamStatus {
   detail?: string;
 }
 
+// One series of loomcycle_deprecated_use_total: how many runs this replica
+// gave a deprecated tool or field since it started.
+export interface DeprecatedUseCount {
+  kind: string;
+  name: string;
+  count: number;
+}
+
+// What a future release removes that this deployment still uses (RFC GW
+// P14): config is the load's lines (what boot and doctor print), runs this
+// replica's run counts, the only place a stored definition's use shows.
+export interface ConfigDeprecations {
+  config: string[];
+  runs: DeprecatedUseCount[];
+}
+
 export interface ConfigTeamsResponse {
   teams: ConfigTeamStatus[];
   reconciled_at?: string; // when this replica wrote the teams; absent on another replica
   reconcile_error?: string;
+  deprecations?: ConfigDeprecations; // absent from an older server
 }
 
 // getConfigTeams reads GET /v1/_config/teams (admin).
