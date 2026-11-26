@@ -65,7 +65,7 @@ func (w *worker) workspaceDir(id string) (dir, real string, a answer) {
 		return "", "", refuse(workspace.ClassInvalid, "malformed workspace id")
 	}
 	// The id holds no separator, so dir is a direct child of the root.
-	dir = filepath.Join(w.opt.Root, id)
+	dir = w.wsDir(id)
 	st, err := os.Lstat(dir)
 	if err != nil || !st.IsDir() {
 		return "", "", refuse(workspace.ClassNotFound, "the workspace is not on this worker")

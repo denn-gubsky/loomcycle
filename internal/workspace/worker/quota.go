@@ -90,6 +90,10 @@ func (q *quotas) forget(id string) {
 // setLimit records a quota an open named, on disk and in a usage already
 // made.
 func (w *worker) setLimit(id string, limit int64) error {
+	if _, ok := w.boundRoot(id); ok {
+		// A root has no quota (limitOf); none is recorded on it.
+		return nil
+	}
 	tmp := w.quotaFile(id) + ".tmp"
 	if err := os.WriteFile(tmp, []byte(strconv.FormatInt(limit, 10)), 0o600); err != nil {
 		return err
@@ -110,6 +114,11 @@ func (w *worker) setLimit(id string, limit int64) error {
 // limitOf is id's quota as its open recorded it; a workspace opened with
 // none (or before quotas existed) has the default.
 func (w *worker) limitOf(id string) int64 {
+	if _, ok := w.boundRoot(id); ok {
+		// A root has no disk quota (RFC GW §4.5): the directory is the
+		// user's own.
+		return workspace.MaxDiskQuotaBytes
+	}
 	b, err := os.ReadFile(w.quotaFile(id))
 	if err != nil {
 		return workspace.DefaultDiskQuotaBytes
@@ -150,6 +159,13 @@ func (w *worker) writeLock(ctx context.Context, id string, v *fsops.VolumeFS) (*
 // measureLocked counts the workspace's bytes and sets full from the count.
 // The caller holds the write lock.
 func (w *worker) measureLocked(ctx context.Context, u *usage, v *fsops.VolumeFS) {
+	if _, ok := w.boundRoot(u.id); ok {
+		// A root is not counted: it has no quota, and a walk of a user's
+		// whole directory would be work for nothing.
+		u.used, u.held, u.estimate, u.measured = 0, 0, false, true
+		u.full.Store(false)
+		return
+	}
 	budget := w.opt.MeasureBudget
 	if budget <= 0 {
 		budget = defaultMeasureBudget
@@ -288,7 +304,7 @@ func (w *worker) cleanWork() {
 	defer func() { w.kernels.Clean(keep); w.cleanCheckpoints(keep); w.cleanTemplates() }()
 	for _, id := range held {
 		keep[id] = true
-		r, err := os.OpenRoot(filepath.Join(w.opt.Root, id))
+		r, err := os.OpenRoot(w.wsDir(id))
 		if err != nil {
 			continue
 		}

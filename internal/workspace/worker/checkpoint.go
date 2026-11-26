@@ -401,6 +401,9 @@ func (w *worker) forkOp(ctx context.Context, id, dir string, raw []byte) answer 
 	if a := w.atCapacity(); a.class != "" {
 		return a
 	}
+	if bad := w.onRoot(in.From, workspace.OpFork); bad != nil {
+		return *bad
+	}
 	srcDir := filepath.Join(w.opt.Root, in.From)
 	if st, err := os.Lstat(srcDir); err != nil || !st.IsDir() {
 		return refuse(workspace.ClassNotFound, "the workspace forked is not on this worker")

@@ -99,6 +99,12 @@ type Options struct {
 	// Commands, when not empty, are the programs an exec may start with
 	// (LOOMCYCLE_WORKSPACE_COMMANDS); see engine.Host.Commands.
 	Commands []string
+	// Personal makes this a user's own worker (RFC GW §4.5): it offers
+	// Roots, directories of the user's machine named at its start, on the
+	// host engine. Its token must be a personal worker token of that user.
+	Personal bool
+	// Roots are the directories a personal worker offers, by name.
+	Roots []Root
 	// Labels are the conversion labels (conversion/wire.Label*) of the
 	// helpers this worker's conversion child has, reported at attach: what
 	// a workspace's file can be converted to here (RFC GW D34). A worker
@@ -181,6 +187,21 @@ func Run(ctx context.Context, opt Options) error {
 		return fmt.Errorf("workspace worker: making the root: %w", err)
 	}
 	opt.Root = root
+	switch {
+	case opt.Personal && opt.Engine != workspace.EngineHost:
+		return errors.New("workspace worker: a personal worker runs on the host engine (RFC GW §4.5)")
+	case opt.Personal && len(opt.Roots) == 0:
+		return errors.New("workspace worker: a personal worker needs at least one --root name=path")
+	case !opt.Personal && len(opt.Roots) > 0:
+		return errors.New("workspace worker: --root is for a personal worker (--personal)")
+	}
+	if opt.Personal {
+		roots, err := checkRoots(root, opt.Roots)
+		if err != nil {
+			return fmt.Errorf("workspace worker: %w", err)
+		}
+		opt.Roots = roots
+	}
 	targets, err := workerlink.ParseTargets(opt.Target)
 	if err != nil {
 		return err
@@ -219,6 +240,13 @@ func Run(ctx context.Context, opt Options) error {
 	opt.Labels = append(opt.Labels, workspace.CheckpointLabelPrefix+mech)
 	log.Info("checkpoints are recorded by this mechanism", "mechanism", mech)
 	w := &worker{opt: opt, log: log, engine: eng, mech: mech}
+	if opt.Personal {
+		w.opt.Labels = append(w.opt.Labels, w.rootLabels()...)
+		if err := w.loadBindings(); err != nil {
+			return fmt.Errorf("workspace worker: reading the roots' bindings: %w", err)
+		}
+		log.Warn("a personal worker: agents of this user reach these directories, and by absolute path beyond them, with this user's rights", "roots", len(opt.Roots))
+	}
 	self = w
 	// The kernels die with the worker; the next cell after it comes back
 	// says kernel_restarted (RFC GW §5.7). A host worker writes the drivers
@@ -320,6 +348,10 @@ type worker struct {
 	// mech is the checkpoint mechanism probed at start (RFC GW §5.4);
 	// empty copies.
 	mech string
+	// rootMu guards bound, the workspace ids bound to a root on a personal
+	// worker (RFC GW §4.5), id → root name.
+	rootMu sync.Mutex
+	bound  map[string]string
 	// tplMu serialises the template cache: a copy out of it, a tree put
 	// into it, and an eviction (RFC GW §5.5).
 	tplMu sync.Mutex
@@ -341,7 +373,8 @@ func (w *worker) held() ([]string, error) {
 			out = append(out, e.Name())
 		}
 	}
-	return out, nil
+	// A workspace bound to a root on a personal worker is held too.
+	return append(out, w.boundIDs()...), nil
 }
 
 // refused reports whether a status from the core says retrying cannot help.
@@ -482,6 +515,15 @@ func (w *worker) removeAll(ids []string, log *slog.Logger) []string {
 	var gone []string
 	for _, id := range ids {
 		if !workspace.ValidID(id) {
+			continue
+		}
+		if _, ok := w.boundRoot(id); ok {
+			// A root is the user's own: only its binding goes.
+			if a := w.removeBound(context.Background(), id); a.class != "" {
+				log.Warn("cannot unbind a root workspace the dispatcher released", "workspace_id", id, "err", a.detail)
+				continue
+			}
+			gone = append(gone, id)
 			continue
 		}
 		w.kernels.Drop(id)
