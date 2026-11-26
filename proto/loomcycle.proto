@@ -368,6 +368,30 @@ service Loomcycle {
   // Mirrors POST /v1/_ontology/plan.
   rpc PlanOntology(PlanOntologyRequest) returns (PlanOntologyResponse);
 
+  // ListOntologyReleases lists the tenant ontology's releases — the copies
+  // taken when it was confirmed and on each applied or rolled-back change,
+  // the newest 50 kept — newest first. It writes nothing.
+  //
+  // Operator-only, as PlanOntology: a release keeps the ontology's text after
+  // an edit or an erasure removed it, so a member never reads one. An admin
+  // may name another tenant. A refusal carries a google.rpc.ErrorInfo whose
+  // reason is the code HTTP returns (forbidden, unavailable).
+  //
+  // Mirrors GET /v1/_ontology/releases.
+  rpc ListOntologyReleases(ListOntologyReleasesRequest) returns (ListOntologyReleasesResponse);
+
+  // DiffOntologyReleases compares two releases, or a release with the
+  // ontology in force, entry by entry: what was added, removed, renamed,
+  // moved, retired, or had its meaning or directives changed. It writes
+  // nothing.
+  //
+  // Operator-only, as ListOntologyReleases. A refusal carries a
+  // google.rpc.ErrorInfo whose reason is the code HTTP returns
+  // (invalid_request, forbidden, release_not_found, unavailable).
+  //
+  // Mirrors GET /v1/_ontology/releases/diff.
+  rpc DiffOntologyReleases(DiffOntologyReleasesRequest) returns (DiffOntologyReleasesResponse);
+
   // ListReviewQueue lists a document scope's statements awaiting review
   // (proposed unless the filter names another status), narrowed by the queue
   // filters, newest first; or, with summarize, their counts grouped by kind,
@@ -2749,6 +2773,93 @@ message PlanOntologyResponse {
   // the fingerprint it moves only when an in-force entry does; empty when the
   // ontology could not be read whole.
   string content_version = 9;
+}
+
+// OntologyRelease is the header of one complete release of the tenant
+// ontology.
+message OntologyRelease {
+  int64 seq = 1;
+  // What the ontology declared then, and the plan fingerprint it had.
+  string content_version = 2;
+  string fingerprint = 3;
+  // confirm | apply | rollback | catch_up
+  string reason = 4;
+  // The user who took it; empty when none was known.
+  string actor = 5;
+  // Unix nanoseconds.
+  int64 created_at = 6;
+  // How many chunks of the ontology document it copied.
+  int32 entries = 7;
+}
+
+message ListOntologyReleasesRequest {
+  // Whose ontology. Only an admin may name a tenant; for anyone else it is
+  // the caller's own.
+  string tenant = 1;
+}
+
+message ListOntologyReleasesResponse {
+  string tenant = 1;
+  // Newest first.
+  repeated OntologyRelease releases = 2;
+}
+
+message DiffOntologyReleasesRequest {
+  // Whose ontology, as ListOntologyReleasesRequest.tenant.
+  string tenant = 1;
+  // A release's sequence number (required, positive).
+  int64 from = 2;
+  // Another release's sequence number, or 0 for the ontology as it stands
+  // now (HTTP's to=current, its default).
+  int64 to = 3;
+}
+
+// OntologyDiffSide names one side of a diff: a release (seq), or the
+// ontology in force (current).
+message OntologyDiffSide {
+  int64 seq = 1;
+  bool current = 2;
+  string content_version = 3;
+}
+
+// OntologyEntryState is an entry as one side declares it. parent is the chunk
+// of the entry it sits under, empty at the top of its section; parent_name
+// that entry's name.
+message OntologyEntryState {
+  string name = 1;
+  string parent = 2;
+  string parent_name = 3;
+  string status = 4;
+  string meaning = 5;
+  // The entry's parsed declaration without its name, status, meaning and
+  // parent, as JSON (HTTP's `directives`).
+  bytes directives_json = 6;
+}
+
+// OntologyEntryDiff is one entry that differs between the two sides, by its
+// chunk id: a rename keeps the chunk, so it is one changed entry.
+message OntologyEntryDiff {
+  string chunk_id = 1;
+  // class | relation | scheme | concept | instance | grammar
+  string kind = 2;
+  // added | removed | changed
+  string change = 3;
+  // On a changed entry: renamed, moved, kind, status, meaning, directives.
+  repeated string changed = 4;
+  // Absent for an added entry.
+  OntologyEntryState before = 5;
+  // Absent for a removed entry.
+  OntologyEntryState after = 6;
+}
+
+message DiffOntologyReleasesResponse {
+  string tenant = 1;
+  OntologyDiffSide from = 2;
+  OntologyDiffSide to = 3;
+  // Ordered by kind, then name, then chunk id.
+  repeated OntologyEntryDiff changes = 4;
+  // What a side could not read.
+  repeated string issues = 5;
 }
 
 // ReviewQueueFilter narrows the review queue and selects what a bulk ruling
