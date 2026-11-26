@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/fsops"
 	"github.com/denn-gubsky/loomcycle/internal/gitsource/gitrepo"
@@ -19,15 +20,15 @@ import (
 // gitWorkspace opens workspace id's repository over its mirror, under the
 // mirror's lock. The mirror must be the one the workspace was opened over:
 // a core that names another is refused.
-func (w *worker) gitWorkspace(id, dir string, in workspace.GitNetArgs) (*gitrepo.Repo, *gitrepo.Mirror, func(), answer) {
-	if key := w.MirrorKeyOf(id); key == "" || key != in.Mirror {
+func (w *worker) gitWorkspace(id, dir, mirror, url, branch string) (*gitrepo.Repo, *gitrepo.Mirror, func(), answer) {
+	if key := w.MirrorKeyOf(id); key == "" || key != mirror {
 		return nil, nil, nil, refuse(workspace.ClassInvalid, "this workspace is no git workspace over that mirror")
 	}
-	fs, done, err := w.mirrorFS(in.Mirror)
+	fs, done, err := w.mirrorFS(mirror)
 	if err != nil {
 		return nil, nil, nil, refuse(workspace.ClassInvalid, "the mirror: %v", err)
 	}
-	unlock := w.lockMirror(in.Mirror)
+	unlock := w.lockMirror(mirror)
 	release := func() { unlock(); done() }
 	m, err := gitrepo.OpenMirror(fs)
 	if err != nil {
@@ -45,7 +46,7 @@ func (w *worker) gitWorkspace(id, dir string, in workspace.GitNetArgs) (*gitrepo
 		release()
 		return nil, nil, nil, refuse(workspace.ClassFailed, "opening the workspace: %v", err)
 	}
-	r, err := gitrepo.OpenWorkspace(wt, m, gitrepo.WorkspaceSpec{ID: id, URL: in.URL, Branch: in.Branch})
+	r, err := gitrepo.OpenWorkspace(wt, m, gitrepo.WorkspaceSpec{ID: id, URL: url, Branch: branch})
 	if err != nil {
 		_ = v.Close()
 		release()
@@ -61,7 +62,7 @@ func (w *worker) gitSync(ctx context.Context, id, dir string, raw []byte, pull b
 	if a := decodeArgs(raw, &in); a.class != "" {
 		return a
 	}
-	r, m, done, a := w.gitWorkspace(id, dir, in)
+	r, m, done, a := w.gitWorkspace(id, dir, in.Mirror, in.URL, in.Branch)
 	if a.class != "" {
 		return a
 	}
@@ -115,7 +116,7 @@ func (w *worker) gitPush(ctx context.Context, id, dir string, raw []byte) answer
 	if a := decodeArgs(raw, &in); a.class != "" {
 		return a
 	}
-	r, _, done, a := w.gitWorkspace(id, dir, in)
+	r, _, done, a := w.gitWorkspace(id, dir, in.Mirror, in.URL, in.Branch)
 	if a.class != "" {
 		return a
 	}
@@ -151,3 +152,85 @@ func gitClassName(c string) string {
 
 // gitClass is err's class as a git op answers it.
 func gitClass(err error) string { return gitClassName(gitrepo.Class(err)) }
+
+// gitLocal runs a local op on the workspace's repository. The commit's
+// author and message are the core's; the paths are the repository's own,
+// held inside the workspace by gitrepo.
+func (w *worker) gitLocal(id, dir string, raw []byte) answer {
+	var in workspace.GitLocalArgs
+	if a := decodeArgs(raw, &in); a.class != "" {
+		return a
+	}
+	r, _, done, a := w.gitWorkspace(id, dir, in.Mirror, in.URL, in.Branch)
+	if a.class != "" {
+		return a
+	}
+	defer done()
+	fail := func(err error) answer { return refuse(gitClass(err), "%v", err) }
+	switch in.Op {
+	case "status":
+		head, err := r.Head()
+		if err != nil {
+			return fail(err)
+		}
+		files, err := r.Status()
+		if err != nil {
+			return fail(err)
+		}
+		return jsonAnswer(map[string]any{"branch": head.Branch, "head": head.Hash, "detached": head.Detached, "files": files})
+	case "diff":
+		o := gitrepo.DiffOptions{From: in.Rev, Staged: in.Staged, MaxBytes: in.MaxBytes}
+		if in.Path != "" {
+			o.Paths = []string{in.Path}
+		}
+		patch, cut, err := r.Diff(o)
+		if err != nil {
+			return fail(err)
+		}
+		return jsonAnswer(map[string]any{"patch": patch, "truncated": cut})
+	case "log":
+		commits, err := r.Log(gitrepo.LogOptions{Rev: in.Rev, Max: in.Max})
+		if err != nil {
+			return fail(err)
+		}
+		return jsonAnswer(map[string]any{"commits": commits})
+	case "commit":
+		if len(in.Paths) > 0 {
+			if err := r.Add(in.Paths); err != nil {
+				return fail(err)
+			}
+		}
+		sig := gitrepo.Signature{Name: in.AuthorName, Email: in.AuthorEmail, When: time.Unix(in.When, 0)}
+		h, err := r.Commit(gitrepo.CommitOptions{Message: in.Message, Author: sig, Committer: sig, All: in.All})
+		if err != nil {
+			return fail(err)
+		}
+		return jsonAnswer(map[string]any{"commit": h})
+	case "branch":
+		if in.Create != "" {
+			if err := r.BranchCreate(in.Create, in.From); err != nil {
+				return fail(err)
+			}
+			return jsonAnswer(map[string]any{"created": in.Create})
+		}
+		branches, err := r.Branches()
+		if err != nil {
+			return fail(err)
+		}
+		return jsonAnswer(map[string]any{"branches": branches})
+	case "checkout":
+		o := gitrepo.CheckoutOptions{Branch: in.To}
+		if in.Detach {
+			o = gitrepo.CheckoutOptions{Rev: in.To}
+		}
+		if err := r.Checkout(o); err != nil {
+			return fail(err)
+		}
+		head, err := r.Head()
+		if err != nil {
+			return fail(err)
+		}
+		return jsonAnswer(map[string]any{"branch": head.Branch, "head": head.Hash, "detached": head.Detached})
+	}
+	return refuse(workspace.ClassInvalid, "unknown git op %q", in.Op)
+}
