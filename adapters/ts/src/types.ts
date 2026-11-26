@@ -6949,6 +6949,10 @@ export interface AgentWorkspaceGrant {
   /** Whether the agent may save and delete workspace templates (RFC GW P6);
    *  a tenant template also needs the tenant value in memory_scopes. */
   templates?: boolean;
+  /** Whether the agent may open a workspace on a root: a folder of its
+   *  user's own machine, offered by their personal worker (RFC GW P13).
+   *  The workspace is the user's real files, not a copy. */
+  roots?: boolean;
   /** The egress routes a workspace the agent opens may reach the network
    *  through, by name (RFC GW P4), e.g. `["pypi", "pypi-files"]`. Unset =
    *  none. A sub-agent holds only the names its parent also holds. */
