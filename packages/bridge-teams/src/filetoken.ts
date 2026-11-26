@@ -93,7 +93,7 @@ const MAX_HELD = 32;
 export function certificateTokenSource(o: CertificateTokenOptions): FileTokenSource {
   const doFetch = o.fetch ?? globalThis.fetch;
   const now = o.now ?? Date.now;
-  const endpoint = `${(o.loginEndpoint ?? "https://login.microsoftonline.com").replace(/\/+$/, "")}/${encodeURIComponent(o.tenantId)}/oauth2/v2.0/token`;
+  const endpoint = `${trimTrailingSlashes(o.loginEndpoint ?? "https://login.microsoftonline.com")}/${encodeURIComponent(o.tenantId)}/oauth2/v2.0/token`;
   const held = new Map<string, { value: string; expiresAt: number }>();
   const pending = new Map<string, Promise<{ value: string; expiresAt: number }>>();
 
@@ -140,6 +140,14 @@ export function certificateTokenSource(o: CertificateTokenOptions): FileTokenSou
     held.set(scope, got);
     return got.value;
   };
+}
+
+/** trimTrailingSlashes drops the slashes a URL ends in. A loop, not a
+ *  `/\/+$/` regex, which backtracks quadratically on a long run of slashes. */
+export function trimTrailingSlashes(s: string): string {
+  let end = s.length;
+  while (end > 0 && s.charCodeAt(end - 1) === 0x2f) end--;
+  return s.slice(0, end);
 }
 
 /** assertion is the signed client assertion for one token request. */

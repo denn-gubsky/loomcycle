@@ -3,9 +3,8 @@
 // a certificate or the SDK's non-secret credential, never sent past the first
 // request and never logged.
 
-import { execFileSync } from "node:child_process";
-import { constants, verify, X509Certificate } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { constants, generateKeyPairSync, verify, X509Certificate } from "node:crypto";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -23,11 +22,13 @@ import {
   FileTokenError,
   parseCertificate,
   SECRET_ONLY_WARNING,
+  trimTrailingSlashes,
   type FileCertificate,
   type FileTokenSource,
 } from "../src/filetoken.js";
 import { TeamsFileError, teamsFilePort, teamsVoicePort } from "../src/voice.js";
 import { FakeLoomcycle, RecordingLogger } from "./fakes.js";
+import { selfSigned } from "./selfsigned.js";
 
 const TENANT = "11111111-1111-1111-1111-111111111111";
 const BOT = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
@@ -219,7 +220,7 @@ describe("the file port with a file token", () => {
   });
 });
 
-// A real certificate and key, made by openssl for this run only.
+// A real certificate and key, made in-process for this run only.
 let dir: string;
 let pemPath: string;
 let pem: string;
@@ -227,10 +228,8 @@ let certificate: FileCertificate;
 
 beforeAll(() => {
   dir = mkdtempSync(join(tmpdir(), "bridge-teams-cert-"));
-  const key = join(dir, "key.pem");
-  const crt = join(dir, "cert.pem");
-  execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", key, "-out", crt, "-days", "1", "-subj", "/CN=bridge-teams-test"], { stdio: "ignore" });
-  pem = readFileSync(key, "utf8") + readFileSync(crt, "utf8");
+  const made = selfSigned();
+  pem = made.keyPem + made.certPem;
   pemPath = join(dir, "bot.pem");
   writeFileSync(pemPath, pem, { mode: 0o600 });
   certificate = parseCertificate(pem);
@@ -303,6 +302,18 @@ describe("the certificate token source", () => {
     expect(entra.forms).toHaveLength(3);
   });
 
+  it("trims a login endpoint's trailing slashes in linear time", () => {
+    expect(trimTrailingSlashes("https://login.example///")).toBe("https://login.example");
+    expect(trimTrailingSlashes("https://login.example")).toBe("https://login.example");
+    expect(trimTrailingSlashes("///")).toBe("");
+    // Slashes that are not at the end, the input a backtracking /\/+$/ is
+    // slow on: a linear trim finishes at once.
+    const many = `${"/".repeat(200_000)}x`;
+    const t0 = performance.now();
+    expect(trimTrailingSlashes(many)).toBe(many);
+    expect(performance.now() - t0).toBeLessThan(200);
+  });
+
   it("fails with the endpoint's status only, never its answer", async () => {
     const source = certificateTokenSource({ clientId: BOT, tenantId: TENANT, certificate, loginEndpoint: "https://login.example", fetch: fakeEntra({ status: 401 }).fetchFn });
     const err = await source("https://a.sharepoint.com/.default").catch((e: unknown) => e);
@@ -316,9 +327,8 @@ describe("the certificate token source", () => {
     const certOnly = pem.slice(pem.indexOf("-----BEGIN CERTIFICATE-----"));
     expect(() => parseCertificate(certOnly)).toThrow(/no readable unencrypted private key/);
     expect(() => parseCertificate(keyOnly)).toThrow(/no readable certificate/);
-    const other = join(dir, "other.pem");
-    execFileSync("openssl", ["genrsa", "-out", other, "2048"], { stdio: "ignore" });
-    expect(() => parseCertificate(readFileSync(other, "utf8") + certOnly)).toThrow(/does not belong/);
+    const other = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ type: "pkcs8", format: "pem" }) as string;
+    expect(() => parseCertificate(other + certOnly)).toThrow(/does not belong/);
     try {
       parseCertificate("-----BEGIN PRIVATE KEY-----\nSECRETSECRET\n-----END PRIVATE KEY-----");
     } catch (e) {
