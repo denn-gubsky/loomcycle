@@ -78,3 +78,15 @@ func (s *Store) WorkspaceListPrincipalOwned(ctx context.Context) ([]store.Worksp
 func (s *Store) WorkspaceTouchUsed(ctx context.Context, tenantID, id string, at time.Time) error {
 	return sqlshared.WorkspaceTouchUsed(ctx, s.shared(), tenantID, id, at)
 }
+
+func (s *Store) WorkspaceGetDurable(ctx context.Context, tenantID, userID, name string) (store.WorkspaceRow, error) {
+	return sqlshared.WorkspaceGetDurable(ctx, s.shared(), tenantID, userID, name)
+}
+
+func (s *Store) WorkspacePin(ctx context.Context, tenantID, id, fromOwnerRunID string, to store.WorkspaceOwner) (bool, error) {
+	return sqlshared.WorkspacePin(ctx, s.shared(), tenantID, id, fromOwnerRunID, to)
+}
+
+func (s *Store) WorkspaceUnpin(ctx context.Context, tenantID, id, fromRunID string) (bool, error) {
+	return sqlshared.WorkspaceUnpin(ctx, s.shared(), tenantID, id, fromRunID)
+}

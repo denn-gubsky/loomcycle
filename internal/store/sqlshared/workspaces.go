@@ -93,6 +93,11 @@ func WorkspaceCreate(ctx context.Context, q Querier, row store.WorkspaceRow) (st
 	if row.OwnerKind != store.WorkspaceOwnerRun && row.OwnerKind != store.WorkspaceOwnerPrincipal {
 		return store.WorkspaceRow{}, fmt.Errorf("workspace create: unknown owner kind %q", row.OwnerKind)
 	}
+	// A durable row is kept under its user (RFC GW §4.2): one with none
+	// would share the durable name of every user-less run.
+	if row.Lifetime == store.WorkspaceLifetimeDurable && row.UserID == "" {
+		return store.WorkspaceRow{}, fmt.Errorf("workspace create: a durable workspace needs a user")
+	}
 	d := q.Dialect()
 	now := time.Now().UTC()
 	_, err := q.Exec(ctx, `INSERT INTO workspaces (`+workspaceCols+`)
@@ -199,12 +204,13 @@ func WorkspaceCountActiveByTenant(ctx context.Context, q Querier, tenantID strin
 }
 
 // countActiveWorkspaces counts rows in store.WorkspaceActiveStates where col
-// (a fixed column name, never caller text) equals v.
+// (a fixed column name, never caller text) equals v. A parked durable row
+// holds no place: a worker's capacity counts pinned workspaces (RFC GW §8).
 func countActiveWorkspaces(ctx context.Context, q Querier, col, v string) (int, error) {
-	args := append([]any{v}, stateArgs(store.WorkspaceActiveStates)...)
+	args := append([]any{v, store.WorkspaceOwnerParked}, stateArgs(store.WorkspaceActiveStates)...)
 	var n int
 	if err := q.QueryRow(ctx,
-		`SELECT COUNT(*) FROM workspaces WHERE `+col+` = ? AND state IN (`+Placeholders(len(store.WorkspaceActiveStates))+`)`,
+		`SELECT COUNT(*) FROM workspaces WHERE `+col+` = ? AND owner_kind <> ? AND state IN (`+Placeholders(len(store.WorkspaceActiveStates))+`)`,
 		args...).Scan(&n); err != nil {
 		return 0, fmt.Errorf("workspace count by %s: %w", col, err)
 	}
@@ -386,4 +392,63 @@ func WorkspaceTouchUsed(ctx context.Context, q Querier, tenantID, id string, at 
 		return fmt.Errorf("workspace touch used: %w", err)
 	}
 	return nil
+}
+
+// WorkspaceGetDurable reads the durable row of (tenant, user, name), which
+// the partial unique index keeps to one. A row with no user is never
+// durable (WorkspaceCreate), so an empty user finds nothing.
+func WorkspaceGetDurable(ctx context.Context, q Querier, tenantID, userID, name string) (store.WorkspaceRow, error) {
+	if userID == "" || name == "" {
+		return store.WorkspaceRow{}, &store.ErrNotFound{Kind: "workspace", ID: name}
+	}
+	d := q.Dialect()
+	r, err := scanWorkspace(d, q.QueryRow(ctx,
+		`SELECT `+workspaceCols+` FROM workspaces WHERE tenant_id = ? AND user_id = ? AND name = ? AND lifetime = ?`,
+		tenantID, userID, name, store.WorkspaceLifetimeDurable))
+	if err != nil {
+		return store.WorkspaceRow{}, NotFound(err, "workspace", name)
+	}
+	return r, nil
+}
+
+// WorkspacePin is a compare-and-set on owner_run_id: the WHERE names the
+// owner the caller read (the parked key, or a run that ended), so of two
+// pins racing on two replicas one moves the row and the other finds it
+// moved.
+func WorkspacePin(ctx context.Context, q Querier, tenantID, id, fromOwnerRunID string, to store.WorkspaceOwner) (bool, error) {
+	if fromOwnerRunID == "" || to.RunID == "" {
+		return false, fmt.Errorf("workspace pin: the owner read and the run to pin to are required")
+	}
+	d := q.Dialect()
+	n, err := q.Exec(ctx,
+		`UPDATE workspaces SET owner_kind = ?, owner_run_id = ?, owner_agent_id = ?, root_run_id = ?, updated_at = ?
+		 WHERE tenant_id = ? AND id = ? AND lifetime = ? AND owner_run_id = ?`,
+		store.WorkspaceOwnerRun, to.RunID, to.AgentID, to.RootRunID, d.TimeArg(time.Now().UTC()),
+		tenantID, id, store.WorkspaceLifetimeDurable, fromOwnerRunID)
+	if IsUniqueViolation(err) {
+		return false, &store.ErrConflict{Kind: "workspace", ID: id}
+	}
+	if err != nil {
+		return false, fmt.Errorf("workspace pin: %w", err)
+	}
+	return n > 0, nil
+}
+
+// WorkspaceUnpin parks a durable row its run holds: the parked key, which
+// no run id can be, and no agent, root or shares, so no run-keyed read
+// reaches it until the next pin (RFC GW P12 plan D-P12-1).
+func WorkspaceUnpin(ctx context.Context, q Querier, tenantID, id, fromRunID string) (bool, error) {
+	if fromRunID == "" {
+		return false, fmt.Errorf("workspace unpin: the run that holds it is required")
+	}
+	d := q.Dialect()
+	n, err := q.Exec(ctx,
+		`UPDATE workspaces SET owner_kind = ?, owner_run_id = ?, owner_agent_id = '', root_run_id = '', shares = '[]', updated_at = ?
+		 WHERE tenant_id = ? AND id = ? AND lifetime = ? AND owner_kind = ? AND owner_run_id = ?`,
+		store.WorkspaceOwnerParked, store.WorkspaceParkedKey(id), d.TimeArg(time.Now().UTC()),
+		tenantID, id, store.WorkspaceLifetimeDurable, store.WorkspaceOwnerRun, fromRunID)
+	if err != nil {
+		return false, fmt.Errorf("workspace unpin: %w", err)
+	}
+	return n > 0, nil
 }

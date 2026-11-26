@@ -595,6 +595,7 @@ A session of loomcycle's MCP server (`loomcycle mcp`, `/v1/_mcp`) has no run, so
 | `workspace.checkout.max_documents` | 500 | The documents one `File op=checkout` writes. |
 | `workspace.checkout.max_bytes` | 256 MiB | The bytes one checkout writes. |
 | `workspace.checkpoint.max_per_workspace` | 8 | The checkpoints one workspace holds (1 to 100); each also counts against its disk quota. |
+| `workspace.personal_workers` | false | Let a user's own machine attach as a worker of that user's runs (RFC GW §4.5). Refused unless the mode is `remote` or `local+remote` and `worker_endpoint.listen` is on loopback. |
 | `workspace.template.max_mb` | 1024 | One template's archive, in MiB (1 to 65536). |
 | `workspace.template.max_per_tenant` | 20 | The templates a tenant holds, user and tenant ones together (1 to 1000). |
 | `workspace.template.max_per_user` | 5 | One user's user templates, runs and MCP sessions of the subject together (1 to `max_per_tenant`). |

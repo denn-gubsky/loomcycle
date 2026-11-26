@@ -3637,6 +3637,11 @@ func (s *Server) egressRouteDefRoutes(mux *http.ServeMux) *http.ServeMux {
 // merge is; the connector checks the caller again.
 func (s *Server) ontologyPlanRoutes(mux *http.ServeMux) *http.ServeMux {
 	mux.Handle("POST /v1/_ontology/plan", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleOntologyPlan))))
+	// RFC GQ P3.4: the releases taken on confirm and apply, read only. Gated and
+	// carved out of the member path as the plan is; the connector checks again.
+	mux.Handle("GET /v1/_ontology/releases", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleOntologyReleases))))
+	mux.Handle("GET /v1/_ontology/releases/diff", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleOntologyReleaseDiff))))
+	mux.Handle("GET /v1/_ontology/releases/{seq}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleOntologyRelease))))
 	return mux
 }
 

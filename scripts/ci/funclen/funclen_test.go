@@ -50,14 +50,14 @@ type allowed struct {
 // "repo/relative/path.go Func" or "repo/relative/path.go Recv.Method".
 // Lengths measured on origin/main (cf550c366) on 2026-11-10.
 var allowlist = map[string]allowed{
-	"internal/store/storetest/contract.go Run":                            {743, "table", "D3"},
-	"internal/api/http/server.go Server.routes":                           {708, "table", "D3"},
-	"internal/api/mcp/tools.go baseToolDescriptors":                       {705, "table", "D3"},
-	"internal/tools/builtin/document_editions.go Document.reimportMD":     {463, "logic", "P5"},
-	"internal/tools/builtin/document_ontology.go Document.ontologyForKey": {419, "logic", "P5"},
-	"internal/tools/builtin/context.go Context.execSelf":                  {419, "logic", "P5"},
-	"internal/tools/builtin/memory.go Memory.execRecall":                  {344, "logic", "P5"},
-	"internal/memory/eval/extraction_fixtures.go ExtractionFixture":       {311, "fixture", "D3"},
+	"internal/store/storetest/contract.go Run":                        {743, "table", "D3"},
+	"internal/api/http/server.go Server.routes":                       {708, "table", "D3"},
+	"internal/api/mcp/tools.go baseToolDescriptors":                   {705, "table", "D3"},
+	"internal/tools/builtin/document_editions.go Document.reimportMD": {463, "logic", "P5"},
+	"internal/tools/builtin/document_ontology.go parseOntology":       {337, "logic", "P5"},
+	"internal/tools/builtin/context.go Context.execSelf":              {419, "logic", "P5"},
+	"internal/tools/builtin/memory.go Memory.execRecall":              {344, "logic", "P5"},
+	"internal/memory/eval/extraction_fixtures.go ExtractionFixture":   {311, "fixture", "D3"},
 }
 
 // TestFuncLength_CensusNoFunctionOverLimit walks every non-test, non-generated

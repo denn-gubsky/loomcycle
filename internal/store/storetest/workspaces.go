@@ -30,6 +30,9 @@ func RunWorkspaces(t *testing.T, factory Factory) {
 		"EgressIsKeptOnEveryRead":               testWorkspaceEgressIsKeptOnEveryRead,
 		"ExposuresAreBoundedAndTenantScoped":    testWorkspaceExposuresAreBoundedAndTenantScoped,
 		"ExposuresGoWithTheirWorkspace":         testWorkspaceExposuresGoWithTheirWorkspace,
+		"DurableNameIsUniquePerUser":            testWorkspaceDurableNameIsUniquePerUser,
+		"PinAndUnpinAreCompareAndSet":           testWorkspacePinAndUnpinAreCompareAndSet,
+		"ParkedRowIsReachedByNoRun":             testWorkspaceParkedRowIsReachedByNoRun,
 	} {
 		t.Run(name, func(t *testing.T) {
 			s, cleanup := factory(t)

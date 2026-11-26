@@ -129,6 +129,9 @@ GET /v1/_metrics/summary	substrate:admin	false	read runtime:metrics
 GET /v1/_models	substrate:tenant	false	read runtime:routing
 GET /v1/_oauth/authorize	substrate:admin	false	-
 GET /v1/_ontology	substrate:tenant	false	read document:*
+GET /v1/_ontology/releases	substrate:tenant	false	read document:*
+GET /v1/_ontology/releases/diff	substrate:tenant	false	read document:*
+GET /v1/_ontology/releases/x	substrate:tenant	false	read document:*
 GET /v1/_operatortokendef/names	substrate:admin	false	read principal:token:*
 GET /v1/_presets	substrate:admin	false	read runtime:config
 GET /v1/_presets/x	substrate:admin	false	read runtime:config
@@ -297,6 +300,9 @@ HEAD /v1/_metrics/summary	substrate:admin	false	read runtime:metrics
 HEAD /v1/_models	substrate:tenant	false	read runtime:routing
 HEAD /v1/_oauth/authorize	substrate:admin	false	-
 HEAD /v1/_ontology	substrate:tenant	false	read document:*
+HEAD /v1/_ontology/releases	substrate:tenant	false	read document:*
+HEAD /v1/_ontology/releases/diff	substrate:tenant	false	read document:*
+HEAD /v1/_ontology/releases/x	substrate:tenant	false	read document:*
 HEAD /v1/_operatortokendef/names	substrate:admin	false	read principal:token:*
 HEAD /v1/_presets	substrate:admin	false	read runtime:config
 HEAD /v1/_presets/x	substrate:admin	false	read runtime:config

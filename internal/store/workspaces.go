@@ -45,6 +45,10 @@ func (s WorkspaceState) IsValid() bool {
 const (
 	WorkspaceKindGeneral       = "general"
 	WorkspaceLifetimeEphemeral = "ephemeral"
+	// WorkspaceLifetimeDurable (RFC GW §4.2, P12): kept under the tenant,
+	// the user and the name past its run; unique on those three among
+	// durable rows.
+	WorkspaceLifetimeDurable = "durable"
 )
 
 // WorkspaceRow is one workspace on one worker (RFC GW §4.2, §8). The row is
@@ -91,11 +95,23 @@ type WorkspaceRow struct {
 	UpdatedAt time.Time
 }
 
-// The owner kinds of a workspace (RFC GW D35).
+// The owner kinds of a workspace (RFC GW D35, P12).
 const (
 	WorkspaceOwnerRun       = "run"
 	WorkspaceOwnerPrincipal = "principal"
+	// WorkspaceOwnerParked: a durable workspace no run holds (RFC GW P12
+	// plan D-P12-1). Its OwnerRunID is WorkspaceParkedKey(id), which no run
+	// id can be, so no run-keyed read reaches it. Set only by unpin.
+	WorkspaceOwnerParked = "parked"
 )
+
+// WorkspaceParkedKey is a parked workspace's OwnerRunID.
+func WorkspaceParkedKey(id string) string { return "parked:" + id }
+
+// WorkspaceOwner is the run a durable workspace is pinned to.
+type WorkspaceOwner struct {
+	RunID, AgentID, RootRunID string
+}
 
 // The accesses a share gives (RFC GW §5.2, D20).
 const (
@@ -187,4 +203,17 @@ type WorkspaceStore interface {
 	WorkspaceListPrincipalOwned(ctx context.Context) ([]WorkspaceRow, error)
 	// WorkspaceTouchUsed sets the tenant's row's last_used_at to at.
 	WorkspaceTouchUsed(ctx context.Context, tenantID, id string, at time.Time) error
+	// WorkspaceGetDurable returns the tenant's durable row of user and
+	// name, pinned or parked; *ErrNotFound when there is none.
+	WorkspaceGetDurable(ctx context.Context, tenantID, userID, name string) (WorkspaceRow, error)
+	// WorkspacePin pins a durable row to a run: a compare-and-set from the
+	// OwnerRunID the caller read (the parked key, or a run that ended), so
+	// two runs never both win. False when the row moved first, or is not a
+	// durable row of the tenant; *ErrConflict when the run already holds a
+	// workspace of that name.
+	WorkspacePin(ctx context.Context, tenantID, id, fromOwnerRunID string, to WorkspaceOwner) (bool, error)
+	// WorkspaceUnpin parks a durable row pinned to fromRunID: owner kind
+	// parked, the parked key, no agent, no root and no shares. False when
+	// the row moved first, or is not a pinned durable row of the tenant.
+	WorkspaceUnpin(ctx context.Context, tenantID, id, fromRunID string) (bool, error)
 }
