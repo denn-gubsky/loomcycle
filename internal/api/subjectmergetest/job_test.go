@@ -40,14 +40,17 @@ func jobFromProto(j *loomcyclepb.OntologyJobStatus) *connector.OntologyJobStatus
 		CreatedAt: j.GetCreatedAt(), UpdatedAt: j.GetUpdatedAt()}
 }
 
-// renameJobPlanFromProto is the plan's class-rename block, read back the same way.
+// renameJobPlanFromProto is the plan's job block, read back the same way.
 func renameJobPlanFromProto(p *loomcyclepb.OntologyRenameJobPlan) *connector.OntologyRenameJobPlan {
 	if p == nil {
 		return nil
 	}
 	out := &connector.OntologyRenameJobPlan{Runnable: p.GetRunnable(), Blocked: p.GetBlocked(),
 		CollisionsTotal: int(p.GetCollisionsTotal()), CollisionsOtherScopes: int(p.GetCollisionsOtherScopes()),
-		ScopesNotCounted: int(p.GetScopesNotCounted()), Running: jobFromProto(p.GetRunning()), Notes: p.GetNotes()}
+		ScopesNotCounted: int(p.GetScopesNotCounted()), Running: jobFromProto(p.GetRunning()), Notes: p.GetNotes(), Kind: p.GetKind()}
+	for _, m := range p.GetTagMoves() {
+		out.TagMoves = append(out.TagMoves, connector.OntologyTagMove{From: m.GetFrom(), To: m.GetTo()})
+	}
 	for _, s := range p.GetSteps() {
 		out.Steps = append(out.Steps, connector.OntologyRenameJobStep{Name: s.GetName(), TenantScope: int(s.GetTenantScope()), OtherScopes: int(s.GetOtherScopes())})
 	}
@@ -272,8 +275,8 @@ func TestPlanOntology_RenameJobBlockIsTheSameOnEveryTransport(t *testing.T) {
 		}
 		if i == 0 {
 			first = p
-			if job := p.Changes[0].Job; job == nil || !job.Runnable || len(job.Steps) == 0 || p.Changes[1].Job != nil {
-				t.Fatalf("http plan's job blocks = %+v / %+v, want a runnable job for Provision only", job, p.Changes[1].Job)
+			if job := p.Changes[0].Job; job == nil || !job.Runnable || job.Kind != "class_rename" || len(job.Steps) == 0 || p.Changes[1].Job != nil {
+				t.Fatalf("http plan's job blocks = %+v / %+v, want a runnable class_rename job for Provision only", job, p.Changes[1].Job)
 			}
 			continue
 		}

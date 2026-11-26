@@ -58,8 +58,8 @@ func ontologyJobToProto(j *connector.OntologyJobStatus) *loomcyclepb.OntologyJob
 	return out
 }
 
-// renameJobPlanToProto is a planned change's class-rename block; nil for a change
-// with none.
+// renameJobPlanToProto is a planned change's job block (a class rename's or a
+// concept re-tag's); nil for a change with none.
 func renameJobPlanToProto(p *connector.OntologyRenameJobPlan) *loomcyclepb.OntologyRenameJobPlan {
 	if p == nil {
 		return nil
@@ -67,7 +67,10 @@ func renameJobPlanToProto(p *connector.OntologyRenameJobPlan) *loomcyclepb.Ontol
 	out := &loomcyclepb.OntologyRenameJobPlan{
 		Runnable: p.Runnable, Blocked: p.Blocked, CollisionsTotal: int32(p.CollisionsTotal),
 		CollisionsOtherScopes: int32(p.CollisionsOtherScopes), ScopesNotCounted: int32(p.ScopesNotCounted),
-		Running: ontologyJobToProto(p.Running), Notes: p.Notes,
+		Running: ontologyJobToProto(p.Running), Notes: p.Notes, Kind: p.Kind,
+	}
+	for _, m := range p.TagMoves {
+		out.TagMoves = append(out.TagMoves, &loomcyclepb.OntologyTagMove{From: m.From, To: m.To})
 	}
 	for _, s := range p.Steps {
 		out.Steps = append(out.Steps, &loomcyclepb.OntologyRenameJobStep{Name: s.Name, TenantScope: int32(s.TenantScope), OtherScopes: int32(s.OtherScopes)})
