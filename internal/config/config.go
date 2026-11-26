@@ -5177,6 +5177,9 @@ func LoadLayersWith(opts LoadOptions, layers ...Layer) (*Config, error) {
 		return nil, fmt.Errorf("retired environment variables are set to something this version does not apply (a tighter bound, a feature kept off, another store, data kept or deleted differently, or a setting that moved to the yaml and is not there), and ignoring them would change this deployment; act on each, then remove its line: %s", strings.Join(refused, " | "))
 	}
 	cfg.Warnings = append(cfg.Warnings, retiredEnvWarnings(os.Environ())...)
+	// What a later release removes, while it still works (RFC GW §9).
+	cfg.Warnings = append(cfg.Warnings, deprecatedEnvWarnings(os.Environ())...)
+	cfg.Warnings = append(cfg.Warnings, deprecationWarnings(cfg, layers)...)
 
 	if err := applyEnvStorage(cfg, opts.OfflineTool); err != nil {
 		return nil, err
