@@ -48,6 +48,11 @@ func TestBundles_MovedAgentsHoldANarrowWorkspaceGrantAndKeepTheirShellTool(t *te
 			if w.Share || w.Expose || w.Templates || w.Connect {
 				t.Errorf("workspace = %+v, want no share, expose, templates or connect", w)
 			}
+			// team/repo (RFC GW P14 PR 8): the orchestrator opens the git
+			// workspace and pushes its own branch.
+			if m.agent == "team/orchestrator" && (!slices.Contains(a.GitRemote, "fetch") || !slices.Contains(a.GitRemote, "push")) {
+				t.Errorf("git_remote = %v, want fetch and push", a.GitRemote)
+			}
 			for _, warn := range cfg.Warnings {
 				if strings.Contains(warn, `"`+m.agent+`"`) {
 					t.Errorf("advisory names the bundle's own agent: %s", warn)
