@@ -167,9 +167,12 @@ type ontologyJob struct {
 	ID, Kind, Entry string
 	From            []string
 	To              string
-	State, Step     string
-	Counts          map[string]int
-	Error           string
+	// ToTags is a concept re-tag's new tags, index-aligned with From (the old ones);
+	// stored as to_name's JSON array (document_ontology_retag_job.go).
+	ToTags      []string
+	State, Step string
+	Counts      map[string]int
+	Error       string
 	// The walk's place, stored as scope_cursor: the last scope finished ("" for none, so
 	// the tenant scope is next), how many are finished, and the last document whose
 	// classification record was read in the scope after Done.
@@ -185,7 +188,7 @@ type ontologyJob struct {
 
 func (j *ontologyJob) status() *connector.OntologyJobStatus {
 	return &connector.OntologyJobStatus{ID: j.ID, Kind: j.Kind, Entry: j.Entry, From: j.From, To: j.To,
-		State: j.State, Step: j.Step, Done: j.Counts, Error: j.Error, Remain: j.Remain,
+		ToTags: j.ToTags, State: j.State, Step: j.Step, Done: j.Counts, Error: j.Error, Remain: j.Remain,
 		Scope: j.Scope, ScopesDone: j.ScopesDone}
 }
 
@@ -323,6 +326,11 @@ func (d *Document) createRenameJob(ctx context.Context, key sqlmem.ScopeKey, s *
 
 // withRenameJob adds the rename job's state to update_chunk's answer as rename_job.
 func withRenameJob(res tools.Result, st *connector.OntologyJobStatus) tools.Result {
+	return withOntologyJob(res, "rename_job", st)
+}
+
+// withOntologyJob adds a job's state to an answer under field.
+func withOntologyJob(res tools.Result, field string, st *connector.OntologyJobStatus) tools.Result {
 	if st == nil || res.IsError {
 		return res
 	}
@@ -332,7 +340,7 @@ func withRenameJob(res tools.Result, st *connector.OntologyJobStatus) tools.Resu
 	if dec.Decode(&out) != nil {
 		return res
 	}
-	out["rename_job"] = st
+	out[field] = st
 	b, err := json.Marshal(out)
 	if err != nil {
 		return res
@@ -353,6 +361,12 @@ func (d *Document) unfinishedOntologyJob(ctx context.Context, key sqlmem.ScopeKe
 		State: asStr(r[5]), Step: asStr(r[6]), Error: asStr(r[8]), Counts: map[string]int{}}
 	if err := json.Unmarshal([]byte(asStr(r[3])), &j.From); err != nil || len(j.From) == 0 {
 		return nil, fmt.Errorf("job %s: unreadable from_names", j.ID)
+	}
+	if j.Kind == ontologyJobKindConceptRetag {
+		if err := json.Unmarshal([]byte(j.To), &j.ToTags); err != nil || len(j.ToTags) != len(j.From) {
+			return nil, fmt.Errorf("job %s: unreadable to_name", j.ID)
+		}
+		j.To = strings.Join(j.ToTags, ", ")
 	}
 	_ = json.Unmarshal([]byte(asStr(r[7])), &j.Counts)
 	j.readCursor(asStr(r[9]))

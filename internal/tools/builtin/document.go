@@ -4077,7 +4077,14 @@ func (d *Document) updateChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 		}
 		return withRenameJob(res, d.startRenameJob(ctx, key, mscope, rename)), nil
 	}
-	return d.writeChunkUpdate(ctx, key, mscope, row, in, present, retype, retiring, retireSubtree, effValid, effInvalid, hasValidAt, hasInvalidAt)
+	// RFC GQ P5.5: a change that moves a concept's tag re-tags what is filed under it.
+	retag, refused := d.ontologyRetagForUpdate(ctx, key, mscope, row, in, present)
+	if refused != nil {
+		return *refused, nil
+	}
+	defer retag.release(ctx, d, key)
+	res, err := d.writeChunkUpdate(ctx, key, mscope, row, in, present, retype, retiring, retireSubtree, effValid, effInvalid, hasValidAt, hasInvalidAt)
+	return d.finishConceptRetag(ctx, key, mscope, retag, res, err)
 }
 
 // writeChunkUpdate is update_chunk's write, once every check has passed.
@@ -4447,6 +4454,11 @@ func (d *Document) moveChunk(ctx context.Context, key sqlmem.ScopeKey, in docInp
 			return *refused, nil
 		}
 	}
+	retag, refused := d.ontologyRetagForMove(ctx, key, row, in.NewParentID)
+	if refused != nil {
+		return *refused, nil
+	}
+	defer retag.release(ctx, d, key)
 	pos := 0
 	if in.Position != nil {
 		pos = *in.Position
@@ -4481,7 +4493,8 @@ func (d *Document) moveChunk(ctx context.Context, key sqlmem.ScopeKey, in docInp
 		d.reindexSubtree(ctx, key, store.MemoryScope(key.Scope), row.DocumentID, in.ID)
 	}
 	d.publishChange(ctx, store.MemoryScope(key.Scope), docMemScopeID(store.MemoryScope(key.Scope), key), row.DocumentID, "move_chunk", in.ID)
-	return jsonResult(map[string]any{"ok": true, "id": in.ID, "new_parent_id": in.NewParentID, "position": pos})
+	res, err := jsonResult(map[string]any{"ok": true, "id": in.ID, "new_parent_id": in.NewParentID, "position": pos})
+	return d.finishConceptRetag(ctx, key, store.MemoryScopeTenant, retag, res, err)
 }
 
 // reorderChunk moves a chunk one step up or down among its same-parent siblings

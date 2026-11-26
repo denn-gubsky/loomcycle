@@ -162,7 +162,7 @@ func (d *Document) continueOntologyJob(ctx context.Context, key sqlmem.ScopeKey,
 		if err != nil {
 			return j
 		}
-		if e, ok := planEntries(read)[j.Entry]; !ok || !strings.EqualFold(e.Name, j.To) {
+		if !pendingJobLanded(read, j) {
 			j.State = jobStateAbandoned
 			_ = d.saveOntologyJob(ctx, key, j)
 			return j
@@ -170,6 +170,26 @@ func (d *Document) continueOntologyJob(ctx context.Context, key sqlmem.ScopeKey,
 		j.State = jobStateRunning
 	}
 	return d.runOntologyJob(ctx, key, mscope, j)
+}
+
+// pendingJobLanded reports whether the ontology write a pending job was recorded for
+// reached the ontology: the class carries its new name, or every new tag of a re-tag is
+// a concept's (or a scheme's) tag.
+func pendingJobLanded(read OntologyRead, j *ontologyJob) bool {
+	if j.Kind == ontologyJobKindConceptRetag {
+		held := map[string]bool{}
+		for _, tag := range ontologyConceptTags(read) {
+			held[tag] = true
+		}
+		for _, tag := range j.ToTags {
+			if !held[tag] {
+				return false
+			}
+		}
+		return len(j.ToTags) > 0
+	}
+	e, ok := planEntries(read)[j.Entry]
+	return ok && strings.EqualFold(e.Name, j.To)
 }
 
 // runOntologyJob works on j for one slice, from the scope and step it is at. It returns
@@ -206,19 +226,22 @@ func (d *Document) runOntologyJob(ctx context.Context, key sqlmem.ScopeKey, msco
 				return block(renameBlockedWhy(sc, j, err))
 			}
 			if !finished {
-				if n, err := d.renameRowsLeft(renameJobCtx(ctx, sc), sc, j.From, j.To); err == nil {
+				if n, err := d.renameRowsLeft(renameJobCtx(ctx, sc), sc, j); err == nil {
 					j.Remain = n
 				}
 				_ = d.saveOntologyJob(ctx, key, j)
 				return j
 			}
 		}
-		j.Done, j.ScopesDone, j.Step, j.Doc = names[at], j.ScopesDone+1, renameSteps[0].name, ""
+		j.Done, j.ScopesDone, j.Step, j.Doc = names[at], j.ScopesDone+1, j.steps()[0].name, ""
 		_ = d.saveOntologyJob(ctx, key, j)
 	}
 	j.State, j.Step, j.Scope, j.Remain = jobStateDone, "", "", 0
 	_ = d.saveOntologyJob(ctx, key, j)
-	d.renameJobRelease(ctx, key, j)
+	if j.Kind == ontologyJobKindClassRename {
+		// A re-tag changes no ontology content, so it has nothing to release.
+		d.renameJobRelease(ctx, key, j)
+	}
 	return j
 }
 
@@ -238,9 +261,10 @@ func renameBlockedWhy(sc renameScope, j *ontologyJob, err error) string {
 // nothing in the scope still holds an old name; rows written under it meanwhile send it
 // round again. finished is false when the deadline passed (or a test stopped it).
 func (d *Document) runRenameScope(ctx context.Context, sc renameScope, j *ontologyJob, deadline time.Time) (bool, error) {
+	steps := j.steps()
 	for pass := 0; pass < renameFinishPasses; pass++ {
-		for i := stepIndex(j.Step); i < len(renameSteps); i++ {
-			st := renameSteps[i]
+		for i := stepIndex(steps, j.Step); i < len(steps); i++ {
+			st := steps[i]
 			j.Step = st.name
 			if !st.tenantOnly || sc.tenant {
 				n, finished, err := st.run(d, ctx, sc, j, deadline)
@@ -252,15 +276,15 @@ func (d *Document) runRenameScope(ctx context.Context, sc renameScope, j *ontolo
 					return false, nil
 				}
 			}
-			if i+1 < len(renameSteps) {
-				j.Step = renameSteps[i+1].name
+			if i+1 < len(steps) {
+				j.Step = steps[i+1].name
 			}
 			if d.renameJobStop != nil && d.renameJobStop(sc.key.Scope, st.name) {
 				return false, nil
 			}
 		}
 		// The finish check (RFC GQ check P5), per scope.
-		left, err := d.renameRowsLeft(ctx, sc, j.From, j.To)
+		left, err := d.renameRowsLeft(ctx, sc, j)
 		if err != nil {
 			return false, fmt.Errorf("finish check: %w", err)
 		}
@@ -270,14 +294,14 @@ func (d *Document) runRenameScope(ctx context.Context, sc renameScope, j *ontolo
 		if pastDeadline(ctx, deadline) {
 			break
 		}
-		j.Step, j.Doc = renameSteps[0].name, ""
+		j.Step, j.Doc = steps[0].name, ""
 	}
-	j.Step, j.Doc = renameSteps[0].name, ""
+	j.Step, j.Doc = steps[0].name, ""
 	return false, nil
 }
 
-func stepIndex(name string) int {
-	for i, s := range renameSteps {
+func stepIndex(steps []renameStep, name string) int {
+	for i, s := range steps {
 		if s.name == name {
 			return i
 		}
@@ -288,13 +312,13 @@ func stepIndex(name string) int {
 // renameRowsLeft counts a scope's rows still under an old name, measure points a
 // collision kept aside excepted (they are never deleted, RFC GQ 9b), and classification
 // records, which only their step reads.
-func (d *Document) renameRowsLeft(ctx context.Context, sc renameScope, from []string, to string) (int, error) {
+func (d *Document) renameRowsLeft(ctx context.Context, sc renameScope, j *ontologyJob) (int, error) {
 	total := 0
-	for _, st := range renameSteps {
+	for _, st := range j.steps() {
 		if st.left == nil || st.name == "measure_points" || (st.tenantOnly && !sc.tenant) {
 			continue
 		}
-		n, err := st.left(d, ctx, sc, from, to)
+		n, err := st.left(d, ctx, sc, j.From, j.To)
 		if err != nil {
 			return 0, fmt.Errorf("%s: %w", st.name, err)
 		}

@@ -83,8 +83,18 @@ refused `rename_identity_collision` when a stored identity or subject key, in
 any scope, would become one another row already holds (the plan lists the
 tenant scope's under `job.collisions` and counts the others'), and
 `rename_job_running` while another rename job is unfinished. A class nothing
-rests on, a relation kind and a concept rename with the plan as before, with
-no job.
+rests on and a relation kind rename with the plan as before, with no job.
+
+**Renaming a concept or a scheme** changes its tag (`<scheme>/<path>`) and the
+tags of every concept under it. The documents filed under them by a tag follow:
+a re-tag job carries every document tag, chunk tag and classification record
+`proposed_tags` at or under the old tag to the new one, in the tenant scope and
+every user and agent scope (a target that already carries the new tag keeps it
+once). It leaves the ontology document's own concept chunks to the mirror,
+which gives them their new tags at confirm. The answer carries `retag_job` —
+`{id, kind: "concept_retag", from, to_tags, state, ...}`, with the same states
+as `rename_job`. While any ontology job is unfinished such a rename is refused
+`rename_job_running`, after the job is given a slice.
 
 **To rename a document**, `update_chunk` its root chunk's `title` (the root
 chunk id is `root_chunk_id` from `get_document`). `get_document`,
