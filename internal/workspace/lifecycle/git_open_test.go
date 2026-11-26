@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -38,6 +39,9 @@ type realForge struct {
 	work string // a working copy that pushes to it
 	bare string
 	ca   *http.Transport
+	// requests counts every request that reached the forge; receives the
+	// receive-pack POSTs among them.
+	requests, receives atomic.Int64
 }
 
 func gitRun(t *testing.T, dir string, args ...string) string {
@@ -83,7 +87,12 @@ func newRealForge(t *testing.T) *realForge {
 	gitRun(t, bare, "config", "http.receivepack", "true")
 	h := &cgi.Handler{Path: backend, Env: []string{"GIT_PROJECT_ROOT=" + filepath.Join(base, "served"), "GIT_HTTP_EXPORT_ALL=1",
 		"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null"}}
+	f := &realForge{work: work, bare: bare}
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f.requests.Add(1)
+		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/git-receive-pack") {
+			f.receives.Add(1)
+		}
 		u, p, ok := r.BasicAuth()
 		if ok && u == forgeUser && p == forgeTokenListOnly && r.Method == http.MethodGet {
 			h.ServeHTTP(w, r)
@@ -97,7 +106,8 @@ func newRealForge(t *testing.T) *realForge {
 		h.ServeHTTP(w, r)
 	}))
 	t.Cleanup(srv.Close)
-	return &realForge{url: srv.URL + "/acme/app.git", work: work, bare: bare, ca: srv.Client().Transport.(*http.Transport)}
+	f.url, f.ca = srv.URL+"/acme/app.git", srv.Client().Transport.(*http.Transport)
+	return f
 }
 
 // newGitFixture is a fixture whose manager sends git requests to the forge.

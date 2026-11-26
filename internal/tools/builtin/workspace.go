@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/audit"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -44,6 +45,14 @@ type Workspace struct {
 	GitSource *GitSourceConfig
 	// GitPush is workspace.push, resolved.
 	GitPush config.WorkspacePushConfig
+	// GitPushHosts are the hosts a git workspace may push to
+	// (LOOMCYCLE_GIT_PUSH_HOSTS); empty: no push. GitPushCredential is the
+	// Git tool's push resolver, whose $ghapp: tokens may write.
+	GitPushHosts      []string
+	GitPushCredential GitCredentialFunc
+	// GitAudit records each network op of a git workspace, refused ones
+	// too. Nil records nothing.
+	GitAudit audit.Sink
 }
 
 func (w *Workspace) Name() string { return "Workspace" }
@@ -55,6 +64,7 @@ func (w *Workspace) Description() string {
 		"run_cell (`code`, optional `kernel` python|node, `timeout_s`) runs code in an interpreter that keeps its variables between cells, reset_kernel starts it clean. " +
 		"view (`path`) shows you a PNG, JPEG, GIF or WebP from the workspace as a picture, e.g. a chart you drew. " +
 		"start (`command`, optional `cwd`, `port`) runs a command that keeps running after the call, a server, and returns its id; stop (`server`) ends it; logs (`server`) reads its latest output, or without server lists the servers; request (`port`, `method`, `path`, optional `headers`, `body`) sends one HTTP request to a port a running server of the workspace declared and returns its status, headers and body (cut at 1 MiB); screenshot (`port`, optional `path`, `width`, `height`) loads that port's page (default /) in a headless browser in the workspace and shows you the picture, on a worker whose sessions carry the browser; expose (`port`, optional `title`, `kind` page|panel) publishes that port to your user as a page in their chat and returns its base_path, unexpose (`port`) withdraws it; await (optional `timeout_s`) returns the next update your application posted to the address its servers find in LOOMCYCLE_UPDATE_URL (what the person did in the page), or timed_out. " +
+		"git_fetch (`name`) brings a git workspace's forge branches in as origin/*; git_pull also fast-forwards the current branch to its origin/ twin (when it has diverged, merge or rebase with exec); git_push (optional `force`) pushes your own branch, and only it, to the forge (needs your git_remote push). " +
 		"share (`name`, `with`: another run of your user by its agent id, `access`: read or read_write, optional `connect`: also its exposed pages) and unshare (`name`, `with`). " +
 		"checkpoint (`name`, optional `label`) records the workspace's files and answers an id; checkpoints lists them; restore (`name`, `checkpoint`) puts the files back and stops its interpreters and commands; delete_checkpoint frees one; fork (`name`, `as`, optional `checkpoint`) opens a second workspace of yours as a copy. Checkpoints count against the workspace's disk quota. " +
 		"A workspace another agent shared with you is named `<name>@<its agent id>` (list shows them): read, view, glob and grep on it, write and edit with read_write, and request to a port its owner exposed when shared with connect; never exec or run_cell. " +
@@ -68,7 +78,7 @@ func (w *Workspace) InputSchema() json.RawMessage {
 	return json.RawMessage(`{
 		"type": "object",
 		"properties": {
-			"op":               {"type": "string", "enum": ["open","release","list","status","exec","read","write","edit","glob","grep","share","unshare","run_cell","reset_kernel","view","start","stop","logs","request","await","expose","unexpose","screenshot","checkpoint","checkpoints","restore","delete_checkpoint","fork","save_template","delete_template","templates"]},
+			"op":               {"type": "string", "enum": ["open","release","list","status","exec","read","write","edit","glob","grep","share","unshare","run_cell","reset_kernel","view","start","stop","logs","request","await","expose","unexpose","screenshot","checkpoint","checkpoints","restore","delete_checkpoint","fork","save_template","delete_template","templates","git_fetch","git_pull","git_push"]},
 			"name":             {"type": "string", "description": "The workspace's name, your label for it within this run: 1-64 letters, digits, '.', '-', '_'. Every op but list takes it. A workspace shared with you: <name>@<owner agent id> (read, write, edit, glob, grep only)."},
 			"with":             {"type": "string", "description": "share/unshare: the agent id of the run to share with: your parent, a child, a sibling or another run of your user."},
 			"access":           {"type": "string", "enum": ["read","read_write"], "description": "share: read (read, glob, grep and copying files out) or read_write (also writing files in). Never commands."},
@@ -109,6 +119,7 @@ func (w *Workspace) InputSchema() json.RawMessage {
 			"old_string":       {"type": "string", "description": "edit: the exact text to replace; unique unless replace_all."},
 			"new_string":       {"type": "string", "description": "edit: the replacement."},
 			"replace_all":      {"type": "boolean", "description": "edit: replace every occurrence."},
+			"force":            {"type": "boolean", "description": "git_push: let the push rewrite your own branch on the forge (default false: a push that is no fast-forward is refused)."},
 			"offset":           {"type": "integer", "minimum": 1, "description": "read: first line, from 1. Turns on line mode."},
 			"limit":            {"type": "integer", "minimum": 1, "description": "read: how many lines. Turns on line mode."},
 			"line_numbers":     {"type": "boolean", "description": "read: prefix each line with its number. Turns on line mode."},
@@ -170,6 +181,10 @@ var workspaceOpArgs = map[string][]string{
 	// RFC GW §5.8: a picture of a page a server of the run's own workspace
 	// serves, by a browser in its container session (P10 plan §10).
 	"screenshot": {"name", "port", "path", "width", "height"},
+	// RFC GW P11: a git workspace's network ops.
+	"git_fetch": {"name"},
+	"git_pull":  {"name"},
+	"git_push":  {"name", "force"},
 }
 
 // WorkspaceMCPOps are the ops the Workspace tool takes over loomcycle's MCP
@@ -234,6 +249,10 @@ var workspaceOpGrant = map[string]string{
 	// Saving and deleting a template need workspace.templates (RFC GW
 	// §5.5); listing them, the grant to open one or to save one.
 	"save_template": "templates", "delete_template": "templates", "templates": "open_or_templates",
+	// A git workspace's network ops (RFC GW P11 plan §3.7): a fetch and a
+	// pull change what it holds; a push changes nothing in it, and needs
+	// git_remote push besides (checked in gitNetOp).
+	"git_fetch": config.WorkspaceOpWrite, "git_pull": config.WorkspaceOpWrite, "git_push": config.WorkspaceOpRead,
 }
 
 type workspaceInput struct {
@@ -283,6 +302,7 @@ type workspaceInput struct {
 	Branch     string            `json:"branch"`
 	Base       string            `json:"base"`
 	Credential string            `json:"credential"`
+	Force      bool              `json:"force"`
 	AllUsers   bool              `json:"all_users"`
 	Owner      string            `json:"owner"`
 	Scope      string            `json:"scope"`
@@ -322,6 +342,18 @@ func (w *Workspace) Execute(ctx context.Context, input json.RawMessage) (tools.R
 	if !ok {
 		return res, nil
 	}
+	if !gitNetworkCall(in) {
+		return w.execute(ctx, in)
+	}
+	// Every network op of a git workspace writes one audit line, a refused
+	// one too (RFC GW P11 plan §3.7).
+	ev := w.gitAuditEvent(ctx, in)
+	res, err := w.execute(withGitAudit(ctx, &ev), in)
+	w.recordGit(ev, res)
+	return res, err
+}
+
+func (w *Workspace) execute(ctx context.Context, in workspaceInput) (tools.Result, error) {
 	// 1. The grant.
 	pol := tools.PolicyOf(ctx).Workspace
 	granted := false
@@ -457,6 +489,8 @@ func (w *Workspace) Execute(ctx context.Context, input json.RawMessage) (tools.R
 			out["exists"] = exists
 		}
 		return workspaceOK(out), nil
+	case "git_fetch", "git_pull", "git_push":
+		return w.gitNetOp(ctx, owner, row, in), nil
 	case "exec":
 		return w.exec(ctx, row, in), nil
 	case "run_cell":

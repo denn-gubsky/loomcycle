@@ -631,3 +631,59 @@ func readFile(t *testing.T, p string) string {
 	}
 	return string(b)
 }
+
+// A workspace's fetch (RFC GW P11 plan §3.7, G8): its remote-tracking refs
+// become the mirror's heads, a head the forge dropped is dropped, and each
+// tracking ref is pinned in the mirror, so a later prune and repack cannot
+// remove a commit the workspace's history names.
+func TestWorkspace_TrackMirrorFollowsTheHeadsAndPinsThem(t *testing.T) {
+	f := newFixture(t)
+	r, _ := f.workspace(t, "ws1", "")
+	run(t, f.srv.work, "push", "-q", "served", "HEAD:refs/heads/side")
+	newMain := f.servedCommit(t, map[string]string{"more.txt": "more\n"}, "more")
+	f.fetch(t)
+	upd, err := r.TrackMirror(f.mirror, "ws1")
+	if err != nil {
+		t.Fatalf("TrackMirror: %v", err)
+	}
+	names := map[string]string{}
+	for _, u := range upd {
+		names[u.Name] = u.New
+	}
+	if names["refs/remotes/origin/main"] != newMain || names["refs/remotes/origin/side"] == "" {
+		t.Fatalf("updated = %+v", upd)
+	}
+	if got := run(t, f.mdir, "--git-dir=.", "rev-parse", "refs/loom/workspaces/ws1/remotes/main"); got != newMain {
+		t.Fatalf("pin of main = %q, want %s", got, newMain)
+	}
+	// The forge drops side: the workspace's tracking ref and its pin go.
+	run(t, f.srv.bare, "update-ref", "-d", "refs/heads/side")
+	f.fetch(t)
+	upd, err = r.TrackMirror(f.mirror, "ws1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(upd) != 1 || upd[0].Name != "refs/remotes/origin/side" || upd[0].New != "" {
+		t.Fatalf("after the drop: %+v", upd)
+	}
+	if out := run(t, f.mdir, "--git-dir=.", "for-each-ref", "--format=%(refname)", "refs/loom/workspaces/ws1/remotes/"); strings.Contains(out, "side") {
+		t.Fatalf("the dropped head is still pinned: %q", out)
+	}
+	// The base pin is not a tracking pin: it stays.
+	if out := run(t, f.mdir, "--git-dir=.", "for-each-ref", "--format=%(refname)", "refs/loom/workspaces/ws1/base"); out == "" {
+		t.Fatal("the base pin went")
+	}
+}
+
+// TrackMirror is for a workspace's repository only.
+func TestTrackMirror_RefusesARepositoryThatIsNoWorkspace(t *testing.T) {
+	f := newFixture(t)
+	dir := realTemp(t)
+	r, err := Init(bound(dir), "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.TrackMirror(f.mirror, "ws1"); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("TrackMirror on a plain repository = %v", err)
+	}
+}

@@ -884,6 +884,42 @@ type GitOpenArgs struct {
 	MaxBytes int64 `json:"max_bytes,omitempty"`
 }
 
+// The network ops of a git workspace (P11 plan §3.7), each on the op's
+// workspace with GitNetArgs, answering GitNetAnswer.
+const (
+	// OpGitFetchWorkspace fetches the mirror and makes the workspace's
+	// remote-tracking refs the forge's branches, pinned.
+	OpGitFetchWorkspace = "git_fetch"
+	// OpGitPull is OpGitFetchWorkspace, then a fast-forward of the
+	// current branch to its remote-tracking ref.
+	OpGitPull = "git_pull"
+	// OpGitPush pushes the workspace's own branch to the same name.
+	OpGitPush = "git_push"
+)
+
+// GitNetArgs are a network op's arguments: the row's repository and own
+// branch, the op's ticket, and the bounds.
+type GitNetArgs struct {
+	Mirror         string `json:"mirror"`
+	URL            string `json:"url"`
+	Branch         string `json:"branch"`
+	Ticket         []byte `json:"ticket"`
+	MaxObjectBytes int64  `json:"max_object_bytes"`
+	MaxReadBytes   int64  `json:"max_read_bytes"`
+	MaxPushBytes   int64  `json:"max_push_bytes,omitempty"`
+	// Force lets a push rewrite the own branch.
+	Force bool `json:"force,omitempty"`
+}
+
+// GitNetAnswer is what a network op did: the refs it moved (the
+// workspace's tracking refs for a fetch or pull, the forge's for a push),
+// and the workspace's HEAD after a pull.
+type GitNetAnswer struct {
+	UpToDate bool     `json:"up_to_date"`
+	Updated  []string `json:"updated"`
+	Head     string   `json:"head,omitempty"`
+}
+
 // GitOpenAnswer is the commit the workspace was opened at.
 type GitOpenAnswer struct {
 	Base string `json:"base"`
