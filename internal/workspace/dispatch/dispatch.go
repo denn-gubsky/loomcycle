@@ -122,6 +122,7 @@ type Dispatcher struct {
 	deps atomic.Pointer[deps]
 	// egress answers the Egress streams (SetEgress); nil refuses them.
 	egress atomic.Pointer[EgressFunc]
+	git    atomic.Pointer[GitEgressFunc]
 
 	mu      sync.Mutex
 	srv     *grpc.Server
@@ -138,8 +139,10 @@ type worker struct {
 	declared string
 	serves   auth.WorkerAttach
 	// local is the runtime's own child, attached on its private socket.
-	local    bool
-	engine   string
+	local  bool
+	engine string
+	// protocol is the version the worker attached with.
+	protocol uint32
 	tools    map[string]bool
 	labels   []string
 	capacity int
@@ -505,8 +508,8 @@ func (d *Dispatcher) admit(owner string, att auth.WorkerAttach, h *workspacepb.H
 	if h == nil {
 		return nil, nil, status.Error(codes.InvalidArgument, "the first Attach frame must be Hello")
 	}
-	if h.GetProtocolVersion() != workspace.ProtocolVersion {
-		return nil, nil, status.Errorf(codes.FailedPrecondition, "this runtime speaks workspace protocol %d, the worker %d: run the same loomcycle release on both", workspace.ProtocolVersion, h.GetProtocolVersion())
+	if v := h.GetProtocolVersion(); v < workspace.MinProtocolVersion || v > workspace.ProtocolVersion {
+		return nil, nil, status.Errorf(codes.FailedPrecondition, "this runtime serves workspace protocols %d to %d, the worker speaks %d: run the same loomcycle release on both", workspace.MinProtocolVersion, workspace.ProtocolVersion, v)
 	}
 	if !validDeclaredID(h.GetWorkerId()) {
 		return nil, nil, status.Error(codes.InvalidArgument, "a worker id of 1 to 128 letters, digits, '.', '-' or '_' is required")
@@ -527,7 +530,8 @@ func (d *Dispatcher) admit(owner string, att auth.WorkerAttach, h *workspacepb.H
 	}
 	w := &worker{
 		id: owner + "/" + h.GetWorkerId(), declared: h.GetWorkerId(), serves: att, engine: h.GetEngine(),
-		tools: map[string]bool{}, labels: append([]string(nil), h.GetLabels()...),
+		protocol: h.GetProtocolVersion(),
+		tools:    map[string]bool{}, labels: append([]string(nil), h.GetLabels()...),
 		capacity: min(max(int(h.GetCapacity()), 1), maxCapacity),
 		ctl:      make(chan *workspacepb.CoreControl, 16), lost: make(chan struct{}),
 		pending: map[string]store.WorkspaceRow{}, streams: map[*opStream]struct{}{},

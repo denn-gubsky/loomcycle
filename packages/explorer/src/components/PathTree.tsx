@@ -34,6 +34,10 @@ export interface PathNode {
   // the runtime's listing says (RFC HA). Never worked out here from the
   // folders that happen to be open — that number would be wrong.
   documents?: number;
+  // documentsCapped: the count stopped at its cap (more than `documents`).
+  documentsCapped?: boolean;
+  // matched: in a filtered listing, the entry's own document matched (RFC HA).
+  matched?: boolean;
   children: PathNode[];
 }
 
@@ -56,6 +60,8 @@ export function buildLazyTree(dirs: DirMap, dir = ""): PathNode[] {
       resourceRef: e.resource_ref,
       ...(hasChildren ? { hasChildren } : {}),
       ...(documents !== undefined ? { documents } : {}),
+      ...(documents !== undefined && e.documents_capped === true ? { documentsCapped: true } : {}),
+      ...(e.matched === true ? { matched: true } : {}),
       listing: opens ? dirs.get(e.full_path) : undefined,
       children: opens ? buildLazyTree(dirs, e.full_path) : [],
     };
@@ -70,13 +76,29 @@ export function buildLazyTree(dirs: DirMap, dir = ""): PathNode[] {
 }
 
 // folderDocuments reads a folder entry's document count when the runtime
-// sends one (RFC HA's `documents` on a listing entry). The capability is
+// sends one (RFC HA's `documents` on a listing entry) — on a directory, or on a
+// document with names below it, where it counts those names. The capability is
 // detected from the field itself, so an older runtime simply leaves the slot
 // empty.
 export function folderDocuments(e: PathEntry): number | undefined {
-  if (e.kind !== "directory") return undefined;
-  const n = (e as PathEntry & { documents?: unknown }).documents;
-  return typeof n === "number" && Number.isFinite(n) && n >= 0 ? n : undefined;
+  if (e.kind !== "directory" && e.has_children !== true) return undefined;
+  const n = (e as { documents?: unknown }).documents;
+  return typeof n === "number" && Number.isFinite(n) && n >= 0 ? Math.floor(n) : undefined;
+}
+
+// formatCount is the count slot's text: exact below 10,000 (the runtime's cap),
+// and a capped count as "10k+" — the runtime stopped counting there, so the
+// number is a floor, not a total.
+export function formatCount(n: number, capped?: boolean): string {
+  if (capped) return `${n >= 1000 ? `${Math.floor(n / 1000)}k` : n}+`;
+  return n >= 10000 ? `${Math.floor(n / 1000)}k` : n.toLocaleString("en-US");
+}
+
+// countLabel is the count's accessible name: the number in full, and what it
+// counts (under a filter, the documents that match).
+export function countLabel(n: number, capped: boolean | undefined, filtered: boolean | undefined): string {
+  const what = filtered ? (n === 1 && !capped ? "matching document" : "matching documents") : n === 1 && !capped ? "document" : "documents";
+  return `${n.toLocaleString("en-US")}${capped ? " or more" : ""} ${what}`;
 }
 
 // The icon of each entry kind; an unknown kind draws as a document.
@@ -123,6 +145,10 @@ export interface PathTreeProps {
   // Search (RFC GZ): the rows whose names match, and the one the search is on.
   searchHits?: ReadonlySet<string>;
   searchCurrent?: string;
+  // filtered: the tree is a filtered listing from the runtime (RFC HA). A
+  // document that matched itself is marked; one kept only for what is below
+  // it is drawn quieter; counts are of matches.
+  filtered?: boolean;
 }
 
 // nodeCard is a row's annotation card: what the tree already knows — the
@@ -150,7 +176,11 @@ export default function PathTree(props: PathTreeProps) {
   if (root.loaded && tree.length === 0 && !root.nextCursor) {
     return (
       <div className="empty">
-        <p>This tree is empty. Create a folder or document to begin.</p>
+        <p>
+          {props.filtered
+            ? "Nothing in this tree matches the filter."
+            : "This tree is empty. Create a folder or document to begin."}
+        </p>
       </div>
     );
   }
@@ -177,6 +207,7 @@ function ListingRows({
   depth,
   onLoadMore,
   onRetry,
+  filtered,
 }: { dir: string; listing?: DirListing; depth?: number } & PathTreeProps) {
   const rows: ReactNode[] = [];
   // Indented as the directory's children are (the root's rows at depth 0).
@@ -202,7 +233,7 @@ function ListingRows({
   } else if (listing.loaded && shown === 0 && !listing.nextCursor && dir !== "") {
     rows.push(
       <li key="status" className="path-status" role="none" style={indent}>
-        <span className="path-implicit">empty</span>
+        <span className="path-implicit">{filtered ? "no match" : "empty"}</span>
       </li>,
     );
   }
@@ -215,9 +246,15 @@ function ListingRows({
           disabled={listing.loading}
           onClick={() => onLoadMore(dir)}
         >
+          {/* A filtered page can stop early, even empty, with more after it:
+              its cursor means "maybe more", not "this many more". */}
           {listing.loading
-            ? "loading…"
-            : `Load more (${listing.entries.length} shown)`}
+            ? filtered
+              ? "looking…"
+              : "loading…"
+            : filtered
+              ? "Look for more matches"
+              : `Load more (${listing.entries.length} shown)`}
         </button>
       </li>,
     );
@@ -252,8 +289,19 @@ function isDrawn(nodes: PathNode[], expanded: ReadonlySet<string>, path: string)
 }
 
 function PathTreeNode(props: { node: PathNode; depth: number; tabStop?: string } & PathTreeProps) {
-  const { node, depth, tabStop, expanded, onToggle, selectedPath, onSelect, summaries, searchHits, searchCurrent } =
-    props;
+  const {
+    node,
+    depth,
+    tabStop,
+    expanded,
+    onToggle,
+    selectedPath,
+    onSelect,
+    summaries,
+    searchHits,
+    searchCurrent,
+    filtered,
+  } = props;
   // A directory opens, and so does a document with names beneath it (RFC GC):
   // its caret lists them while the row still opens the document. Children are
   // unknown until listed, so the caret is live even before then.
@@ -264,19 +312,29 @@ function PathTreeNode(props: { node: PathNode; depth: number; tabStop?: string }
   const scheme = summary ? effectiveScheme(summary.color_scheme) : undefined;
   const coloured = !!summary?.color_enabled;
   const hit = searchHits?.has(node.fullPath);
+  // Under a filter a document either matched itself or is there only for the
+  // names below it; folders never match themselves, so they carry no mark.
+  const filterMark =
+    filtered && node.kind !== "directory" ? (node.matched ? "filter-match" : "filter-kept") : undefined;
   return (
     <TreeItem
       className={`path-node kind-${node.kind}`}
       rowClassName={
-        searchCurrent === node.fullPath ? "search-hit search-current" : hit ? "search-hit" : undefined
+        searchCurrent === node.fullPath ? "search-hit search-current" : hit ? "search-hit" : filterMark
       }
       card={nodeCard(node, summaries)}
       count={
         // The slot is on every folder row and stays empty until the runtime
-        // sends a count (RFC HA).
-        node.kind === "directory" ? (
-          <span className="etree-count" aria-label={node.documents !== undefined ? `${node.documents} documents` : undefined}>
-            {node.documents}
+        // sends a count (RFC HA); a document with names below it shows one
+        // when it is sent.
+        node.kind === "directory" || node.documents !== undefined ? (
+          <span
+            className={`etree-count${node.documentsCapped ? " capped" : ""}`}
+            aria-label={
+              node.documents !== undefined ? countLabel(node.documents, node.documentsCapped, filtered) : undefined
+            }
+          >
+            {node.documents !== undefined ? formatCount(node.documents, node.documentsCapped) : undefined}
           </span>
         ) : undefined
       }

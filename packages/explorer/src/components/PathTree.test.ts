@@ -4,7 +4,15 @@ import { describe, it, expect } from "vitest";
 import type { DirListing } from "../lib/lazyPathTree";
 import type { PathEntry } from "../types";
 import type { DocSummary } from "../lib/colorScheme";
-import PathTree, { buildLazyTree, folderDocuments, nodeBrief, nodeCard, type PathTreeProps } from "./PathTree";
+import PathTree, {
+  buildLazyTree,
+  countLabel,
+  folderDocuments,
+  formatCount,
+  nodeBrief,
+  nodeCard,
+  type PathTreeProps,
+} from "./PathTree";
 
 const dir = (full_path: string): PathEntry => ({
   name: full_path.slice(full_path.lastIndexOf("/") + 1),
@@ -23,6 +31,7 @@ function render(
   dirs: Map<string, DirListing>,
   expanded: string[],
   summaries?: Map<string, DocSummary>,
+  filtered?: boolean,
 ): string {
   const noop = () => {};
   const props: PathTreeProps = {
@@ -34,6 +43,7 @@ function render(
     onRetry: noop,
     onSelect: noop,
     summaries,
+    filtered,
   };
   return renderToStaticMarkup(createElement(PathTree, props));
 }
@@ -222,5 +232,72 @@ describe("PathTree", () => {
     expect(folderDocuments({ ...doc("/x"), documents: 3 } as PathEntry)).toBeUndefined();
     const html = render(new Map([["", listing([counted])]]), []);
     expect(html).toContain('aria-label="12 documents">12</span>');
+  });
+
+  it("TestPathTree_FolderCountShowsCappedAsAFloor", () => {
+    // RFC HA counts exactly to 10,000; past that the count is a floor.
+    const capped = { ...dir("/facts"), documents: 10000, documents_capped: true } as PathEntry;
+    const big = { ...dir("/big"), documents: 2345 } as PathEntry;
+    const html = render(new Map([["", listing([capped, big])]]), []);
+    expect(html).toContain('<span class="etree-count capped" aria-label="10,000 or more documents">10k+</span>');
+    expect(html).toContain('aria-label="2,345 documents">2,345</span>');
+    expect(formatCount(1, false)).toBe("1");
+    expect(formatCount(10000, false)).toBe("10k");
+    expect(formatCount(500, true)).toBe("500+");
+    expect(countLabel(1, false, true)).toBe("1 matching document");
+  });
+
+  it("TestPathTree_AbsentCountLeavesTheSlotEmptyNeverZero", () => {
+    // A runtime that cannot count sends no `documents`: nothing is drawn,
+    // and a real zero is drawn as 0.
+    const absent = { ...dir("/a"), documents_capped: true } as PathEntry;
+    const zero = { ...dir("/b"), documents: 0 } as PathEntry;
+    const bogus = { ...dir("/c"), documents: "7" } as unknown as PathEntry;
+    expect(folderDocuments(absent)).toBeUndefined();
+    expect(folderDocuments(bogus)).toBeUndefined();
+    const html = render(new Map([["", listing([absent, zero, bogus])]]), []);
+    expect(html.match(/<span class="etree-count"><\/span>/g)?.length).toBe(2);
+    expect(html).toContain('aria-label="0 documents">0</span>');
+  });
+
+  it("TestPathTree_DocumentWithNamesBelowShowsTheirCount", () => {
+    const docFolder = { ...doc("/spec"), has_children: true, documents: 4 } as PathEntry;
+    expect(folderDocuments(docFolder)).toBe(4);
+    const html = render(new Map([["", listing([docFolder])]]), []);
+    expect(html).toContain('aria-label="4 documents">4</span>');
+  });
+
+  it("TestPathTree_FilteredTreeMarksMatchesAndQuietsKeptDocuments", () => {
+    // Under the runtime's filter: a document that matched itself is marked; a
+    // document kept for the names below it is drawn quieter; folders carry no
+    // mark, and their counts are of matches.
+    const dirs = new Map([
+      [
+        "",
+        listing(
+          [
+            { ...dir("/kb"), documents: 2 } as PathEntry,
+            { ...doc("/plan"), matched: true } as PathEntry,
+            { ...doc("/spec"), has_children: true, documents: 1 } as PathEntry,
+          ],
+          { appliedFilters: { status: "draft" }, nextCursor: "c" },
+        ),
+      ],
+    ]);
+    const html = render(dirs, [], undefined, true);
+    expect(html).toMatch(/class="etree-row filter-match"[^>]*><button[^]*?>plan</);
+    expect(html).toMatch(/class="etree-row filter-kept"[^>]*><button[^]*?>spec</);
+    expect(html).not.toMatch(/class="etree-row filter-(match|kept)"[^>]*><button[^]*?>kb</);
+    expect(html).toContain('aria-label="2 matching documents">2</span>');
+    // The page may stop early: more may match.
+    expect(html).toContain("Look for more matches");
+    expect(html).not.toContain("Load more");
+    // Unfiltered, the same rows carry no marks.
+    expect(render(dirs, [])).not.toContain("filter-");
+  });
+
+  it("TestPathTree_FilteredTreeWithNothingSaysSo", () => {
+    const dirs = new Map([["", listing([], { appliedFilters: { name_contains: "zz" } })]]);
+    expect(render(dirs, [], undefined, true)).toContain("Nothing in this tree matches the filter.");
   });
 });

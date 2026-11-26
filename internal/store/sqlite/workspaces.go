@@ -35,6 +35,10 @@ func (s *Store) WorkspaceSetState(ctx context.Context, tenantID, id string, from
 	return sqlshared.WorkspaceSetState(ctx, s.shared(), tenantID, id, from, to)
 }
 
+func (s *Store) WorkspaceSetGit(ctx context.Context, tenantID, id string, git store.WorkspaceGit) (bool, error) {
+	return sqlshared.WorkspaceSetGit(ctx, s.shared(), tenantID, id, git)
+}
+
 func (s *Store) WorkspaceDelete(ctx context.Context, tenantID, id string) (bool, error) {
 	return sqlshared.WorkspaceDelete(ctx, s.shared(), tenantID, id)
 }

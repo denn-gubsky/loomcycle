@@ -183,6 +183,26 @@ message EgressStart {
   bool has_body = 7;
   // The body's length, -1 when unknown.
   int64 content_length = 8;
+  // A git request (RFC GW §6.1, P11): the shape the core builds the request
+  // for, from the repository on the workspace's row. Set, route, method and
+  // path are empty: a git request names no URL. Unset for a route's request.
+  GitShape git_shape = 9;
+  // The ticket of the git op the request belongs to, as the op's arguments
+  // gave it: good for that op's workspace and shapes, until the op ends.
+  bytes ticket = 10;
+}
+
+// GitShape is one of the four requests a git client makes over smart HTTP.
+enum GitShape {
+  GIT_SHAPE_UNSPECIFIED = 0;
+  // GET info/refs?service=git-upload-pack
+  GIT_SHAPE_ADVERTISE_UPLOAD = 1;
+  // GET info/refs?service=git-receive-pack
+  GIT_SHAPE_ADVERTISE_RECEIVE = 2;
+  // POST git-upload-pack
+  GIT_SHAPE_UPLOAD_PACK = 3;
+  // POST git-receive-pack
+  GIT_SHAPE_RECEIVE_PACK = 4;
 }
 
 message Header {

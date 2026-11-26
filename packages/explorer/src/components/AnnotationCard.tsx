@@ -257,10 +257,11 @@ export function CardBody({ info, loading }: { info: CardInfo; loading?: boolean 
 }
 
 // rowSummary reads a chunk row's annotation when the chunk list carries one
-// (RFC HA adds `summary` to the rows; until then it is absent and the card
-// reads the chunk's annotation on first open).
+// (RFC HA's query_chunks `with_summary` puts `summary` on the rows; a runtime
+// before it leaves it out and the card reads the chunk's annotation on first
+// open).
 export function rowSummary(row: ChunkRow): Partial<CardInfo> | undefined {
-  const s = (row as ChunkRow & { summary?: { brief?: unknown; abstract?: unknown; stale?: unknown } }).summary;
+  const s = row.summary as { brief?: unknown; abstract?: unknown; stale?: unknown } | undefined;
   if (!s || typeof s.brief !== "string") return undefined;
   return {
     brief: s.brief,
@@ -271,11 +272,13 @@ export function rowSummary(row: ChunkRow): Partial<CardInfo> | undefined {
 
 // chunkCard is the card of a chunk: its own fields now, its annotation from
 // the chunk list when the list carries it, else read on first open.
-export function chunkCard(row: ChunkRow, src: CardScope | null): CardSpec {
+// `listed` says the list carries the briefs (some row has one): a row without
+// one then has no annotation of its own, and nothing is read for it.
+export function chunkCard(row: ChunkRow, src: CardScope | null, listed?: boolean): CardSpec {
   const base: CardSpec = { title: row.title || "(untitled)", type: row.type, status: row.status };
   const inline = rowSummary(row);
   if (inline) return { ...base, ...inline };
-  if (!src) return base;
+  if (!src || listed) return base;
   return {
     ...base,
     key: `${src.scope}:${src.browse?.scopeId ?? ""}:${src.browse?.tenant ?? ""}:chunk:${row.id}`,

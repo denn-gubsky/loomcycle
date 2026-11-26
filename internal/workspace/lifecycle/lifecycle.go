@@ -114,6 +114,10 @@ type Manager struct {
 	// (SetEgress); a nil proxy refuses every request out.
 	proxy  *egress.Proxy
 	routes map[string]egress.Route
+	// gitProxy sends git workspaces' requests (SetGitProxy); nil refuses
+	// every one. gitTickets are the live tickets of git ops (git.go).
+	gitProxy   *egress.GitProxy
+	gitTickets gitTickets
 	// principalEgress is workspace.mcp.egress (SetPrincipalEgress): the
 	// routes a workspace opened over the MCP server may use.
 	principalEgress []string

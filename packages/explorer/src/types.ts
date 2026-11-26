@@ -43,6 +43,16 @@ export interface PathEntry {
   // so this is the only sign of its subtree. Absent from runtimes before
   // v1.146.0.
   has_children?: boolean;
+  // RFC HA, on a one-level ls asked `with_counts`: how many documents the
+  // reader may open at or under this entry (a directory, or a document with
+  // names below it — not counting itself), each once. Exact up to 10,000;
+  // past that `documents: 10000` with `documents_capped`. Under a filter, the
+  // number that match. Absent — never 0 — where the runtime cannot count.
+  documents?: number;
+  documents_capped?: boolean;
+  // RFC HA, on a filtered ls: the entry's own document matched. A folder, or a
+  // document kept only because something below it matches, has no `matched`.
+  matched?: boolean;
 }
 
 // ChunkRow is the structural record returned by query_chunks (no body — kept
@@ -56,6 +66,9 @@ export interface ChunkRow {
   type?: string;
   status?: string;
   revision: number;
+  // RFC HA, from query_chunks `with_summary`: the chunk's OWN annotation's
+  // brief (never one inherited from a section above). Absent when it has none.
+  summary?: { level?: string; brief?: string; abstract?: string; stale?: boolean };
 }
 
 // ChunkDetail adds the Markdown body + typed fields (from get_chunk).

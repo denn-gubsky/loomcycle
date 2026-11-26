@@ -69,9 +69,25 @@ export interface DocRevertAnswer {
 
 // PathLsPage selects one page of an `ls`: `limit` bounds it (the runtime clamps
 // it to 5000), `cursor` is a previous page's next_cursor, passed back verbatim.
+//
+// withCounts and filters are RFC HA's, for a one-level listing only: counts add
+// `documents` to the entries; filters keep only what leads to a matching
+// document, and the runtime echoes what it applied as `filters` on the answer.
+// A runtime before RFC HA ignores both — the answer then carries no echo.
 export interface PathLsPage {
   limit?: number;
   cursor?: string;
+  withCounts?: boolean;
+  filters?: PathLsFilters;
+}
+
+// PathLsFilters are the filters of a one-level ls (RFC HA), as on the wire:
+// `name_contains` matches a document's Path name or title, ignoring case;
+// `type` takes in its subtypes; `status` is exact.
+export interface PathLsFilters {
+  name_contains?: string;
+  type?: string;
+  status?: string;
 }
 
 // DocEdgesPage is one get_edges page: truncated + next_cursor are present only
@@ -87,6 +103,10 @@ export interface PathLsResult {
   entries: PathEntry[];
   truncated?: boolean;
   next_cursor?: string;
+  // RFC HA: the filters a filtered listing applied (its echo), and the
+  // subtypes a `type` filter took in.
+  filters?: PathLsFilters;
+  type_expanded_to?: string[];
 }
 
 // ExplorerDataLayer is the narrow data contract the Path / Document components
@@ -442,6 +462,15 @@ export interface ExplorerDataLayer {
 const DOCUMENT_PATH_PAGES = 4;
 const DOCUMENT_PATH_PAGE_LIMIT = 5000;
 
+// nonEmpty keeps the filters that are set, so an unset one is not sent as "".
+function nonEmpty(f: PathLsFilters | undefined): PathLsFilters {
+  const out: PathLsFilters = {};
+  if (f?.name_contains) out.name_contains = f.name_contains;
+  if (f?.type) out.type = f.type;
+  if (f?.status) out.status = f.status;
+  return out;
+}
+
 // dataLayerFromClient maps a @loomcycle/client instance onto the
 // ExplorerDataLayer. Path ops route to client.path (POST /v1/_path); document
 // ops to client.document (POST /v1/_document) — both op-discriminated.
@@ -470,6 +499,8 @@ export function dataLayerFromClient(
           recursive,
           ...(page?.limit ? { limit: page.limit } : {}),
           ...(page?.cursor ? { cursor: page.cursor } : {}),
+          ...(page?.withCounts ? { with_counts: true } : {}),
+          ...nonEmpty(page?.filters),
         },
         browse,
       ) as Promise<PathLsResult>,
@@ -557,7 +588,15 @@ export function dataLayerFromClient(
       ) as Promise<{ documents: DocSummary[] }>,
     documentQueryChunks: (documentId, scope, browse) =>
       client.document(
-        { op: "query_chunks", document_id: documentId, scope, limit: 1000 } as unknown as DocumentToolInput,
+        // with_summary (RFC HA) puts each chunk's own brief on its row, so the
+        // outline's hover cards need no call; an older runtime ignores it.
+        {
+          op: "query_chunks",
+          document_id: documentId,
+          scope,
+          limit: 1000,
+          with_summary: true,
+        } as unknown as DocumentToolInput,
         browse,
       ) as Promise<{ chunks: ChunkRow[] }>,
     documentGetChunk: (id, scope, browse) =>

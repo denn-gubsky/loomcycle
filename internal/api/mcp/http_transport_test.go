@@ -841,6 +841,10 @@ func (m *httpMockConnector) ResumeOntologyJob(context.Context, connector.ResumeO
 	return connector.OntologyJobResult{}, nil
 }
 
+func (m *httpMockConnector) ApplyOntologyRollback(context.Context, connector.ApplyOntologyRollbackRequest) (connector.ApplyOntologyRollbackResult, error) {
+	return connector.ApplyOntologyRollbackResult{}, nil
+}
+
 func (m *httpMockConnector) ListReviewQueue(context.Context, connector.ListReviewQueueRequest) (connector.ListReviewQueueResult, error) {
 	return connector.ListReviewQueueResult{}, nil
 }

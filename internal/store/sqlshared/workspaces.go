@@ -15,7 +15,7 @@ import (
 
 // workspaceColNames is the column order scanWorkspace reads.
 var workspaceColNames = []string{"id", "tenant_id", "user_id", "name", "worker_id", "kind", "lifetime", "engine",
-	"owner_run_id", "owner_agent_id", "root_run_id", "state", "shares", "owner_kind", "opened_token", "last_used_at", "egress", "root", "created_at", "updated_at"}
+	"owner_run_id", "owner_agent_id", "root_run_id", "state", "shares", "owner_kind", "opened_token", "last_used_at", "egress", "root", "git", "created_at", "updated_at"}
 
 var workspaceCols = workspaceColList("")
 
@@ -35,10 +35,11 @@ func scanWorkspace(d Dialect, sc Row) (store.WorkspaceRow, error) {
 		state  string
 		shares string
 		egress string
+		git    string
 	)
 	if err := sc.Scan(&r.ID, &r.TenantID, &r.UserID, &r.Name, &r.WorkerID, &r.Kind, &r.Lifetime, &r.Engine,
 		&r.OwnerRunID, &r.OwnerAgentID, &r.RootRunID, &state, &shares, &r.OwnerKind, &r.OpenedToken,
-		d.TimeDest(&r.LastUsedAt), &egress, &r.Root, d.TimeDest(&r.CreatedAt), d.TimeDest(&r.UpdatedAt)); err != nil {
+		d.TimeDest(&r.LastUsedAt), &egress, &r.Root, &git, d.TimeDest(&r.CreatedAt), d.TimeDest(&r.UpdatedAt)); err != nil {
 		return store.WorkspaceRow{}, err
 	}
 	r.State = store.WorkspaceState(state)
@@ -52,6 +53,7 @@ func scanWorkspace(d Dialect, sc Row) (store.WorkspaceRow, error) {
 	if err := json.Unmarshal([]byte(egress), &r.Egress); err != nil || r.Egress == nil {
 		r.Egress = []string{}
 	}
+	r.Git = decodeWorkspaceGit(git)
 	r.CreatedAt, r.UpdatedAt, r.LastUsedAt = r.CreatedAt.UTC(), r.UpdatedAt.UTC(), r.LastUsedAt.UTC()
 	return r, nil
 }
@@ -113,7 +115,7 @@ func WorkspaceCreate(ctx context.Context, q Querier, row store.WorkspaceRow) (st
 		VALUES (`+Placeholders(len(workspaceColNames))+`)`,
 		row.ID, row.TenantID, row.UserID, row.Name, row.WorkerID, row.Kind, row.Lifetime, row.Engine,
 		row.OwnerRunID, row.OwnerAgentID, row.RootRunID, string(row.State), encodeShares(row.Shares),
-		row.OwnerKind, row.OpenedToken, d.TimeArg(now), encodeEgress(row.Egress), row.Root, d.TimeArg(now), d.TimeArg(now))
+		row.OwnerKind, row.OpenedToken, d.TimeArg(now), encodeEgress(row.Egress), row.Root, encodeWorkspaceGit(row.Git), d.TimeArg(now), d.TimeArg(now))
 	if IsUniqueViolation(err) {
 		return store.WorkspaceRow{}, &store.ErrConflict{Kind: "workspace", ID: row.Name}
 	}
@@ -470,4 +472,44 @@ func WorkspaceCountDurableByUser(ctx context.Context, q Querier, tenantID, userI
 		return 0, fmt.Errorf("workspace count durable by user: %w", err)
 	}
 	return n, nil
+}
+
+// encodeWorkspaceGit is the git column's text: "" for a workspace that is not
+// a git one.
+func encodeWorkspaceGit(g *store.WorkspaceGit) string {
+	if g == nil {
+		return ""
+	}
+	b, err := json.Marshal(g)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+// decodeWorkspaceGit reads the git column. One that does not decode gives no
+// repository: the git ops then refuse the workspace, never act on a guess.
+func decodeWorkspaceGit(s string) *store.WorkspaceGit {
+	if s == "" {
+		return nil
+	}
+	var g store.WorkspaceGit
+	if err := json.Unmarshal([]byte(s), &g); err != nil || g.URL == "" {
+		return nil
+	}
+	return &g
+}
+
+// WorkspaceSetGit replaces the tenant's row's git record.
+func WorkspaceSetGit(ctx context.Context, q Querier, tenantID, id string, git store.WorkspaceGit) (bool, error) {
+	if git.URL == "" {
+		return false, fmt.Errorf("workspace set git: a repository URL is required")
+	}
+	d := q.Dialect()
+	n, err := q.Exec(ctx, `UPDATE workspaces SET git = ?, updated_at = ? WHERE tenant_id = ? AND id = ?`,
+		encodeWorkspaceGit(&git), d.TimeArg(time.Now().UTC()), tenantID, id)
+	if err != nil {
+		return false, fmt.Errorf("workspace set git: %w", err)
+	}
+	return n > 0, nil
 }

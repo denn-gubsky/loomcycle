@@ -2372,13 +2372,16 @@ export interface BindSubjectPrincipalResult {
 
 /** One change {@link LoomcycleClient.planOntology} is asked about: a direct
  *  change of an entry, or an open proposal by its chunk id. */
-export type OntologyChange = OntologyEntryChange | OntologyProposalChange;
+export type OntologyChange = OntologyEntryChange | OntologyProposalChange | OntologyReleaseChange;
 
 /** A direct change. `entry` is an in-force entry of the tenant ontology by its
- *  chunk id. */
+ *  chunk id; for `unretire` a retired one; for `add` a chunk id of release
+ *  `seq` that is not in force now (RFC GQ P5.7). */
 export interface OntologyEntryChange {
-  op: "retire" | "rename" | "move" | "edit" | "delete";
+  op: "retire" | "unretire" | "rename" | "move" | "edit" | "delete" | "add";
   entry: string;
+  /** add: the release the entry is added back from. */
+  seq?: number;
   /** rename: the new name, one line. */
   name?: string;
   /** move: the new parent's chunk id (an entry of the same section, or the section). */
@@ -2394,6 +2397,15 @@ export interface OntologyEntryChange {
 export interface OntologyProposalChange {
   op: "proposal";
   id: string;
+}
+
+/** Rolling the ontology back to release `seq` (RFC GQ P5.7), the request's only
+ *  change: the plan lists the direct changes that make the ontology declare what
+ *  the release declared, each carrying `release`. Apply it with
+ *  {@link LoomcycleClient.rollbackOntology} and the plan's fingerprint. */
+export interface OntologyReleaseChange {
+  op: "release";
+  seq: number;
 }
 
 /** An entry of the ontology as a plan names it. */
@@ -2435,6 +2447,44 @@ export interface OntologyPlannedChange {
   /** What the class-rename job would do for a rename of a class something
    *  rests on; absent for every other change. */
   job?: OntologyRenameJobPlan;
+  /** The release a rollback plans toward (op `release`), on every change it
+   *  expands to; absent otherwise. */
+  release?: number;
+}
+
+/** One write a rollback made. */
+export interface OntologyRollbackStep {
+  op: string;
+  /** The entry's chunk id. */
+  entry: string;
+  name: string;
+  /** add: the chunk the entry was added back as. */
+  new_id?: string;
+}
+
+/** What rolling the ontology back to a release did. */
+export interface OntologyRollbackReport {
+  release: number;
+  /** What the release declared, and what the ontology in force declares now. */
+  release_content_version: string;
+  content_version: string;
+  /** Whether the two are equal: not after an entry was added back under a new
+   *  chunk id, or a class renamed through the rename job kept `@renamed_from`. */
+  matches: boolean;
+  risk: "destroys" | "stales" | "none";
+  applied: OntologyRollbackStep[];
+  /** The class-rename jobs the rollback's renames started. */
+  rename_jobs?: OntologyJobStatus[];
+  /** The release taken of the ontology the rollback left. */
+  rollback_release?: number;
+  notes?: string[];
+  warnings?: string[];
+}
+
+/** Result of {@link LoomcycleClient.rollbackOntology}. */
+export interface ApplyOntologyRollbackResult {
+  tenant: string;
+  rollback: OntologyRollbackReport;
 }
 
 /** The class-rename job a rename would start (RFC GQ P5): the rows each step

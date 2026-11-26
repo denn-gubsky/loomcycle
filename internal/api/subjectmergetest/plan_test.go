@@ -127,7 +127,7 @@ func (e *env) planGRPC(bearer string, changes []connector.OntologyChange) (conne
 	ctx := metadata.AppendToOutgoingContext(context.Background(), "authorization", "Bearer "+bearer)
 	req := &loomcyclepb.PlanOntologyRequest{}
 	for _, c := range changes {
-		req.Changes = append(req.Changes, &loomcyclepb.OntologyChange{Op: c.Op, Entry: c.Entry, Name: c.Name, Parent: c.Parent, Body: c.Body})
+		req.Changes = append(req.Changes, &loomcyclepb.OntologyChange{Op: c.Op, Entry: c.Entry, Name: c.Name, Parent: c.Parent, Body: c.Body, Seq: c.Seq})
 	}
 	resp, err := e.grpc.PlanOntology(ctx, req)
 	if err != nil {
@@ -153,7 +153,7 @@ func (e *env) planGRPC(bearer string, changes []connector.OntologyChange) (conne
 	}
 	for _, c := range resp.GetChanges() {
 		pc := connector.OntologyPlannedChange{Op: c.GetOp(), Entry: entry(c.GetEntry()), Risk: c.GetRisk(), Notes: c.GetNotes(),
-			Job: renameJobPlanFromProto(c.GetJob())}
+			Job: renameJobPlanFromProto(c.GetJob()), Release: c.GetRelease()}
 		for _, s := range c.GetSubtree() {
 			pc.Subtree = append(pc.Subtree, entry(s))
 		}
