@@ -43,7 +43,7 @@ Run loomcycle with authentication on and a persistent store. Then:
 
 ### 2. Microsoft Entra and Azure Bot
 
-1. Register a **single-tenant** app in Microsoft Entra ID and create a client secret.
+1. Register a **single-tenant** app in Microsoft Entra ID and create a client secret. With files or voice on, also upload a certificate (or use a managed identity): from 2027-03-01 a client secret cannot download files ([The file token](#the-file-token-from-2027-03-01)).
 2. Create an **Azure Bot** resource using that app. Set its messaging endpoint to `https://<bridge-host>/api/messages` and enable the **Microsoft Teams** channel.
 
 ### 3. Run the bridge
@@ -200,16 +200,39 @@ Formats taken: `m4a`, `mp4`, `mp3`, `wav`, `ogg`, `webm` and `flac`, the ones lo
 
 ### Downloads
 
-Teams gives the bot a pre-authorised link to each attached file that works for only a few minutes, so the bridge fetches it at once, the same way for documents and recordings:
+Teams gives the bot a link to each attached file that works for only a few minutes, so the bridge fetches it at once, the same way for documents and recordings:
 
-- **No credential is sent:** no bot token and no header of the bridge's own.
+- **A credential only where the link needs one.** Until 2027-03-01 every link carries a `tempauth` query and works without a token: the bridge sends no credential and no header of its own. A link without `tempauth` (every link from 2027-03-01) is fetched with the bot's own file token ([below](#the-file-token-from-2027-03-01)), for that link's host only, and only after the host passed `TEAMS_BRIDGE_FILE_HOSTS`. The token goes with the first request alone: every redirect is followed without it.
 - **Only from SharePoint hosts:** the link, and every redirect it takes, must be `https` on a host ending in one of `TEAMS_BRIDGE_FILE_HOSTS` (default `.sharepoint.com`, which covers OneDrive's `<tenant>-my.sharepoint.com`). Add a sovereign cloud's suffix (`.sharepoint.us`, `.sharepoint.de`, `.sharepoint.cn`) if your tenant uses one. Anything else is refused.
 - **Capped while reading:** Teams states no size up front, so the download stops once it passes `BRIDGE_FILES_MAX_BYTES` for a document (default 20 MiB) or `BRIDGE_VOICE_MAX_BYTES` for a recording (default 8 MB). `BRIDGE_VOICE_MAX_SECONDS` cannot apply, since Teams gives no length either; loomcycle's own limit on the minutes one transcription may take still does.
 - A sign-in page or an error status instead of the file is refused.
 
-When a download is refused, the person hears "I couldn't download that file. Please send it again." (for a recording, "I couldn't download that voice message. Please try again or type it.") and the bridge logs `teams file download refused` with the reason (`host`, `redirect`, `status`, `type` or `size`), the host or HTTP status where there is one, and never the link.
+When a download is refused, the person hears "I couldn't download that file. Please send it again." (for a recording, "I couldn't download that voice message. Please try again or type it.") and the bridge logs `teams file download refused` with the reason (`host`, `redirect`, `status`, `type`, `size` or `token`), the host or HTTP status where there is one, and never the link or a token. Reason `token` means a link without `tempauth` and no file token: `cause` is `none` (no certificate, managed identity or federated credential configured), `status` (the token endpoint refused, with its `status`), `response` or `failed`.
 
 Not yet checked against a live tenant (RFC GA P0): the exact host Teams' `downloadUrl` uses, whether it redirects, and how long it lives. If files are refused with reason `host` or `redirect`, the logged host tells you what to add to `TEAMS_BRIDGE_FILE_HOSTS`.
+
+### The file token from 2027-03-01
+
+Microsoft ("Send and receive files", updated 2026-11-20): until March 1, 2027, file URLs have a `tempauth` query parameter and work without a token. From then on a bot sends its own access token with every file download, requested for `https://<the URL's host>/.default` with the bot's app id, and **a token acquired with a client secret gets HTTP 401**. It must come from a certificate, a federated identity credential or a managed identity (RFC HF §3.7).
+
+The bridge takes the file token from the first of:
+
+| Credential | Configure | Notes |
+|---|---|---|
+| Certificate | `CLIENT_CERTIFICATE_PATH`: a PEM file holding the certificate uploaded to the bot's Entra app (**Certificates & secrets → Certificates**) and its unencrypted RSA private key. Needs `CLIENT_ID` and `TENANT_ID`. | Used for file downloads only; the bot's own traffic keeps `CLIENT_SECRET` if one is set. Keep the file readable by the bridge alone (mode 0600, a mounted secret). |
+| Managed identity or federated credential | No `CLIENT_SECRET`; `CLIENT_ID` (and `TENANT_ID`); for a federated credential also `MANAGED_IDENTITY_CLIENT_ID` (`system`, or a user-assigned identity's client id), the Teams SDK's own variable. | The SDK then uses it for everything, the bot's own traffic included, so it suits a bot hosted in Azure. |
+
+With only `CLIENT_SECRET`, there is no file token, and with files or voice on the bridge warns at start: `files and recordings will fail from 2027-03-01: configure a certificate or federated credential (RFC HF)`. Until then links carry `tempauth` and keep working.
+
+**The manifest permission, from 2027-01-15.** Teams then expects a bot that downloads files to declare the resource-specific permission `File.ReadSelected.User`, and refuses it in a manifest before that date, so `appPackage/manifest.json` does not carry it yet. On or after 2027-01-15, add this top-level key to the manifest, raise its `version`, and upload the app package again:
+
+```json
+"authorization": {
+  "permissions": {
+    "resourceSpecific": [{ "name": "File.ReadSelected.User", "type": "Application" }]
+  }
+}
+```
 
 ### What Teams sent
 
@@ -225,7 +248,7 @@ Use the dump rather than `LOG_LEVEL=debug`: at debug level the Teams SDK logs wh
 - **Inbound:** the Teams SDK validates the Bot Connector's signature on every request. The bridge always sets the SDK's unauthenticated mode explicitly from `BRIDGE_DEV`, so a stray `DANGEROUSLY_ALLOW_UNAUTHENTICATED_REQUESTS` cannot turn validation off.
 - **Tenant fence:** activities from Entra tenants not in `TEAMS_BRIDGE_ALLOWED_TENANTS` get one refusal and never reach loomcycle.
 - **Least privilege:** the bridge's own token never runs agents. A user's token is limited to one agent, every per-run override except `interactive` is locked, it is rate-limited, and it expires.
-- **Attached files** (files or voice on): fetched with no credential, from `TEAMS_BRIDGE_FILE_HOSTS` only, redirects included, and held in memory for one request. A document is put into the person's own run with the person's own token; the agent gets its inbox ref, never its bytes or link.
+- **Attached files** (files or voice on): fetched from `TEAMS_BRIDGE_FILE_HOSTS` only, redirects included, and held in memory for one request. A link with `tempauth` goes with no credential; one without goes with the bot's file token, acquired only after its host passed the list, scoped to that host, sent on the first request only (never across a redirect), and never logged. The file token never comes from a client secret. A document is put into the person's own run with the person's own token; the agent gets its inbox ref, never its bytes or link.
 - **Nothing at rest:** tokens are kept in memory. Logs carry conversation and run ids, never tokens, message text or agent output.
 - **Output:** tool inputs and outputs are never sent to Teams; while the agent works, Teams sees the tool's name only.
 
