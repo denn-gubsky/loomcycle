@@ -641,6 +641,42 @@ A set of Documents can be checked out into a workspace as Markdown files, change
 - **Only in a workspace the run owns.** checkout and commit refuse a shared workspace's name (`<name>@<agent id>`): the record is the owner's, and a share hands over file reads and writes only.
 - **Grants.** checkout: the Document tool and the scope's read grants, the `workspace` grant `write`. commit: the Document tool and the scope's write grants (tenant scope: `tenant` in both `memory_scopes` and `sql_scopes`), the `workspace` grant `read`, and `write` for a real commit, which updates the manifest. The `Document` hooks judge every Document call either op makes (the exports, the lookups, each import, its tags), the `Workspace` hooks each file, all before anything is written: one refusal refuses the whole call.
 
+## Git workspaces
+
+A git workspace is a repository checked out on its own branch (RFC GW P11). `Workspace open {name, repo, credential?, branch?, base?}` opens one. `repo` is an `https` URL on a host the operator lists (`LOOMCYCLE_GIT_SOURCE_HOSTS`). The agent needs `git_remote: [fetch]`, and the access-control rules of the run's user must allow `fetch` of `git:<host>/<path>`. `credential` is a `$cred:<name>` reference, restricted (`allowed_urls`) to URLs covering the repository; it is resolved in the run, and its value never reaches the worker. The answer names the repository, the workspace's own branch, the commit it started at and the forge's default branch.
+
+**How it is made.** The worker keeps one bare mirror per (tenant, repository), beside its workspaces, filled only from the forge. The workspace is a working tree with its own git directory over that mirror; a container session sees the mirror read-only at `/mirror/objects`. Every git request the worker makes goes to the runtime on the worker's own connection, carrying a ticket of the op that asked for it. The runtime sends it to the forge with the credential, through the same dial guard as egress. A ticket opens only that op's requests and ends with the op.
+
+**Access is proved on every open.** An open succeeds only if the forge answered the opener's credential, as the runtime read the forge's answers: one user's open never links another user of the same tenant to a mirror the forge would not give them.
+
+**The own branch.** `branch` defaults to `loom/<name>-<6 hex>`, under the first `workspace.push.ref_prefixes` entry. It is never the forge's default branch. One the forge already has is refused unless the operator sets `workspace.push.adopt_existing`, since a forced push of the own branch is accepted. `base` is a full ref (`refs/heads/…`, `refs/tags/…`) or a commit; it defaults to the forge's default branch, or to the adopted branch.
+
+**The ops.**
+
+| Op | Needs | What it does |
+|---|---|---|
+| `git_status` | `read` | the branch and the changed files |
+| `git_diff {path?, staged?, rev?}` | `read` | a patch, cut at 1 MiB |
+| `git_log {rev?, max?}` | `read` | commits, 50 by default, at most 200 |
+| `git_commit {message, paths?, all?}` | `write` | a commit by the operator's author (`LOOMCYCLE_GIT_AUTHOR_NAME`/`_EMAIL`) or the agent's name, with a `Loomcycle-Run:` line |
+| `git_branch {create?, from?}` | `read`; `write` to create | local branches |
+| `git_checkout {branch \| rev}` | `write` | switch branch, or a commit detached |
+| `git_fetch` | `write`, `git_remote` fetch | the forge's branches as `origin/*` |
+| `git_pull` | `write`, `git_remote` fetch | a fetch, then a fast-forward of the current branch; diverged answers `non_fast_forward` |
+| `git_push {force?}` | `read`, `git_remote` push, a host on `LOOMCYCLE_GIT_PUSH_HOSTS` | the own branch to the same name; a rewrite needs `force` |
+
+Git in `exec` works too, in the same directory. The typed ops read the repository with the row's configuration, never the session's: an `insteadOf`, a `pushurl`, a hook or a filter set by git in the session changes nothing they do, and they run no hook. A feature they cannot read (a sparse checkout, a split index, an included config file) is refused by name with the command that undoes it. A workspace shared with a run answers `git_status`, `git_diff` and `git_log` to it, and nothing else of git.
+
+**The push.** The runtime reads every push's ref updates before anything reaches the forge. It refuses any update but the own branch's, and also a deletion, the default branch, push options, and a tag unless `ref_prefixes` lists `refs/tags/`. A refused push sends nothing. The forge's words in a failure go to the operator's log, never to the model.
+
+**Forks, checkpoints, templates.** A fork of a git workspace (`fork {name, as, checkpoint?, branch?}`, or at spawn) is a git workspace of its own, with its own branch (default `loom/<as>-<6 hex>`) and its own pins. A named branch needs `adopt_existing`, because a fork cannot ask the forge whether it exists. Checkpoints and restores work as for any workspace. A git workspace is never saved as a template, and is never durable in this release.
+
+**Audit.** Each open with `repo`, `git_fetch`, `git_pull` and `git_push`, refused or not, writes one `workspace_git` line: the op, the host, the repository path, the run, the agent, the credential's reference (never its value), the refs moved and the outcome.
+
+**Mirrors.** A mirror is capped at `workspace.git.mirror_max_mb` (default 4096): a fetch that would pass the cap is refused `mirror_too_large` and leaves the mirror as it was. A mirror no workspace pins is removed `workspace.git.mirror_idle_s` (default 3600) after its last use; a remote worker reads `LOOMCYCLE_WORKSPACE_MIRROR_IDLE_S`.
+
+Over loomcycle's MCP server a session opens no git workspace (`not_over_mcp`): a principal has no run, no `git_remote` and no agent for the credential.
+
 ## Workspaces over the MCP server
 
 A session of loomcycle's MCP server (`loomcycle mcp`, `/v1/_mcp`) has no run, so the `workspace` meta-tool gives it workspaces of its own (RFC GW D35). A workspace opened there **belongs to the token identity the session signed in with: its tenant and subject**, not to a run.
@@ -678,6 +714,11 @@ A session of loomcycle's MCP server (`loomcycle mcp`, `/v1/_mcp`) has no run, so
 | `workspace.template.max_per_tenant` | 20 | The templates a tenant holds, user and tenant ones together (1 to 1000). |
 | `workspace.template.max_per_user` | 5 | One user's user templates, runs and MCP sessions of the subject together (1 to `max_per_tenant`). |
 | `workspace.convert.memory_limit_mb` | 1024 | The local worker's conversion child (`LOOMCYCLE_WORKSPACE_CONVERT_MEMORY_LIMIT_MB` on a remote worker). |
+| `workspace.push.ref_prefixes` | `[refs/heads/]` | Where a git workspace's own branch may be named; `refs/tags/` also allows pushing new tags. |
+| `workspace.push.max_bytes` | 64 MiB | One push's body (1 byte to 1 GiB). |
+| `workspace.push.adopt_existing` | false | May a git workspace own a branch the forge already has. |
+| `workspace.git.mirror_max_mb` | 4096 | One git mirror on a worker; a fetch that would pass it is refused `mirror_too_large` (1 to 1048576). |
+| `workspace.git.mirror_idle_s` | 3600 | How long a mirror no workspace pins is kept after its last use (`LOOMCYCLE_WORKSPACE_MIRROR_IDLE_S` on a remote worker; 1 to 2592000). |
 | worker capacity | 8 | Workspaces a worker holds (`LOOMCYCLE_WORKSPACE_CAPACITY`). |
 
 A command and everything it started is killed at its timeout. Its output is kept up to 1 MiB. `write` takes a file of up to 1 MiB; `read` returns what the Read tool would. A file `File` moves is bounded by `LOOMCYCLE_FILE_MAX_BYTES` (64 MiB), as any file it handles.

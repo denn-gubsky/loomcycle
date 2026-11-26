@@ -36,12 +36,25 @@ workspace unchanged.
   `checkpoint`, `checkpoints`, `restore`, `delete_checkpoint`, `fork`,
   `save_template` and `share` are refused on it (`not_on_root`); `release`
   leaves the folder as it is. Not offered over loomcycle's MCP server.
+- `repo` — an `https` repository URL on a host the operator lists: the
+  workspace is that repository checked out on its own branch (a git
+  workspace; see Workspace/git_status and the git ops). Needs your
+  `git_remote` fetch. Not with `template` or `root`; never durable.
+- `credential` — with `repo`: `$cred:<name>`, restricted to URLs covering
+  the repository. Omit for a public repository. The forge must let it read
+  the repository, or the open is refused (`git_access_denied`).
+- `branch` — with `repo`: the workspace's own branch, the only one
+  `git_push` moves. Default `loom/<name>-<id>`. Never the forge's default
+  branch; one the forge already has only where the operator allows it.
+- `base` — with `repo`: the full ref (`refs/heads/…`, `refs/tags/…`) or
+  commit to start at. Default the forge's default branch.
 
 ## Returns
 
 `{name, state, engine, root?, template?, egress?}`; `state` is `ready`;
 `root` names the root a workspace is on; `egress` lists the routes when it
-has any.
+has any. A git workspace also answers `repo`, `branch`, `base` (the commit
+it started at) and `default_branch`.
 
 ## Errors
 
@@ -60,6 +73,12 @@ has any.
 - `at_capacity` — every worker that could take it is full.
 - `template_not_found` — no template of that name you may use.
 - `workspace_over_quota` — the template holds more than a workspace may.
+- `git_remote_not_allowed`, `git_network_disabled`, `host_not_allowed`,
+  `acl_denied`, `credential_url_not_allowed` — a git workspace's checks.
+- `git_access_denied` — the forge did not let the credential read it.
+- `invalid_branch`, `branch_exists` — a `branch` the workspace may not own.
+- `mirror_too_large` — the repository would take the worker's mirror past
+  the operator's cap.
 
 ## Examples
 
