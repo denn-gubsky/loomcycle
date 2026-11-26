@@ -248,7 +248,7 @@ func (w *worker) gitFetch(ctx context.Context, id string, raw []byte) answer {
 	defer cleanup()
 	res, err := m.Fetch(ctx, n)
 	if err != nil {
-		return refuse(gitrepo.Class(err), "fetching the mirror failed")
+		return refuse(gitClass(err), "fetching the mirror failed")
 	}
 	if in.Prove {
 		if err := proveUpload(ctx, n); err != nil {
@@ -308,7 +308,7 @@ func (w *worker) gitOpen(ctx context.Context, id, dir string, raw []byte) answer
 	}
 	base, err := m.Resolve(in.BaseRef)
 	if err != nil {
-		return refuse(gitrepo.Class(err), "%v", err)
+		return refuse(gitClass(err), "%v", err)
 	}
 	v, err := fsops.OpenVolumeFS(dir, "")
 	if err != nil {
@@ -327,7 +327,7 @@ func (w *worker) gitOpen(ctx context.Context, id, dir string, raw []byte) answer
 	spec := gitrepo.WorkspaceSpec{ID: id, URL: in.URL, Branch: in.Branch, AlternatesPath: w.mirrorObjects(in.Mirror),
 		Limits: gitrepo.Limits{MaxFiles: in.MaxFiles, MaxBytes: in.MaxBytes}}
 	if _, err := gitrepo.CreateWorkspace(wt, m, spec, base); err != nil {
-		return refuse(gitrepo.Class(err), "%v", err)
+		return refuse(gitClass(err), "%v", err)
 	}
 	return jsonAnswer(workspace.GitOpenAnswer{Base: base.String()})
 }
