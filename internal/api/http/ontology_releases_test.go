@@ -170,7 +170,7 @@ func TestOpenAPISpec_PublishesTheOntologyReleaseRoutes(t *testing.T) {
 		}
 	}
 	items := dig(doc, "paths", "/v1/_ontology/releases/diff", "get", "responses", "200", "content", "application/json", "schema", "properties", "changes", "items", "properties")
-	if got := fmt.Sprint(dig(items, "change", "enum")); got != "[added removed changed]" {
+	if got := fmt.Sprint(dig(items, "change", "enum")); got != "[added removed changed erased]" {
 		t.Errorf("change enum = %s", got)
 	}
 	if got := fmt.Sprint(dig(items, "changed", "items", "enum")); got != "[renamed moved kind status meaning directives]" {
