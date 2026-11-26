@@ -4160,10 +4160,75 @@ export function getOntologyJob(): Promise<OntologyJobResult> {
   return jsonFetch<OntologyJobResult>("/v1/_ontology/job");
 }
 
-/** Give the unfinished job one slice of work; `id` refuses the resume unless that
- *  job is still the unfinished one. */
-export function resumeOntologyJob(id?: string): Promise<OntologyJobResult> {
-  return postJSON<OntologyJobResult>("/v1/_ontology/job/resume", JSON.stringify(id ? { id } : {}));
+/** Give the unfinished job one slice of work. `id` is required: the resume is
+ *  refused unless that job is still the unfinished one. */
+export function resumeOntologyJob(id: string): Promise<OntologyJobResult> {
+  return postJSON<OntologyJobResult>("/v1/_ontology/job/resume", JSON.stringify({ id }));
+}
+
+// ---- Ontology rollback (RFC GQ P5.7: POST /v1/_ontology/rollback) ----
+//
+// The same shapes as @loomcycle/client's OntologyRollbackReport family. An
+// operator's action: a member gets 403.
+
+/** One write a rollback made: the op, the entry's chunk id and name. */
+export interface OntologyRollbackStep {
+  op: string;
+  entry: string;
+  name: string;
+  /** The chunk an entry added back was written as (it gets a new id). */
+  new_id?: string;
+}
+
+export interface OntologyRollbackReport {
+  release: number;
+  /** What the release declared, and what the ontology in force declares now. */
+  release_content_version: string;
+  content_version: string;
+  /** Whether the two content versions are equal. */
+  matches: boolean;
+  risk: string;
+  applied: OntologyRollbackStep[];
+  /** The class-rename jobs the rollback's renames started. */
+  rename_jobs?: OntologyJobStatus[];
+  /** The release taken of the ontology the rollback left. */
+  rollback_release?: number;
+  notes?: string[];
+  warnings?: string[];
+}
+
+export interface ApplyOntologyRollbackResult {
+  tenant: string;
+  rollback: OntologyRollbackReport;
+}
+
+/** A rollback the server refused with a 409 or 422: the body carries `code` and
+ *  `error`, plus `fingerprint` (plan_required / plan_stale) or `applied`
+ *  (partially_applied). */
+export interface OntologyRollbackFailure {
+  status: number;
+  body: { code?: string; error?: string; fingerprint?: string; applied?: OntologyRollbackStep[] } | null;
+}
+
+/** Plan rolling the ontology back to release `seq`. Writes nothing. */
+export function planOntologyRollback(seq: number): Promise<OntologyPlanResult> {
+  return planOntologyChanges([{ op: "release", seq }]);
+}
+
+/** Apply the plan of rolling back to release `seq` with that plan's fingerprint. A
+ *  409 or 422 refusal is returned with its body whole (a partial rollback's list of
+ *  writes can run past an error message's length); anything else throws. */
+export async function applyOntologyRollback(
+  seq: number,
+  planFingerprint: string,
+): Promise<{ ok: true; data: ApplyOntologyRollbackResult } | { ok: false; failure: OntologyRollbackFailure }> {
+  const r = await jsonFetchAllowing<ApplyOntologyRollbackResult>("/v1/_ontology/rollback", [409, 422], {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ seq, plan_fingerprint: planFingerprint }),
+  });
+  if (r.ok) return r;
+  return { ok: false, failure: { status: r.status, body: r.body } };
 }
 
 // ---- Ontology subject merge (POST /v1/_ontology/subjects/merge) ----

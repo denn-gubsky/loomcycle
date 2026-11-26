@@ -341,17 +341,29 @@ describe("ontology job", () => {
     expect(JSON.parse(call[1]!.body as string)).toEqual({ id: "j1" });
   });
 
-  it("resumeOntologyJob without an id sends an empty body", async () => {
-    const { client, fetchMock } = makeClient([jsonResponse({ tenant: "acme", job })]);
-    await client.resumeOntologyJob();
-    expect(JSON.parse(fetchMock.mock.calls[0]![1]!.body as string)).toEqual({});
+  it("resumeOntologyJob requires the job's id", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({ code: "invalid_body", error: "a resume needs the job's id" }, 400),
+    ]);
+    // The type requires the id; the server refuses an empty one.
+    const typeCheckOnly = (c: typeof client) => {
+      // @ts-expect-error id is required
+      void c.resumeOntologyJob();
+      // @ts-expect-error id is required
+      void c.resumeOntologyJob({ tenant: "acme" });
+    };
+    void typeCheckOnly;
+    const err = await client.resumeOntologyJob({ id: "" }).catch((e: unknown) => e);
+    expect(JSON.parse(fetchMock.mock.calls[0]![1]!.body as string)).toEqual({ id: "" });
+    expect((err as LoomcycleError).status).toBe(400);
+    expect((err as LoomcycleError).code).toBe("invalid_body");
   });
 
   it("resumeOntologyJob throws job_busy with its status", async () => {
     const { client } = makeClient([
       jsonResponse({ code: "job_busy", error: "a class rename or concept move is being checked or carried out right now" }, 409),
     ]);
-    const err = await client.resumeOntologyJob().catch((e: unknown) => e);
+    const err = await client.resumeOntologyJob({ id: "j1" }).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(LoomcycleError);
     expect((err as LoomcycleError).status).toBe(409);
     expect((err as LoomcycleError).code).toBe("job_busy");

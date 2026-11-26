@@ -11677,9 +11677,10 @@ type ResumeOntologyJobRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Whose ontology, as GetOntologyJobRequest.tenant.
 	Tenant string `protobuf:"bytes,1,opt,name=tenant,proto3" json:"tenant,omitempty"`
-	// The job's id from GetOntologyJob: the resume is refused (job_not_found)
-	// unless that job is still the unfinished one. Empty resumes whichever job
-	// is unfinished.
+	// Required: the job's id from GetOntologyJob. The resume is refused
+	// (job_not_found) unless that job is still the unfinished one; an empty id
+	// is refused (INVALID_ARGUMENT invalid_request), so a resume aimed at a job
+	// that has since finished cannot carry on a newer one.
 	Id            string `protobuf:"bytes,2,opt,name=id,proto3" json:"id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

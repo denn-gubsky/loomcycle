@@ -105,6 +105,12 @@ type Service struct {
 	// subject's user templates are still deleted, their archives are not,
 	// and the result says so.
 	TemplateArchive func(id string) (string, error)
+	// EraseDurableWorkspaces removes the subject's durable workspaces in the
+	// tenant (RFC GW P12 ruling Q2: a durable workspace goes only on discard
+	// or its user's erasure) and returns how many. The workspace layer owns
+	// it: the worker removes each directory, at once or at its next attach.
+	// nil: they are counted and named as retained.
+	EraseDurableWorkspaces func(ctx context.Context, tenant, subject string) (int, error)
 }
 
 // BoundSubject is one tenant subject bound to the erased principal. An erasure
@@ -583,6 +589,11 @@ func (s *Service) Report(ctx context.Context, tenant, subject string) (Report, e
 	} else {
 		rep.Tier1.set(templatesPlane, int64(len(rows)))
 	}
+	if n, err := s.Store.WorkspaceCountDurableByUser(ctx, tenant, subject); err != nil {
+		fail(durablePlane, err)
+	} else {
+		rep.Tier1.set(durablePlane, int64(n))
+	}
 	if n, err := s.tenantTemplatesBy(ctx, tenant, subject); err != nil {
 		fail(templatesPlane, err)
 	} else {
@@ -983,6 +994,7 @@ func (s *Service) Execute(ctx context.Context, req ExecuteRequest) (Result, erro
 	}
 
 	s.eraseTemplates(ctx, tenant, subject, req.DryRun, &res, fail)
+	s.eraseDurableWorkspaces(ctx, tenant, subject, req.DryRun, &res, fail)
 
 	// ---- chats LAST ----
 	if req.DryRun {

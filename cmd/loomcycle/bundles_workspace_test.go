@@ -16,6 +16,9 @@ var movedBundleAgents = []struct {
 	{"team-examples", "sdlc/coder", "Bashbox"},
 	{"team-examples", "sdlc/reviewer", "Bashbox"},
 	{"agent-teams", "team/orchestrator", "Bashbox"},
+	{"chat", "chat/medium", "Bash"},
+	{"chat", "chat/local", "Bash"},
+	{"chat", "chat/local-small", "Bash"},
 }
 
 // Each moved agent holds Workspace with the narrowest grant (D-P14-6: no
