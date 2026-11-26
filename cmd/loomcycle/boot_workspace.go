@@ -52,7 +52,9 @@ func (b *boot) startLocalWorkspace(d *wsdispatch.Dispatcher, token, tenant, why 
 		}
 	})
 	env := []string{"LOOMCYCLE_WORKSPACE_ROOT=" + root,
-		fmt.Sprintf("LOOMCYCLE_WORKSPACE_CONVERT_MEMORY_LIMIT_MB=%d", b.cfg.Workspace.Resolved().Convert.MemoryLimitMB)}
+		fmt.Sprintf("LOOMCYCLE_WORKSPACE_CONVERT_MEMORY_LIMIT_MB=%d", b.cfg.Workspace.Resolved().Convert.MemoryLimitMB),
+		// RFC GW P11: the local worker's mirrors end per workspace.git.
+		fmt.Sprintf("LOOMCYCLE_WORKSPACE_MIRROR_IDLE_S=%d", b.cfg.Workspace.Resolved().Git.MirrorIdleS)}
 	// The worker's conversion child (RFC GW D34) runs the helper commands
 	// this runtime's own conversions run, so a workspace's file converts
 	// as an inbox file does here.

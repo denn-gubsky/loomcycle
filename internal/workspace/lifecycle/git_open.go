@@ -145,7 +145,7 @@ func (m *Manager) openGit(ctx context.Context, row *store.WorkspaceRow, g GitOpe
 	}
 	defer tk.End()
 	fetchArgs, err := json.Marshal(workspace.GitFetchArgs{Mirror: row.Git.Mirror, URL: g.URL, Ticket: tk.Secret(),
-		MaxObjectBytes: g.MaxObjectBytes, MaxReadBytes: g.MaxReadBytes, Prove: true})
+		MaxObjectBytes: g.MaxObjectBytes, MaxReadBytes: g.MaxReadBytes, MaxMirrorBytes: m.gitMirrorMax, Prove: true})
 	if err != nil {
 		return err
 	}

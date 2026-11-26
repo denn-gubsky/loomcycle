@@ -12,7 +12,9 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/config"
 	convworker "github.com/denn-gubsky/loomcycle/internal/conversion/worker"
 	"github.com/denn-gubsky/loomcycle/internal/workspace/engine"
 	wsworker "github.com/denn-gubsky/loomcycle/internal/workspace/worker"
@@ -38,6 +40,16 @@ func runWorkspaceWorker(dispatcher, id string, parentPID int, personal bool, roo
 	if err != nil {
 		fmt.Fprintf(stderr, "loomcycle worker: %v\n", err)
 		return 2
+	}
+	// A git mirror no workspace pins is removed once idle this long (RFC GW
+	// P11): the worker's side of workspace.git.mirror_idle_s.
+	mirrorIdle, err := envCount("LOOMCYCLE_WORKSPACE_MIRROR_IDLE_S", 1, config.MaxWorkspaceMirrorIdleS)
+	if err != nil {
+		fmt.Fprintf(stderr, "loomcycle worker: %v\n", err)
+		return 2
+	}
+	if mirrorIdle == 0 {
+		mirrorIdle = config.DefaultWorkspaceMirrorIdleS
 	}
 	convertMem, err := envCount("LOOMCYCLE_WORKSPACE_CONVERT_MEMORY_LIMIT_MB", 64, 1<<20)
 	if err != nil {
@@ -72,6 +84,7 @@ func runWorkspaceWorker(dispatcher, id string, parentPID int, personal bool, roo
 		// secret, which this user's own processes can read.
 		HostEgress:   os.Getenv("LOOMCYCLE_WORKSPACE_HOST_EGRESS") == "1",
 		Capacity:     capacity,
+		MirrorIdle:   time.Duration(mirrorIdle) * time.Second,
 		IdleStreams:  streams,
 		Commands:     commands,
 		ConvertChild: child,
