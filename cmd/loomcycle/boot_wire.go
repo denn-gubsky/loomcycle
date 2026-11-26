@@ -371,6 +371,15 @@ func (b *boot) wireWorkspaceEgress() {
 		b.workspaces.SetTenantRoutes(b.storeIface, eg.TenantHosts)
 	}
 	b.workspace.SetEgress(b.workspaces.Egress)
+	// Git workspaces reach their forge through the core too (RFC GW §6.1,
+	// P11): the same dial guard, and a request goes out only under a live
+	// ticket of the git op that asked for it.
+	gitProxy, err := egress.NewGitProxy(egress.GitOptions{PrivateHostAllowlist: b.cfg.Env.HTTPPrivateHostAllowlist})
+	if err != nil {
+		fatal("workspace: cannot build the git proxy", "err", err)
+	}
+	b.workspaces.SetGitProxy(gitProxy)
+	b.workspace.SetGitEgress(b.workspaces.GitEgress)
 	if n := len(eg.Routes); n > 0 {
 		slog.Info("workspace: egress routes", "routes", n)
 	}
