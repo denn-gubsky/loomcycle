@@ -507,6 +507,8 @@ var mcpToolTwins = map[string]mcpToolTwin{
 		"merge_subjects": {Method: "POST", Path: "/v1/_ontology/subjects/merge"},
 		"bind_principal": {Method: "POST", Path: "/v1/_ontology/subjects/principal"},
 		"plan":           {Method: "POST", Path: "/v1/_ontology/plan"},
+		"releases":       {Method: "GET", Path: "/v1/_ontology/releases"},
+		"release_diff":   {Method: "GET", Path: "/v1/_ontology/releases/diff"},
 	}},
 	"review": {Ops: map[string]mcpOpTwin{
 		"queue":        {Method: "GET", Path: "/v1/_statements/review"},

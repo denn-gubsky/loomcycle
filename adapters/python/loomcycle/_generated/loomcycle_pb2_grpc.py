@@ -238,6 +238,16 @@ class LoomcycleStub:
                 request_serializer=loomcycle__pb2.PlanOntologyRequest.SerializeToString,
                 response_deserializer=loomcycle__pb2.PlanOntologyResponse.FromString,
                 _registered_method=True)
+        self.ListOntologyReleases = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/ListOntologyReleases',
+                request_serializer=loomcycle__pb2.ListOntologyReleasesRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.ListOntologyReleasesResponse.FromString,
+                _registered_method=True)
+        self.DiffOntologyReleases = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/DiffOntologyReleases',
+                request_serializer=loomcycle__pb2.DiffOntologyReleasesRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.DiffOntologyReleasesResponse.FromString,
+                _registered_method=True)
         self.ListReviewQueue = channel.unary_unary(
                 '/loomcycle.v1.Loomcycle/ListReviewQueue',
                 request_serializer=loomcycle__pb2.ListReviewQueueRequest.SerializeToString,
@@ -1034,6 +1044,38 @@ class LoomcycleServicer:
         (invalid_request, forbidden, entry_not_found, unavailable).
 
         Mirrors POST /v1/_ontology/plan.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ListOntologyReleases(self, request, context):
+        """ListOntologyReleases lists the tenant ontology's releases — the copies
+        taken when it was confirmed and on each applied or rolled-back change,
+        the newest 50 kept — newest first. It writes nothing.
+
+        Operator-only, as PlanOntology: a release keeps the ontology's text after
+        an edit or an erasure removed it, so a member never reads one. An admin
+        may name another tenant. A refusal carries a google.rpc.ErrorInfo whose
+        reason is the code HTTP returns (forbidden, unavailable).
+
+        Mirrors GET /v1/_ontology/releases.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def DiffOntologyReleases(self, request, context):
+        """DiffOntologyReleases compares two releases, or a release with the
+        ontology in force, entry by entry: what was added, removed, renamed,
+        moved, retired, or had its meaning or directives changed. It writes
+        nothing.
+
+        Operator-only, as ListOntologyReleases. A refusal carries a
+        google.rpc.ErrorInfo whose reason is the code HTTP returns
+        (invalid_request, forbidden, release_not_found, unavailable).
+
+        Mirrors GET /v1/_ontology/releases/diff.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -1967,6 +2009,16 @@ def add_LoomcycleServicer_to_server(servicer, server):
                     servicer.PlanOntology,
                     request_deserializer=loomcycle__pb2.PlanOntologyRequest.FromString,
                     response_serializer=loomcycle__pb2.PlanOntologyResponse.SerializeToString,
+            ),
+            'ListOntologyReleases': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListOntologyReleases,
+                    request_deserializer=loomcycle__pb2.ListOntologyReleasesRequest.FromString,
+                    response_serializer=loomcycle__pb2.ListOntologyReleasesResponse.SerializeToString,
+            ),
+            'DiffOntologyReleases': grpc.unary_unary_rpc_method_handler(
+                    servicer.DiffOntologyReleases,
+                    request_deserializer=loomcycle__pb2.DiffOntologyReleasesRequest.FromString,
+                    response_serializer=loomcycle__pb2.DiffOntologyReleasesResponse.SerializeToString,
             ),
             'ListReviewQueue': grpc.unary_unary_rpc_method_handler(
                     servicer.ListReviewQueue,
@@ -3338,6 +3390,60 @@ class Loomcycle:
             '/loomcycle.v1.Loomcycle/PlanOntology',
             loomcycle__pb2.PlanOntologyRequest.SerializeToString,
             loomcycle__pb2.PlanOntologyResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListOntologyReleases(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/ListOntologyReleases',
+            loomcycle__pb2.ListOntologyReleasesRequest.SerializeToString,
+            loomcycle__pb2.ListOntologyReleasesResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def DiffOntologyReleases(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/DiffOntologyReleases',
+            loomcycle__pb2.DiffOntologyReleasesRequest.SerializeToString,
+            loomcycle__pb2.DiffOntologyReleasesResponse.FromString,
             options,
             channel_credentials,
             insecure,

@@ -65,6 +65,12 @@ type mockConnector struct {
 	planRes connector.PlanOntologyResult
 	planErr error
 
+	relListReq connector.ListOntologyReleasesRequest
+	relListRes connector.ListOntologyReleasesResult
+	relDiffReq connector.DiffOntologyReleasesRequest
+	relDiffRes connector.DiffOntologyReleasesResult
+	relErr     error
+
 	dirTenant atomic.Value
 	// identityTool, when set, answers Identity calls as the server would
 	// (the builtin, on the ctx the handler stamped); identityTenant records
@@ -2125,18 +2131,21 @@ func (m *mockConnector) PlanOntology(_ context.Context, req connector.PlanOntolo
 	return m.planRes, m.planErr
 }
 
-// The release reads answer empty (connector.Connector); no transport but HTTP
-// reaches them yet (RFC GQ P3.5 adds MCP and gRPC).
-func (m *mockConnector) ListOntologyReleases(context.Context, connector.ListOntologyReleasesRequest) (connector.ListOntologyReleasesResult, error) {
-	return connector.ListOntologyReleasesResult{}, nil
+// ListOntologyReleases and DiffOntologyReleases record the request and answer
+// with the configured result; GetOntologyRelease answers empty, since only HTTP
+// reaches it (connector.Connector).
+func (m *mockConnector) ListOntologyReleases(_ context.Context, req connector.ListOntologyReleasesRequest) (connector.ListOntologyReleasesResult, error) {
+	m.relListReq = req
+	return m.relListRes, m.relErr
 }
 
 func (m *mockConnector) GetOntologyRelease(context.Context, connector.GetOntologyReleaseRequest) (connector.GetOntologyReleaseResult, error) {
 	return connector.GetOntologyReleaseResult{}, nil
 }
 
-func (m *mockConnector) DiffOntologyReleases(context.Context, connector.DiffOntologyReleasesRequest) (connector.DiffOntologyReleasesResult, error) {
-	return connector.DiffOntologyReleasesResult{}, nil
+func (m *mockConnector) DiffOntologyReleases(_ context.Context, req connector.DiffOntologyReleasesRequest) (connector.DiffOntologyReleasesResult, error) {
+	m.relDiffReq = req
+	return m.relDiffRes, m.relErr
 }
 
 // ListReviewQueue, RuleStatements and RevertRuling record the request and answer

@@ -78,6 +78,8 @@ const (
 	Loomcycle_MergeSubjects_FullMethodName        = "/loomcycle.v1.Loomcycle/MergeSubjects"
 	Loomcycle_BindSubjectPrincipal_FullMethodName = "/loomcycle.v1.Loomcycle/BindSubjectPrincipal"
 	Loomcycle_PlanOntology_FullMethodName         = "/loomcycle.v1.Loomcycle/PlanOntology"
+	Loomcycle_ListOntologyReleases_FullMethodName = "/loomcycle.v1.Loomcycle/ListOntologyReleases"
+	Loomcycle_DiffOntologyReleases_FullMethodName = "/loomcycle.v1.Loomcycle/DiffOntologyReleases"
 	Loomcycle_ListReviewQueue_FullMethodName      = "/loomcycle.v1.Loomcycle/ListReviewQueue"
 	Loomcycle_RuleStatements_FullMethodName       = "/loomcycle.v1.Loomcycle/RuleStatements"
 	Loomcycle_RevertRuling_FullMethodName         = "/loomcycle.v1.Loomcycle/RevertRuling"
@@ -448,6 +450,28 @@ type LoomcycleClient interface {
 	//
 	// Mirrors POST /v1/_ontology/plan.
 	PlanOntology(ctx context.Context, in *PlanOntologyRequest, opts ...grpc.CallOption) (*PlanOntologyResponse, error)
+	// ListOntologyReleases lists the tenant ontology's releases — the copies
+	// taken when it was confirmed and on each applied or rolled-back change,
+	// the newest 50 kept — newest first. It writes nothing.
+	//
+	// Operator-only, as PlanOntology: a release keeps the ontology's text after
+	// an edit or an erasure removed it, so a member never reads one. An admin
+	// may name another tenant. A refusal carries a google.rpc.ErrorInfo whose
+	// reason is the code HTTP returns (forbidden, unavailable).
+	//
+	// Mirrors GET /v1/_ontology/releases.
+	ListOntologyReleases(ctx context.Context, in *ListOntologyReleasesRequest, opts ...grpc.CallOption) (*ListOntologyReleasesResponse, error)
+	// DiffOntologyReleases compares two releases, or a release with the
+	// ontology in force, entry by entry: what was added, removed, renamed,
+	// moved, retired, or had its meaning or directives changed. It writes
+	// nothing.
+	//
+	// Operator-only, as ListOntologyReleases. A refusal carries a
+	// google.rpc.ErrorInfo whose reason is the code HTTP returns
+	// (invalid_request, forbidden, release_not_found, unavailable).
+	//
+	// Mirrors GET /v1/_ontology/releases/diff.
+	DiffOntologyReleases(ctx context.Context, in *DiffOntologyReleasesRequest, opts ...grpc.CallOption) (*DiffOntologyReleasesResponse, error)
 	// ListReviewQueue lists a document scope's statements awaiting review
 	// (proposed unless the filter names another status), narrowed by the queue
 	// filters, newest first; or, with summarize, their counts grouped by kind,
@@ -1306,6 +1330,26 @@ func (c *loomcycleClient) PlanOntology(ctx context.Context, in *PlanOntologyRequ
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(PlanOntologyResponse)
 	err := c.cc.Invoke(ctx, Loomcycle_PlanOntology_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomcycleClient) ListOntologyReleases(ctx context.Context, in *ListOntologyReleasesRequest, opts ...grpc.CallOption) (*ListOntologyReleasesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListOntologyReleasesResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_ListOntologyReleases_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomcycleClient) DiffOntologyReleases(ctx context.Context, in *DiffOntologyReleasesRequest, opts ...grpc.CallOption) (*DiffOntologyReleasesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DiffOntologyReleasesResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_DiffOntologyReleases_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -2202,6 +2246,28 @@ type LoomcycleServer interface {
 	//
 	// Mirrors POST /v1/_ontology/plan.
 	PlanOntology(context.Context, *PlanOntologyRequest) (*PlanOntologyResponse, error)
+	// ListOntologyReleases lists the tenant ontology's releases — the copies
+	// taken when it was confirmed and on each applied or rolled-back change,
+	// the newest 50 kept — newest first. It writes nothing.
+	//
+	// Operator-only, as PlanOntology: a release keeps the ontology's text after
+	// an edit or an erasure removed it, so a member never reads one. An admin
+	// may name another tenant. A refusal carries a google.rpc.ErrorInfo whose
+	// reason is the code HTTP returns (forbidden, unavailable).
+	//
+	// Mirrors GET /v1/_ontology/releases.
+	ListOntologyReleases(context.Context, *ListOntologyReleasesRequest) (*ListOntologyReleasesResponse, error)
+	// DiffOntologyReleases compares two releases, or a release with the
+	// ontology in force, entry by entry: what was added, removed, renamed,
+	// moved, retired, or had its meaning or directives changed. It writes
+	// nothing.
+	//
+	// Operator-only, as ListOntologyReleases. A refusal carries a
+	// google.rpc.ErrorInfo whose reason is the code HTTP returns
+	// (invalid_request, forbidden, release_not_found, unavailable).
+	//
+	// Mirrors GET /v1/_ontology/releases/diff.
+	DiffOntologyReleases(context.Context, *DiffOntologyReleasesRequest) (*DiffOntologyReleasesResponse, error)
 	// ListReviewQueue lists a document scope's statements awaiting review
 	// (proposed unless the filter names another status), narrowed by the queue
 	// filters, newest first; or, with summarize, their counts grouped by kind,
@@ -2746,6 +2812,12 @@ func (UnimplementedLoomcycleServer) BindSubjectPrincipal(context.Context, *BindS
 }
 func (UnimplementedLoomcycleServer) PlanOntology(context.Context, *PlanOntologyRequest) (*PlanOntologyResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method PlanOntology not implemented")
+}
+func (UnimplementedLoomcycleServer) ListOntologyReleases(context.Context, *ListOntologyReleasesRequest) (*ListOntologyReleasesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListOntologyReleases not implemented")
+}
+func (UnimplementedLoomcycleServer) DiffOntologyReleases(context.Context, *DiffOntologyReleasesRequest) (*DiffOntologyReleasesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DiffOntologyReleases not implemented")
 }
 func (UnimplementedLoomcycleServer) ListReviewQueue(context.Context, *ListReviewQueueRequest) (*ListReviewQueueResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListReviewQueue not implemented")
@@ -3616,6 +3688,42 @@ func _Loomcycle_PlanOntology_Handler(srv interface{}, ctx context.Context, dec f
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(LoomcycleServer).PlanOntology(ctx, req.(*PlanOntologyRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Loomcycle_ListOntologyReleases_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListOntologyReleasesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).ListOntologyReleases(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_ListOntologyReleases_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).ListOntologyReleases(ctx, req.(*ListOntologyReleasesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Loomcycle_DiffOntologyReleases_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DiffOntologyReleasesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).DiffOntologyReleases(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_DiffOntologyReleases_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).DiffOntologyReleases(ctx, req.(*DiffOntologyReleasesRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -4785,6 +4893,14 @@ var Loomcycle_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "PlanOntology",
 			Handler:    _Loomcycle_PlanOntology_Handler,
+		},
+		{
+			MethodName: "ListOntologyReleases",
+			Handler:    _Loomcycle_ListOntologyReleases_Handler,
+		},
+		{
+			MethodName: "DiffOntologyReleases",
+			Handler:    _Loomcycle_DiffOntologyReleases_Handler,
 		},
 		{
 			MethodName: "ListReviewQueue",

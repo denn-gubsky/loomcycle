@@ -197,6 +197,10 @@ var grpcRPCs = map[string]RPC{
 	"MergeSubjects":        rpc(ScopeTenant, false, typeLevel("write", "document")),
 	"BindSubjectPrincipal": rpc(ScopeTenant, false, typeLevel("write", "document")),
 	"PlanOntology":         rpc(ScopeTenant, false, typeLevel("read", "document")),
+	// Releases keep the ontology's text after an edit or an erasure removed
+	// it: operator-only, read documents, as GET /v1/_ontology/releases*.
+	"ListOntologyReleases": rpc(ScopeTenant, false, typeLevel("read", "document")),
+	"DiffOntologyReleases": rpc(ScopeTenant, false, typeLevel("read", "document")),
 	"ListReviewQueue":      rpc(ScopeTenant, false, typeLevel("read", "document")),
 	"RuleStatements":       rpc(ScopeTenant, false, typeLevel("read", "document")),
 	"RevertRuling":         rpc(ScopeTenant, false, typeLevel("read", "document")),
