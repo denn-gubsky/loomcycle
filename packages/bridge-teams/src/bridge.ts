@@ -329,12 +329,16 @@ export function createTeamsBridge(cfg: TeamsConfig, opts: TeamsBridgeOptions = {
         if (!graph || !q) return deliver(id, cref, text, fields, []);
         if (!flow) return deliver(id, cref, text, fields, await graph.lookup(q));
         // Delegated mode: the lookup runs on the sender's own token. A person
-        // who has none is sent one sign-in card, and the message waits for the
-        // sign-in (D4); one who writes again meanwhile replaces it, with no
-        // second card. Only a 1:1 message gets here, so nothing from a group
-        // chat or a channel is ever held.
+        // who has none is sent one sign-in card, at most one while it is
+        // outstanding. A message shaped like a file waits for the sign-in
+        // (D4), a later one replacing it. A message with text goes to the
+        // agent at once, as with Graph off, and is not held (owner's ruling
+        // on RFC HF P2): a file sent with a caption before sign-in is missed.
+        // Only a 1:1 message gets here, so nothing from a group chat or a
+        // channel is ever held.
         if (!botUserId) return deliver(id, cref, text, fields, []);
         const key = pendingKey(conversationId!, botUserId);
+        const fileLike = looksLikeFile(text, atts);
         let token: string | undefined;
         // The token service is held to the lookup's bound too, so a message
         // never waits on it longer than on Graph.
@@ -342,14 +346,11 @@ export function createTeamsBridge(cfg: TeamsConfig, opts: TeamsBridgeOptions = {
         try {
           token = await abortable(flow.getToken(mctx), bound);
           if (!token) {
-            if (!pending.hold(key, { id, ref: cref, text, activity: fields, lookup: q })) {
-              ctx.log.info("teams message waits for sign-in", { conversation: conversationId, replaced: true });
-              return;
-            }
-            token = await abortable(flow.signIn(mctx, { oauthCardText: SIGN_IN_TEXT, signInButtonText: SIGN_IN_BUTTON }), bound);
+            const first = pending.hold(key, fileLike ? { id, ref: cref, text, activity: fields, lookup: q } : undefined);
+            if (first) token = await abortable(flow.signIn(mctx, { oauthCardText: SIGN_IN_TEXT, signInButtonText: SIGN_IN_BUTTON }), bound);
             if (!token) {
-              ctx.log.info("teams message waits for sign-in", { conversation: conversationId, replaced: false });
-              return;
+              ctx.log.info("teams sign-in outstanding", { conversation: conversationId, card: first, held: fileLike });
+              return fileLike ? undefined : deliver(id, cref, text, fields, []);
             }
             // Signed in after all (between the two calls): nothing waits.
             pending.drop(key);
@@ -374,14 +375,17 @@ export function createTeamsBridge(cfg: TeamsConfig, opts: TeamsBridgeOptions = {
           const conversationId = a.conversation?.id;
           const botUserId = a.from?.id;
           if (!conversationId || !botUserId) return;
-          const held = pending.take(pendingKey(conversationId, botUserId));
-          if (!held) {
+          const taken = pending.take(pendingKey(conversationId, botUserId));
+          if (!taken) {
             // The message waited too long, or the bridge restarted. Told only
             // to someone the tenant fence lets in.
             const sid = identify(a, cfg.allowedTenants, gate);
             if (sid.ok && sid.scope === "personal") await say(sctx.ref as unknown as ConversationRef, ATTACH_AGAIN_TEXT);
             return;
           }
+          // Only a card was outstanding: the text it came with already went on.
+          const held = taken.msg;
+          if (!held) return;
           ctx.log.info("teams sign-in completed; the waiting message goes on", { conversation: conversationId });
           await deliver(held.id, held.ref, held.text, held.activity, await graph.lookup(held.lookup, token.token || undefined));
         });
