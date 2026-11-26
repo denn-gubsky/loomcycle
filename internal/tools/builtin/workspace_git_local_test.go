@@ -275,3 +275,19 @@ func gitWSRow(t *testing.T, f *wsFixture, ctx context.Context, name string) stor
 	t.Fatalf("no workspace %s", name)
 	return store.WorkspaceRow{}
 }
+
+// fork of a git workspace answers the fork's own branch; branch is refused
+// on a general workspace's fork.
+func TestWorkspaceGitFork_AnswersTheForksOwnBranch(t *testing.T) {
+	forge := newWSForge(t)
+	f, ctx := gitLocalRun(t, forge)
+	var out struct{ Branch, Repo string }
+	decodeRes(t, f.call(t, ctx, `{"op":"fork","name":"app","as":"copy"}`), &out)
+	if !strings.HasPrefix(out.Branch, "loom/copy-") || out.Repo != forge.url {
+		t.Fatalf("fork answered %+v", out)
+	}
+	f.mustOK(t, ctx, `{"op":"open","name":"plain"}`)
+	if res := f.call(t, ctx, `{"op":"fork","name":"plain","as":"p2","branch":"x"}`); refusalClass(res) != "invalid_argument" {
+		t.Fatalf("a general fork with branch = %s", res.Text)
+	}
+}

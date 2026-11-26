@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/audit"
+	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/workspace"
 	"github.com/denn-gubsky/loomcycle/internal/workspace/dispatch"
@@ -121,6 +122,9 @@ type Manager struct {
 	// onGitTicket, when set, is told each network op's ticket as it is
 	// minted. Tests only.
 	onGitTicket func(*GitTicket)
+	// gitPush is workspace.push, resolved (SetGitPush): a git fork's branch
+	// is held to it.
+	gitPush config.WorkspacePushConfig
 	// principalEgress is workspace.mcp.egress (SetPrincipalEgress): the
 	// routes a workspace opened over the MCP server may use.
 	principalEgress []string

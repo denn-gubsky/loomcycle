@@ -330,6 +330,8 @@ func (b *boot) bindStoreToTools() {
 			IdleTimeout: time.Duration(ws.Expose.IdleTimeoutS) * time.Second})
 		// RFC GW P12: durable workspaces, off unless the operator turns them on.
 		b.workspaces.SetDurable(lifecycle.DurableLimits{Enabled: ws.Durable.Enabled, MaxPerUser: ws.Durable.MaxPerUser})
+		// RFC GW P11: a git fork's branch is held to workspace.push.
+		b.workspaces.SetGitPush(ws.Push)
 		// A run is told when one of its pages goes (RFC GW D24).
 		b.workspaces.SetSurfaceNotifier(builtin.SurfaceNotifier(storeIface))
 		b.workspaceTool.Manager = b.workspaces

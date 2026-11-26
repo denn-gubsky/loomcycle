@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -685,5 +686,36 @@ func TestTrackMirror_RefusesARepositoryThatIsNoWorkspace(t *testing.T) {
 	}
 	if _, err := r.TrackMirror(f.mirror, "ws1"); !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("TrackMirror on a plain repository = %v", err)
+	}
+}
+
+// A copy adopted as another workspace gets its own branch at the copy's
+// HEAD, checked out, and its own pins; a branch the copy already has is
+// refused.
+func TestAdoptWorkspace_GivesACopyItsOwnBranchAndPins(t *testing.T) {
+	f := newFixture(t)
+	_, dir := f.workspace(t, "ws1", "")
+	head := run(t, dir, "rev-parse", "HEAD")
+	copyDir := filepath.Join(realTemp(t), "copy")
+	if out, err := exec.Command("cp", "-R", dir, copyDir).CombinedOutput(); err != nil {
+		t.Fatalf("cp: %v %s", err, out)
+	}
+	base, _ := f.mirror.Resolve("refs/heads/main")
+	taken := f.spec("ws2")
+	taken.Branch = "loom/ws1"
+	if _, err := AdoptWorkspace(bound(copyDir), f.mirror, taken, base); !errors.Is(err, ErrAlreadyExists) {
+		t.Fatalf("adopting onto a branch the copy has = %v", err)
+	}
+	if _, err := AdoptWorkspace(bound(copyDir), f.mirror, f.spec("ws2"), base); err != nil {
+		t.Fatalf("AdoptWorkspace: %v", err)
+	}
+	if got := run(t, copyDir, "symbolic-ref", "HEAD"); got != "refs/heads/loom/ws2" {
+		t.Fatalf("HEAD = %s", got)
+	}
+	if got := run(t, copyDir, "rev-parse", "HEAD"); got != head {
+		t.Fatalf("the copy moved to %s, want %s", got, head)
+	}
+	if got := run(t, f.mdir, "--git-dir=.", "rev-parse", "refs/loom/workspaces/ws2/base"); got != base.String() {
+		t.Fatalf("base pin = %s", got)
 	}
 }

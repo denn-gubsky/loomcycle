@@ -542,3 +542,73 @@ func (m *Mirror) pinRemotes(id string, want map[plumbing.ReferenceName]plumbing.
 	}
 	return nil
 }
+
+// PinTracking pins the workspace's remote-tracking refs in the mirror as
+// they are (refs/loom/workspaces/<id>/remotes/<b>), without moving them:
+// after a restore put an older git directory back, or a fork copied one,
+// whatever its history names stays in the mirror (P11 plan G8).
+func (r *Repo) PinTracking(m *Mirror, id string) error {
+	if !r.workspace {
+		return fmt.Errorf("%w: not a workspace's repository", ErrInvalidArgument)
+	}
+	if !workspaceIDRe.MatchString(id) {
+		return fmt.Errorf("%w: a workspace id", ErrInvalidArgument)
+	}
+	refs, err := r.refSnapshot()
+	if err != nil {
+		return err
+	}
+	prefix := "refs/remotes/" + git.DefaultRemoteName + "/"
+	want := map[plumbing.ReferenceName]plumbing.Hash{}
+	for name, h := range refs {
+		if strings.HasPrefix(name.String(), prefix) {
+			want[name] = h
+		}
+	}
+	return m.pinRemotes(id, want, prefix)
+}
+
+// AdoptWorkspace makes a copied workspace (a fork of another, its files and
+// .git included) workspace spec.ID of its own: its git directory's HEAD and
+// configuration are spec's, its own branch spec.Branch is created at the
+// copy's HEAD and checked out without touching a file, and its base and
+// tracking refs are pinned under its id. A branch of that name already in
+// the copy is refused.
+func AdoptWorkspace(wt billy.Filesystem, m *Mirror, spec WorkspaceSpec, base plumbing.Hash) (*Repo, error) {
+	if err := spec.check(); err != nil {
+		return nil, err
+	}
+	r, err := OpenWorkspace(wt, m, spec)
+	if err != nil {
+		return nil, err
+	}
+	head, err := r.Head()
+	if err != nil {
+		return nil, err
+	}
+	if head.Hash == "" {
+		return nil, fmt.Errorf("%w: the copy has no commit checked out", ErrInvalidRevision)
+	}
+	branch := plumbing.NewBranchReferenceName(spec.Branch)
+	if _, err := r.repo.Storer.Reference(branch); err == nil {
+		return nil, fmt.Errorf("%w: the copy already has a branch %s", ErrAlreadyExists, spec.Branch)
+	}
+	if err := r.repo.Storer.SetReference(plumbing.NewHashReference(branch, plumbing.NewHash(head.Hash))); err != nil {
+		return nil, err
+	}
+	if err := writeGitDir(wt, spec); err != nil {
+		return nil, err
+	}
+	if err := m.Pin(spec.ID, "base", base); err != nil {
+		return nil, err
+	}
+	r, err = OpenWorkspace(wt, m, spec)
+	if err != nil {
+		return nil, err
+	}
+	if err := r.PinTracking(m, spec.ID); err != nil {
+		return nil, err
+	}
+	r.SetLimits(spec.Limits)
+	return r, nil
+}

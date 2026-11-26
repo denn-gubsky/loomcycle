@@ -19,11 +19,17 @@ it with `workspaces: [{fork: <name>, as?}]` (see Agent/spawn).
 - `as` (required) — the new workspace's name.
 - `checkpoint` — a checkpoint of `name` to start from; default its present
   files.
+- `branch` — for a git workspace (one opened with `repo`): the fork's own
+  branch, the one its `git_push` moves. Default `loom/<as>-<id>`. A named
+  branch is taken only where the operator lets a workspace adopt an
+  existing branch, and never the forge's default branch or the source's
+  own.
 
 ## Returns
 
 `{name, state, engine, forked_from, checkpoint?, bytes, files, mechanism,
-skipped?, rewritten?, usage}`. `rewritten` names the files of a Python
+skipped?, rewritten?, usage}`, and for a git workspace `repo`, `branch`,
+`base` and `default_branch`. `rewritten` names the files of a Python
 environment whose paths were moved to the fork (on a worker whose commands
 run on its own machine).
 
@@ -35,6 +41,7 @@ run on its own machine).
 - `at_capacity` — the worker holding `name` is full; a fork must land there.
 - `workspace_over_quota` — the files do not fit a new workspace's quota.
 - `checkpoint_not_found` — `name` has no checkpoint of that id.
+- `invalid_branch` — a git fork's `branch` is not one it may own.
 
 ## Examples
 

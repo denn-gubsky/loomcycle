@@ -267,19 +267,15 @@ func TestReleaseGit_DropsTheWorkspacesPins(t *testing.T) {
 	}
 }
 
-// A git workspace is not forked or packed into a template until its own
-// copy is made (P11 PR 9): a plain copy would carry its git directory and
-// alternates to the mirror with no pin of its own.
-func TestOpenGit_AForkOrTemplateOfAGitWorkspaceIsRefused(t *testing.T) {
+// A git workspace is never packed into a template: its .git names a mirror
+// on one worker (P11 plan G16).
+func TestOpenGit_ATemplateOfAGitWorkspaceIsRefused(t *testing.T) {
 	forge := newRealForge(t)
 	f := newGitFixture(t, forge)
 	o := f.run(t, "alice")
 	row, err := f.m.Open(context.Background(), o, gitOpenReq(forge, "app", "", forgeTokenA))
 	if err != nil {
 		t.Fatal(err)
-	}
-	if _, _, err := f.m.Fork(context.Background(), o, row, "copy", ""); !errors.Is(err, ErrGitUnsupported) {
-		t.Fatalf("fork = %v, want ErrGitUnsupported", err)
 	}
 	if _, err := f.m.SaveTemplate(context.Background(), o, row, "ck", "tpl", store.WorkspaceTemplateUser); !errors.Is(err, ErrGitUnsupported) {
 		t.Fatalf("save template = %v, want ErrGitUnsupported", err)
