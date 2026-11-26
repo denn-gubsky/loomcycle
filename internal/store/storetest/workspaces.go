@@ -35,6 +35,7 @@ func RunWorkspaces(t *testing.T, factory Factory) {
 		"DurableNameIsUniquePerUser":            testWorkspaceDurableNameIsUniquePerUser,
 		"PinAndUnpinAreCompareAndSet":           testWorkspacePinAndUnpinAreCompareAndSet,
 		"ParkedRowIsReachedByNoRun":             testWorkspaceParkedRowIsReachedByNoRun,
+		"CountDurableByUser":                    testWorkspaceCountDurableByUser,
 	} {
 		t.Run(name, func(t *testing.T) {
 			s, cleanup := factory(t)

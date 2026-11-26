@@ -178,3 +178,25 @@ func testWorkspaceParkedRowIsReachedByNoRun(t *testing.T, s store.Store) {
 		t.Errorf("touch reached %d rows, want the parked row too (a worker that leaves marks it lost)", n)
 	}
 }
+
+// The per-user durable count is the tenant's durable rows of that user,
+// pinned or parked, and nothing else.
+func testWorkspaceCountDurableByUser(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	createWorkspace(t, s, mkDurable("ws_a", "acme", "alice", "run-1", "one"))
+	createWorkspace(t, s, mkDurable("ws_b", "acme", "alice", "run-2", "two"))
+	createWorkspace(t, s, mkDurable("ws_c", "acme", "bob", "run-3", "one"))
+	createWorkspace(t, s, mkDurable("ws_d", "beta", "alice", "run-4", "one"))
+	createWorkspace(t, s, mkWorkspace("ws_e", "acme", "run-5", "eph", "w1"))
+	if ok, err := s.WorkspaceUnpin(ctx, "acme", "ws_b", "run-2"); err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	for _, c := range []struct {
+		tenant, user string
+		want         int
+	}{{"acme", "alice", 2}, {"acme", "bob", 1}, {"beta", "alice", 1}, {"acme", "carol", 0}} {
+		if n, err := s.WorkspaceCountDurableByUser(ctx, c.tenant, c.user); err != nil || n != c.want {
+			t.Errorf("durable of %s/%s = %d, %v; want %d", c.tenant, c.user, n, err, c.want)
+		}
+	}
+}
