@@ -177,7 +177,7 @@ func TestOntologyGuard_AMemberMayProposeButNotDecide(t *testing.T) {
 	if reached, code := runMW(t, gate, http.MethodGet, "/v1/_ontology", "lct_member"); !reached || code == http.StatusForbidden {
 		t.Errorf("a member reading the ontology = %d reached=%v, want admitted", code, reached)
 	}
-	for _, path := range []string{"/v1/_ontology", "/v1/_ontology/adopt", "/v1/_ontology/proposals", "/v1/_ontology/plan"} {
+	for _, path := range []string{"/v1/_ontology", "/v1/_ontology/adopt", "/v1/_ontology/proposals", "/v1/_ontology/plan", "/v1/_ontology/rollback"} {
 		if reached, code := runMW(t, gate, http.MethodPost, path, "lct_member"); reached || code != http.StatusForbidden {
 			t.Errorf("a member on POST %s = %d reached=%v, want 403", path, code, reached)
 		}

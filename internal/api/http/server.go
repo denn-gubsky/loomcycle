@@ -3646,6 +3646,10 @@ func (s *Server) ontologyPlanRoutes(mux *http.ServeMux) *http.ServeMux {
 	mux.Handle("GET /v1/_ontology/releases", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleOntologyReleases))))
 	mux.Handle("GET /v1/_ontology/releases/diff", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleOntologyReleaseDiff))))
 	mux.Handle("GET /v1/_ontology/releases/{seq}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleOntologyRelease))))
+	// RFC GQ P5.7: apply a plan of rolling back to a release. A write of the tenant's
+	// vocabulary: gated as the accept is and carved out of the member path; the handler
+	// checks the caller again.
+	mux.Handle("POST /v1/_ontology/rollback", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleOntologyRollback))))
 	return mux
 }
 

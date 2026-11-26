@@ -151,31 +151,73 @@ func (d *Document) DiffOntologyReleases(ctx context.Context, from, to int64) (co
 // releaseSide reads one release as the reader reads the document, and its entries.
 func (d *Document) releaseSide(ctx context.Context, key sqlmem.ScopeKey, seq int64, issues *[]string) (map[string]diffItem, connector.OntologyDiffSide, error) {
 	side := connector.OntologyDiffSide{Seq: seq}
+	rel, err := d.loadRelease(ctx, key, seq)
+	if err != nil {
+		return nil, side, err
+	}
+	side.ContentVersion = rel.contentVersion
+	if rel.orphans > 0 {
+		*issues = append(*issues, fmt.Sprintf("release %d: %d entries sit under a proposal the release did not copy and are not compared", seq, rel.orphans))
+	}
+	if rel.partial {
+		*issues = append(*issues, fmt.Sprintf("release %d could not be read whole; entries whose text was not read may show as changed", seq))
+	}
+	return rel.items, side, nil
+}
+
+// loadedRelease is one complete release as stored and as the reader reads it.
+type loadedRelease struct {
+	contentVersion string
+	// rows are the release's chunks by chunk id, as copied.
+	rows map[string]releaseRow
+	// items are its in-force entries, as diffItems lists them; partial says some
+	// body could not be read.
+	items   map[string]diffItem
+	partial bool
+	// orphans counts chunks under a proposal the release did not copy.
+	orphans int
+	// body reads one chunk's body and fields from the release.
+	body func(id string) (chunkBody, error)
+}
+
+// releaseRow is one chunk of a release.
+type releaseRow struct {
+	parentID, title, status, typ string
+	position                     int
+}
+
+// loadRelease reads release seq: its header, its chunks, and its entries parsed with
+// the reader every other caller uses. releaseNotFound for a release that is not
+// complete or does not exist.
+func (d *Document) loadRelease(ctx context.Context, key sqlmem.ScopeKey, seq int64) (*loadedRelease, error) {
 	hdr, err := d.query(ctx, key, `SELECT content_version FROM ontology_releases WHERE seq = ? AND complete = 1`, seq)
 	if err != nil && !noReleaseTables(err) {
-		return nil, side, fmt.Errorf("read ontology release %d: %w", seq, err)
+		return nil, fmt.Errorf("read ontology release %d: %w", seq, err)
 	}
 	if err != nil || len(hdr.Rows) == 0 || len(hdr.Rows[0]) < 1 {
-		return nil, side, releaseNotFound(seq)
+		return nil, releaseNotFound(seq)
 	}
-	side.ContentVersion = asStr(hdr.Rows[0][0])
+	rel := &loadedRelease{contentVersion: asStr(hdr.Rows[0][0])}
 
-	res, err := d.query(ctx, key, `SELECT chunk_id, coalesce(parent_id, ''), title, position, coalesce(status, ''), body_sha
+	res, err := d.query(ctx, key, `SELECT chunk_id, coalesce(parent_id, ''), title, position, coalesce(status, ''), body_sha,
+		coalesce(type, '')
 		FROM ontology_release_entries WHERE release_seq = ? ORDER BY position, chunk_id`, seq)
 	if err != nil {
-		return nil, side, fmt.Errorf("read ontology release %d's entries: %w", seq, err)
+		return nil, fmt.Errorf("read ontology release %d's entries: %w", seq, err)
 	}
 	if res.Truncated {
-		return nil, side, fmt.Errorf("ontology release %d has more entries than one read returns", seq)
+		return nil, fmt.Errorf("ontology release %d has more entries than one read returns", seq)
 	}
 	src := ontologySource{}
 	shaOf := make(map[string]string, len(res.Rows))
+	rel.rows = make(map[string]releaseRow, len(res.Rows))
 	for _, r := range res.Rows {
-		if len(r) < 6 {
+		if len(r) < 7 {
 			continue
 		}
 		c := ontologyChunk{id: asStr(r[0]), parentID: asStr(r[1]), title: asStr(r[2]), position: asInt(r[3]), status: asStr(r[4])}
 		shaOf[c.id] = asStr(r[5])
+		rel.rows[c.id] = releaseRow{parentID: c.parentID, title: c.title, status: c.status, typ: asStr(r[6]), position: c.position}
 		if c.parentID == "" && src.rootID == "" {
 			src.rootID = c.id
 		}
@@ -183,14 +225,10 @@ func (d *Document) releaseSide(ctx context.Context, key sqlmem.ScopeKey, seq int
 	}
 	// A chunk under a proposal is copied with its stored parent, the proposal, which a
 	// release does not copy (P3.3); the reader cannot place it, so it is not compared.
-	orphans := 0
 	for _, c := range src.rows {
 		if _, ok := shaOf[c.parentID]; c.parentID != "" && !ok {
-			orphans++
+			rel.orphans++
 		}
-	}
-	if orphans > 0 {
-		*issues = append(*issues, fmt.Sprintf("release %d: %d entries sit under a proposal the release did not copy and are not compared", seq, orphans))
 	}
 	// Bodies are read one by one as the parser asks, each its own materialised query
 	// (a SQLite scope has one connection), as the stored reader reads one per chunk.
@@ -208,11 +246,10 @@ func (d *Document) releaseSide(ctx context.Context, key sqlmem.ScopeKey, seq int
 		}
 		return cb, nil
 	}
+	rel.body = src.body
 	read, treeParent := parseOntology(src, nil)
-	if read.partial {
-		*issues = append(*issues, fmt.Sprintf("release %d could not be read whole; entries whose text was not read may show as changed", seq))
-	}
-	return diffItems(read, treeParent), side, nil
+	rel.items, rel.partial = diffItems(read, treeParent), read.partial
+	return rel, nil
 }
 
 // diffItem is one in-force entry of a side, as compared.

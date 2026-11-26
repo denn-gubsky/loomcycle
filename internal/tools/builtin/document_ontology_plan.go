@@ -94,6 +94,8 @@ type plannedChange struct {
 	otherCollisions int
 	// proposal is the proposal this change stands for (op proposal), "" for a direct one.
 	proposal string
+	// release is the release a rollback plans toward (op release), 0 for none.
+	release int64
 }
 
 // planRows is the ontology document's chunk tree, every status included.
@@ -130,6 +132,19 @@ func (d *Document) planOntologyAt(ctx context.Context, key sqlmem.ScopeKey, msco
 	if err := validatePlanChanges(changes); err != nil {
 		return out, err
 	}
+	if changes[0].Op == connector.OntologyPlanRelease {
+		// The request's only change (validatePlanChanges): planned as the direct changes
+		// it expands to, in batches (document_ontology_rollback.go).
+		return d.planRelease(ctx, key, mscope, changes[0].Seq)
+	}
+	return d.planChangesAt(ctx, key, mscope, changes, 0)
+}
+
+// planChangesAt plans changes already validated. release, when not 0, is the release a
+// rollback expanded them from: each planned change carries it.
+func (d *Document) planChangesAt(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, changes []connector.OntologyChange,
+	release int64) (connector.PlanOntologyResult, error) {
+	out := connector.PlanOntologyResult{Changes: []connector.OntologyPlannedChange{}, Issues: []string{}, NewIssues: []string{}}
 	docID, err := d.resolveOntologyID(ctx, key)
 	if err != nil {
 		return out, planReadErr(err)
@@ -158,6 +173,15 @@ func (d *Document) planOntologyAt(ctx context.Context, key sqlmem.ScopeKey, msco
 	if err != nil {
 		return out, err
 	}
+	for i := range items {
+		if release == 0 {
+			break
+		}
+		items[i].release = release
+		if items[i].fixed != nil {
+			items[i].fixed.Release = release
+		}
+	}
 	ov := newOntologyOverlay()
 	planned := make([]*plannedChange, 0, len(items))
 	for _, it := range items {
@@ -168,7 +192,7 @@ func (d *Document) planOntologyAt(ctx context.Context, key sqlmem.ScopeKey, msco
 		if err != nil {
 			return out, proposalResolveErr(it, err)
 		}
-		p.proposal = it.proposal
+		p.proposal, p.release = it.proposal, it.release
 		planned = append(planned, p)
 	}
 
@@ -291,7 +315,7 @@ func validatePlanChanges(changes []connector.OntologyChange) error {
 	for i, ch := range changes {
 		at := "changes[" + strconv.Itoa(i) + "]"
 		if ch.Op == connector.OntologyPlanProposal {
-			if strings.TrimSpace(ch.ID) == "" || ch.Entry != "" || ch.Name != "" || ch.Parent != "" || ch.Body != "" {
+			if strings.TrimSpace(ch.ID) == "" || ch.Entry != "" || ch.Name != "" || ch.Parent != "" || ch.Body != "" || ch.Seq != 0 {
 				return connector.WithMessage(connector.ErrOntologyPlanInvalid, at+": proposal needs id (a proposal's chunk id) and nothing else")
 			}
 			continue
@@ -299,11 +323,17 @@ func validatePlanChanges(changes []connector.OntologyChange) error {
 		if ch.ID != "" {
 			return connector.WithMessage(connector.ErrOntologyPlanInvalid, at+": id is for op proposal only")
 		}
+		if err := validateReleaseChange(at, ch, len(changes)); err != nil {
+			return err
+		}
+		if ch.Op == connector.OntologyPlanRelease {
+			continue
+		}
 		if strings.TrimSpace(ch.Entry) == "" {
 			return connector.WithMessage(connector.ErrOntologyPlanInvalid, at+": entry is required (an entry's chunk id)")
 		}
 		switch ch.Op {
-		case connector.OntologyPlanRetire, connector.OntologyPlanDelete:
+		case connector.OntologyPlanRetire, connector.OntologyPlanDelete, connector.OntologyPlanUnretire, connector.OntologyPlanAdd:
 		case connector.OntologyPlanRename:
 			name := strings.TrimSpace(ch.Name)
 			if name == "" || strings.ContainsAny(name, "\r\n") || utf8.RuneCountInString(name) > ontologyPlanMaxName {
@@ -321,7 +351,7 @@ func validatePlanChanges(changes []connector.OntologyChange) error {
 			}
 		default:
 			return connector.WithMessage(connector.ErrOntologyPlanInvalid,
-				at+": unknown op "+strconv.Quote(ch.Op)+" (retire, rename, move, edit, delete or proposal)")
+				at+": unknown op "+strconv.Quote(ch.Op)+" (retire, unretire, rename, move, edit, delete, add, proposal or release)")
 		}
 	}
 	return nil
@@ -471,6 +501,17 @@ func (d *Document) resolvePlanChange(ctx context.Context, key sqlmem.ScopeKey, m
 			return nil, fmt.Errorf("ontology plan: %w", err)
 		}
 		ov.bodies[e.ChunkID] = chunkBody{Body: ch.Body, Fields: cur.Fields}
+	case connector.OntologyPlanUnretire:
+		row, ok, err := d.getChunkRow(ctx, key, e.ChunkID)
+		if err != nil {
+			return nil, fmt.Errorf("ontology plan: %w", err)
+		}
+		if !ok || !memrank.IsRetiredEntityStatus(row.Status) {
+			return nil, connector.WithMessage(connector.ErrOntologyPlanInvalid, at+": "+strconv.Quote(e.Name)+" is not retired")
+		}
+		// One chunk at a time, as an operator clears the status (document_ontology_retired.go).
+		ov.statuses[e.ChunkID] = ""
+		p.notes = append(p.notes, "the entry is offered for new writes again; entries under it stay retired until each is unretired")
 	}
 	return p, nil
 }
@@ -680,7 +721,7 @@ func entrySignature(r OntologyRead, e planEntry) string {
 // it, and its risk class — the worst effect any non-zero count has.
 func (p *plannedChange) result() connector.OntologyPlannedChange {
 	out := connector.OntologyPlannedChange{Op: p.in.Op, Entry: p.entry.OntologyPlanEntry, Risk: connector.OntologyRiskNone,
-		Counts: map[string]connector.OntologyPlanCount{}, Notes: p.notes, Proposal: p.proposal}
+		Counts: map[string]connector.OntologyPlanCount{}, Notes: p.notes, Proposal: p.proposal, Release: p.release}
 	for _, u := range p.under {
 		out.Subtree = append(out.Subtree, u.OntologyPlanEntry)
 	}

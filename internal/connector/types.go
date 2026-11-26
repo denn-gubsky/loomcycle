@@ -1482,7 +1482,17 @@ const (
 	OntologyPlanProposal = "proposal"
 	// OntologyPlanAdd is the op a plan reports for an add proposal: accepting
 	// it puts a new entry in force, which nothing stored rests on (risk none).
+	// Asked directly, with Seq and Entry, it plans adding back an entry of
+	// release Seq that the ontology no longer holds (RFC GQ P5.7).
 	OntologyPlanAdd = "add"
+	// OntologyPlanUnretire plans clearing a retired entry's status: it is
+	// offered for new writes again (risk none).
+	OntologyPlanUnretire = "unretire"
+	// OntologyPlanRelease plans rolling the ontology back to release Seq: the
+	// direct changes that make the ontology in force declare what the release
+	// declared, each carrying Release (RFC GQ P5.7, D8). It is the request's
+	// only change.
+	OntologyPlanRelease = "release"
 )
 
 // OntologyPlanMaxRequestBytes bounds one plan request on every transport, measured
@@ -1517,7 +1527,9 @@ const (
 // of the tenant ontology by its chunk id. Name is a rename's new name, Parent a
 // move's new parent (an entry of the same section, or the section itself), Body
 // an edit's new body. ID is, for op proposal only, an open proposal's chunk id;
-// such a change carries no other field.
+// such a change carries no other field. Seq is a release's sequence number:
+// for op release (its only field) and op add (with Entry, a chunk id of that
+// release).
 type OntologyChange struct {
 	Op     string `json:"op"`
 	Entry  string `json:"entry"`
@@ -1525,6 +1537,7 @@ type OntologyChange struct {
 	Parent string `json:"parent,omitempty"`
 	Body   string `json:"body,omitempty"`
 	ID     string `json:"id,omitempty"`
+	Seq    int64  `json:"seq,omitempty"`
 }
 
 // PlanOntologyRequest asks what a set of changes would do to the tenant
@@ -1572,6 +1585,9 @@ type OntologyPlannedChange struct {
 	// Proposal is the proposal's chunk id when the change is one accepting it
 	// makes (op proposal); absent for a direct change.
 	Proposal string `json:"proposal,omitempty"`
+	// Release is the release a rollback plans toward (op release): every change
+	// it expands to carries it. Absent for any other change.
+	Release int64 `json:"release,omitempty"`
 	// Job is what the class-rename job would do for a rename of a class
 	// something rests on (RFC GQ P5); absent for every other change.
 	Job *OntologyRenameJobPlan `json:"job,omitempty"`

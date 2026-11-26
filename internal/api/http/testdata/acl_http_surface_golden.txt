@@ -530,6 +530,7 @@ POST /v1/_ontology	substrate:tenant	false	read document:*
 POST /v1/_ontology/adopt	substrate:tenant	false	write document:*
 POST /v1/_ontology/plan	substrate:tenant	false	read document:*
 POST /v1/_ontology/proposals	substrate:tenant	false	write document:*
+POST /v1/_ontology/rollback	substrate:tenant	false	write document:*
 POST /v1/_ontology/subjects/merge	substrate:tenant	false	write document:*
 POST /v1/_ontology/subjects/principal	substrate:tenant	false	write document:*
 POST /v1/_operatortokendef	substrate:tenant	false	read principal:token:*
