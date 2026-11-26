@@ -42,7 +42,6 @@ import (
 	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/connector"
-	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
@@ -95,13 +94,13 @@ func (d *Document) EraseSubjectsFromReleases(ctx context.Context, subjects []Sub
 	if err != nil {
 		return out, err
 	}
-	// The release lock: a release being taken must not copy or prune around the
-	// redaction.
-	unlock, err := d.editions.lock(ctx, key, "ontology_release", memrank.OntologyPath)
+	// The release lock, held across replicas: a release being taken must not copy or
+	// prune around the redaction.
+	held, err := d.holdOntologyReleaseLock(ctx, key)
 	if err != nil {
 		return out, err
 	}
-	defer unlock()
+	defer held.unlock()
 	candidates, err := d.releaseEntriesOf(ctx, key, keys, chunks)
 	if err != nil {
 		return out, err
