@@ -93,3 +93,41 @@ func TestOntologyRollbackRoute_OperatorAppliesWithThePlansFingerprint(t *testing
 		t.Errorf("an unknown field = %d %v, want 400 invalid_body", code, out)
 	}
 }
+
+// TestOntologyRollback_RefusalsKeepWhatTheirAnswerCarries — the connector names each
+// way a rollback stops short, keeping what every transport answers beside the code (the
+// writes made, the current fingerprint), and HTTP answers each as it did before the
+// twins: 409 with applied or fingerprint, 409 rename_job_pending, 422 invalid_request,
+// the plan's own refusals as the plan route, and 500 without the store's text.
+func TestOntologyRollback_RefusalsKeepWhatTheirAnswerCarries(t *testing.T) {
+	s, _ := ontologyFixture(t)
+	applied := []builtin.RollbackStep{{Op: "retire", Entry: "c1", Name: "Memo"}}
+	rep := builtin.RollbackReport{Release: 2, Applied: applied}
+	for _, tc := range []struct {
+		err    error
+		status int
+		body   map[string]any
+	}{
+		{fmt.Errorf("%w: applied 1 write, then: refused", builtin.ErrRollbackPartiallyApplied), http.StatusConflict,
+			map[string]any{"code": "partially_applied", "error": "partially_applied: applied 1 write, then: refused",
+				"applied": []any{map[string]any{"op": "retire", "entry": "c1", "name": "Memo"}}}},
+		{&builtin.ChangePlanRefusal{Code: "plan_stale", Message: "rollback: plan_stale: changed", Fingerprint: "fp-now"}, http.StatusConflict,
+			map[string]any{"code": "plan_stale", "error": "rollback: plan_stale: changed", "fingerprint": "fp-now"}},
+		{fmt.Errorf("%w: cannot carry it", builtin.ErrChangeRenameJobPending), http.StatusConflict,
+			map[string]any{"code": "rename_job_pending", "error": "rename_job_pending: cannot carry it"}},
+		{fmt.Errorf("%w: refused", builtin.ErrChangeProposalInvalid), http.StatusUnprocessableEntity,
+			map[string]any{"code": "invalid_request", "error": "invalid_proposal: refused"}},
+		{connector.WithMessage(connector.ErrOntologyPlanNotFound, "no release 9"), http.StatusNotFound,
+			map[string]any{"code": "entry_not_found", "error": "no release 9"}},
+		{fmt.Errorf("open /var/lib/secret.db: denied"), http.StatusInternalServerError,
+			map[string]any{"code": "ontology_write_failed", "error": "the rollback could not be applied; see the server log"}},
+	} {
+		rec := httptest.NewRecorder()
+		writeOntologyRollbackError(rec, s.rollbackRefusal(context.Background(), "acme", rep, tc.err))
+		var got map[string]any
+		_ = json.Unmarshal(rec.Body.Bytes(), &got)
+		if rec.Code != tc.status || fmt.Sprint(got) != fmt.Sprint(tc.body) {
+			t.Errorf("%v: %d %v, want %d %v", tc.err, rec.Code, got, tc.status, tc.body)
+		}
+	}
+}
