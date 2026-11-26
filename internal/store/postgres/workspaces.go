@@ -98,3 +98,7 @@ func (s *Store) WorkspaceUnpin(ctx context.Context, tenantID, id, fromRunID stri
 func (s *Store) WorkspaceCountDurableByUser(ctx context.Context, tenantID, userID string) (int, error) {
 	return sqlshared.WorkspaceCountDurableByUser(ctx, s.shared(), tenantID, userID)
 }
+
+func (s *Store) SnapshotReadWorkspaces(ctx context.Context) ([]store.WorkspaceRow, error) {
+	return sqlshared.SnapshotReadWorkspaces(ctx, s.shared())
+}

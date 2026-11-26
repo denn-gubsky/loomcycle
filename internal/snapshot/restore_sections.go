@@ -117,6 +117,8 @@ func restoreSectionOrder() []sectionRestorer {
 		{migrations.SectionPausedRuns, restorePausedRunsSection},
 		// After paused_runs (sessions) and acl.
 		{migrations.SectionQueuedRuns, restoreQueuedRunsSection},
+		// After paused_runs and queued_runs: a row's run must be here.
+		{migrations.SectionWorkspaces, restoreWorkspacesSection},
 		// After paused_runs.
 		{migrations.SectionInteractionHistory, restoreInteractionHistorySection},
 		// After memory (document bodies came with it).
