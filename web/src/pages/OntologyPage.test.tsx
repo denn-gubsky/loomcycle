@@ -81,13 +81,13 @@ async function settle() {
   for (let i = 0; i < 5; i++) await act(async () => new Promise((r) => setTimeout(r, 0)));
 }
 
-async function mount(principal: Principal): Promise<{ root: Root; el: HTMLElement }> {
+async function mount(principal: Principal, entry = "/"): Promise<{ root: Root; el: HTMLElement }> {
   const el = document.createElement("div");
   document.body.appendChild(el);
   const root = createRoot(el);
   await act(async () =>
     root.render(
-      <MemoryRouter>
+      <MemoryRouter initialEntries={[entry]}>
         <Routes>
           <Route element={<Outlet context={{ principal, userId: "" }} />}>
             <Route path="/" element={<OntologySection />} />
@@ -275,5 +275,134 @@ describe("OntologySection change proposal accept (RFC GQ P4.3)", () => {
     await act(async () => acceptButton(mounted!.el).click());
     await settle();
     expect(calls.some((c) => c.url.startsWith("/v1/_ontology/proposals"))).toBe(false);
+  });
+});
+
+describe("OntologySection releases (RFC GQ P3.7)", () => {
+  let mounted: { root: Root; el: HTMLElement } | null = null;
+  afterEach(() => {
+    if (mounted) act(() => mounted!.root.unmount());
+    mounted?.el.remove();
+    mounted = null;
+    vi.unstubAllGlobals();
+  });
+
+  const releases = [
+    { seq: 3, content_version: "cccccccccccccccc", fingerprint: "f3", reason: "apply", actor: "ops", created_at: 1764000000000000000, entries: 12 },
+    { seq: 2, content_version: "bbbbbbbbbbbbbbbb", fingerprint: "f2", reason: "confirm", created_at: 1763990000000000000, entries: 11 },
+  ];
+  const diffAnswer = {
+    tenant: "t",
+    from: { seq: 2, content_version: "bbbbbbbbbbbbbbbb" },
+    to: { seq: 3, content_version: "cccccccccccccccc" },
+    changes: [
+      {
+        chunk_id: "c-memo",
+        kind: "class",
+        change: "changed",
+        changed: ["renamed", "meaning"],
+        before: { name: "Memo", meaning: "a note", directives: {} },
+        after: { name: "Note", meaning: "a short note", directives: {} },
+      },
+    ],
+    issues: [],
+  };
+
+  // stubReleases answers the ontology and its release routes; refuse makes every
+  // release route answer 403 forbidden, as the runtime does for a member.
+  function stubReleases(calls: string[], refuse = false) {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        calls.push(url);
+        if (url.startsWith("/v1/_ontology/releases")) {
+          if (refuse) {
+            return new Response(JSON.stringify({ code: "forbidden", error: "ontology releases: operator only" }), {
+              status: 403,
+              statusText: "Forbidden",
+            });
+          }
+          if (url.startsWith("/v1/_ontology/releases/diff")) return new Response(JSON.stringify(diffAnswer), { status: 200 });
+          if (url === "/v1/_ontology/releases") return new Response(JSON.stringify({ tenant: "t", releases }), { status: 200 });
+          return new Response(
+            JSON.stringify({ tenant: "t", release: releases[0], export_md: "# Ontology\n\n## Note\n" }),
+            { status: 200 },
+          );
+        }
+        if (url.startsWith("/v1/_ontology")) {
+          return new Response(JSON.stringify({ ...state, content_version: "cccccccccccccccc" }), { status: 200 });
+        }
+        return new Response("404 page not found", { status: 404 });
+      }),
+    );
+  }
+
+  function buttonByText(el: HTMLElement, label: string): HTMLButtonElement {
+    const b = Array.from(el.querySelectorAll("button")).find((x) => x.textContent === label);
+    if (!b) throw new Error(`no button ${label}`);
+    return b;
+  }
+
+  it("lists each release with its reason, content version and actor, marking the one in force", async () => {
+    const calls: string[] = [];
+    stubReleases(calls);
+    mounted = await mount(operator, "/?section=releases");
+    const rows = Array.from(mounted.el.querySelectorAll("table.ontology-releases tbody tr"));
+    expect(rows.map((r) => r.querySelector("td")?.textContent)).toEqual(["3", "2"]);
+    expect(rows[0].textContent).toContain("change applied");
+    expect(rows[0].textContent).toContain("cccccccccccccccc in force");
+    expect(rows[0].textContent).toContain("ops");
+    expect(rows[1].textContent).toContain("confirmed");
+    expect(rows[1].textContent).not.toContain("in force");
+  });
+
+  it("diffs a release from the one before it and shows each changed field before and after", async () => {
+    const calls: string[] = [];
+    stubReleases(calls);
+    mounted = await mount(operator, "/?section=releases");
+    await act(async () => buttonByText(mounted!.el, "diff from 2").click());
+    await settle();
+    expect(calls).toContain("/v1/_ontology/releases/diff?from=2&to=3");
+    const diff = mounted.el.querySelector(".ontology-release-diff")!;
+    expect(diff.querySelector("h4")?.textContent).toBe("From release 2 to release 3: 1 changed, 0 added, 0 removed");
+    const cells = Array.from(diff.querySelectorAll("tbody tr")).map((tr) =>
+      Array.from(tr.querySelectorAll("td")).map((td) => td.textContent),
+    );
+    expect(cells).toEqual([
+      ["Note class · changed", "name", "Memo", "Note"],
+      ["meaning", "a note", "a short note"],
+    ]);
+  });
+
+  it("compares a release with the ontology in force and opens one as Markdown", async () => {
+    const calls: string[] = [];
+    stubReleases(calls);
+    mounted = await mount(operator, "/?section=releases");
+    await act(async () => buttonByText(mounted!.el, "Compare").click());
+    await settle();
+    expect(calls).toContain("/v1/_ontology/releases/diff?from=3&to=current");
+    await act(async () => Array.from(mounted!.el.querySelectorAll("button")).find((b) => b.textContent === "view")!.click());
+    await settle();
+    expect(calls).toContain("/v1/_ontology/releases/3");
+    expect(mounted.el.querySelector(".ontology-release-md")?.textContent).toContain("## Note");
+  });
+
+  it("shows a refusal as not permitted and offers no release", async () => {
+    stubReleases([], true);
+    mounted = await mount(member, "/?section=releases");
+    const alert = mounted.el.querySelector(".acl-denied");
+    expect(alert?.querySelector(".acl-denied-head")?.textContent).toBe("Not permitted");
+    expect(alert?.textContent).toContain("operator only");
+    expect(mounted.el.querySelector("table.ontology-releases")).toBeNull();
+    expect(mounted.el.querySelector(".settings-error")).toBeNull();
+  });
+
+  it("reads no release until the tab is opened", async () => {
+    const calls: string[] = [];
+    stubReleases(calls);
+    mounted = await mount(operator);
+    expect(calls.some((u) => u.startsWith("/v1/_ontology/releases"))).toBe(false);
+    expect(Array.from(mounted.el.querySelectorAll("[role=tab]")).map((t) => t.textContent)).toContain("releases");
   });
 });
