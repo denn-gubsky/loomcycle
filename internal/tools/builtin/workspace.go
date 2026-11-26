@@ -209,9 +209,11 @@ var workspaceOpGrant = map[string]string{
 	// expose puts model-written active content in front of a person: its
 	// own grant (RFC GW §7). Withdrawing it needs the same.
 	"expose": "expose", "unexpose": "expose",
-	// A screenshot loads a server's page as a peer's request through a
-	// connect share does (RFC GW §5.8: grant connect).
-	"screenshot": "connect",
+	// A screenshot loads a server's page (RFC GW §5.8: grant connect), and
+	// the page's scripts run in the session, reaching what a command there
+	// reaches, as the owner's request does (exec, D-P9-20): so both, never
+	// connect alone (P10 review, MEDIUM; narrows §5.8).
+	"screenshot": "connect_and_exec",
 	// share needs the share grant and what it hands over: checked in share.
 	"share": "share", "unshare": "share",
 	// A checkpoint and a restore change what the workspace holds; a fork
@@ -322,6 +324,8 @@ func (w *Workspace) Execute(ctx context.Context, input json.RawMessage) (tools.R
 		granted = pol.Expose
 	case "connect":
 		granted = pol.Connect
+	case "connect_and_exec":
+		granted = pol.Connect && pol.Allows(config.WorkspaceOpExec)
 	case "templates":
 		granted = pol.Templates
 	case "open_or_templates":

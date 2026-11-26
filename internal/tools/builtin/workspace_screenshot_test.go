@@ -16,14 +16,27 @@ import (
 
 var wsScreenshotter = tools.WorkspacePolicyValue{Open: true, Read: true, Exec: true, Connect: true}
 
-// A screenshot loads a server's page, so it needs connect (RFC GW §5.8),
-// not exec or read alone.
+// A screenshot loads a server's page, so it needs connect (RFC GW §5.8):
+// exec and read without it are refused.
 func TestWorkspaceScreenshot_NeedsTheConnectGrant(t *testing.T) {
 	f := newWSFixture(t, lifecycle.Limits{})
 	ctx := f.runCtx(t, "alice", "", tools.WorkspacePolicyValue{Open: true, Read: true, Write: true, Exec: true})
 	f.mustOK(t, ctx, `{"op":"open","name":"w"}`)
 	if c := refusalClass(f.call(t, ctx, `{"op":"screenshot","name":"w","port":8000}`)); c != "not_granted" {
 		t.Errorf("screenshot without connect = %q, want not_granted", c)
+	}
+}
+
+// The page's own scripts run in the session and reach what a command there
+// reaches, and the owner's request to the same port needs exec (D-P9-20),
+// so a screenshot needs exec as well as connect, never connect alone (the
+// MEDIUM finding of the P10 review; it narrows RFC §5.8's "grant connect").
+func TestWorkspaceScreenshot_ConnectWithoutExecIsRefused(t *testing.T) {
+	f := newWSFixture(t, lifecycle.Limits{})
+	ctx := f.runCtx(t, "alice", "", tools.WorkspacePolicyValue{Open: true, Read: true, Connect: true})
+	f.mustOK(t, ctx, `{"op":"open","name":"w"}`)
+	if c := refusalClass(f.call(t, ctx, `{"op":"screenshot","name":"w","port":8000}`)); c != "not_granted" {
+		t.Errorf("screenshot with connect but no exec = %q, want not_granted", c)
 	}
 }
 
