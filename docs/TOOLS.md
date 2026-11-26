@@ -35,6 +35,10 @@ Both layers are intersection-only: nothing the model sees can ever exceed what t
 
 ## Layer 1 — operator-side: enabling tools
 
+### Deprecated: Bash, Bashbox and the sandbox tools
+
+`Bash`, `Bashbox` (with its host-command fallback), the builder sidecar's `mcp__sandbox__*` tools and the `shell_credentials` agent field still work, and a future release removes them (RFC GW P15). Boot and `loomcycle doctor` warn about each use, a run given one is counted in `loomcycle_deprecated_use_total`, and `Context op=self` lists them under `deprecations`. Use the `Workspace` tool instead: it runs commands, scripts and servers in a workspace on a workspace worker, a process outside the core that holds no credential ([WORKSPACES.md](WORKSPACES.md)). [MIGRATING-FROM-BASH.md](MIGRATING-FROM-BASH.md) maps each tool, variable and field to its replacement. The rows and paragraphs below describe them as they work until then.
+
 ### Built-ins
 
 Each built-in is registered into the dispatcher at process startup but **refuses every call** until its sandbox is configured. For the file/exec tools that means a bound **volume** (RFC AH); for the network tools, a host allowlist or key. The model sees the tool's spec and may try to call it, but every call comes back with `{"is_error": true, "text": "<tool> ... refuses ..."}`. This deliberate behaviour means the model gets a clear "not configured" signal it can self-correct from, instead of `unknown tool`.

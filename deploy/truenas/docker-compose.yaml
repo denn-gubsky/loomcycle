@@ -27,6 +27,9 @@
 #   5. Fill the placeholders below (TRUENAS_HOST, OLLAMA_HOST, the pool) and paste.
 #
 # ── IMAGE CHOICE (this file uses the toolbox image; read this) ────────────────
+#   DEPRECATED: the toolbox image and the Bash/Bashbox switches below still work,
+#   and a future release removes them (RFC GW P15). Agents run commands in a
+#   workspace on a workspace worker instead: docs/MIGRATING-FROM-BASH.md.
 #   • denngubsky/loomcycle-toolbox — SHIPS A DEV TOOLCHAIN (python/go/rust/c++/node
 #     + git/gh/curl/jq/rsync/wget/unzip/sqlite3), so agents can run + compile + test
 #     code via Bash/Bashbox. Code runs in loomcycle's OWN container → WEAK isolation:
@@ -99,6 +102,7 @@ services:
       # GPU offload (num_gpu) is in the config overlay: providers.ollama-local.options.
 
       # ── code execution — TOOLBOX IMAGE ONLY, single-tenant/trusted ─────────
+      # DEPRECATED (RFC GW P15 removes these): see docs/MIGRATING-FROM-BASH.md.
       # DELETE this whole block on the distroless image. Grant Bash/Bashbox to an
       # agent via its tools:. Bashbox is the in-process sandbox (rooted at the
       # agent's rw volume, no network); Bash is the unsandboxed escape hatch.

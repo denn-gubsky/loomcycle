@@ -14,6 +14,12 @@ A **workspace** is a directory on a *workspace worker*, a process apart from the
 - **No durable, git or shared workspaces.** Every workspace is ephemeral, empty when opened and gone when its run ends, and owned by one run. A reference into another agent's workspace (`workspace:<name>@<agent_id>:<path>`) comes with sharing, phase 8; checking a Document out into a workspace and committing it back, phase 7.
 - **Not on loomcycle's MCP server.** A workspace is pinned to a run, and an MCP session has none: the MCP `file` tool refuses a workspace reference.
 
+## Coming from Bash, Bashbox or the builder sidecar
+
+Workspaces replace the `Bash` tool, Bashbox and its host-command fallback, the builder sidecar's `mcp__sandbox__*` tools and the `shell_credentials` field. All of these still work, and a future release removes them (RFC GW P15). Boot and `loomcycle doctor` warn about each use. [MIGRATING-FROM-BASH.md](MIGRATING-FROM-BASH.md) maps each tool, variable and field to its replacement.
+
+The embedded bundles have moved already. `sdlc/coder`, `sdlc/reviewer`, `team/orchestrator` and the three `chat` agents hold `Workspace` with a `{ops: [read, write, exec], open: true}` grant, and fall back to their old shell tool only when this install runs no workspaces. The `dev-workspace` bundle's `dev/exec` runs the old sandbox command envelope in a workspace.
+
 ## Running a remote worker
 
 A remote worker is `loomcycle worker --role workspace` on a machine of its own, attached to the runtime's worker endpoint.
