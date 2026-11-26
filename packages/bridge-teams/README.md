@@ -79,6 +79,7 @@ Configuration is by environment:
 | `BRIDGE_FILES` | `1` puts documents attached in a 1:1 chat into the agent's run inbox ([Documents](#documents)); `BRIDGE_FILES_*` there | unset (off) |
 | `BRIDGE_VOICE` | `1` transcribes audio files attached in a 1:1 chat ([Recordings](#recordings)) | unset (off) |
 | `TEAMS_BRIDGE_FILE_HOSTS` | Comma list of host suffixes an attached file may be downloaded from | `.sharepoint.com` |
+| `TEAMS_BRIDGE_DUMP_ACTIVITIES` | `1` logs every inbound activity, redacted ([What Teams sent](#what-teams-sent)) | unset (off) |
 
 With `BRIDGE_STORE=memory`, a restart forgets which loomcycle session each Teams conversation was in, and the next message starts a fresh one. Use `file:<path>` (one instance) or your own `ConversationStore` (several).
 
@@ -209,6 +210,15 @@ Teams gives the bot a pre-authorised link to each attached file that works for o
 When a download is refused, the person hears "I couldn't download that file. Please send it again." (for a recording, "I couldn't download that voice message. Please try again or type it.") and the bridge logs `teams file download refused` with the reason (`host`, `redirect`, `status`, `type` or `size`), the host or HTTP status where there is one, and never the link.
 
 Not yet checked against a live tenant (RFC GA P0): the exact host Teams' `downloadUrl` uses, whether it redirects, and how long it lives. If files are refused with reason `host` or `redirect`, the logged host tells you what to add to `TEAMS_BRIDGE_FILE_HOSTS`.
+
+### What Teams sent
+
+When a person attaches a file and the agent never gets it, look at what Teams delivered:
+
+- **Always:** a message whose attachments hold no file the bot can download (only `application/vnd.microsoft.teams.file.download.info` is one) logs `teams message carried no file` with the conversation, its type, the attachment count and their content types. It is logged when the message has no text, or has an attachment other than the `text/html` body Teams adds to a formatted message. No names, links or content.
+- **`TEAMS_BRIDGE_DUMP_ACTIVITIES=1`:** every inbound activity that passes the Bot Connector check, of any type (a `messageUpdate` or an `invoke` too, not only messages), is logged as `teams activity` with the whole activity. Every URL keeps its host and path and loses its query and fragment (a `downloadUrl`'s query is a credential while it lives), fields named like a credential (`token`, `secret`, `authorization`, `tempauth`, ...) are replaced, and strings over 2000 characters are cut. What people write, their names and file names are kept: turn it on to look, then off. The bridge warns at start while it is on.
+
+Use the dump rather than `LOG_LEVEL=debug`: at debug level the Teams SDK logs whole activity bodies unredacted, and for a working file that includes the `downloadUrl` with its credential.
 
 ## Security
 
