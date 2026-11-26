@@ -203,3 +203,35 @@ func TestWorkspaceTemplateConfig_PerUserDefaultFitsTheTenantBound(t *testing.T) 
 		t.Errorf("max_per_user = %d, want 3", got)
 	}
 }
+
+// RFC GW §11 "Personal workers", D32: with workspace.personal_workers on, a
+// configuration whose worker endpoint is not on loopback is refused, so the
+// core never starts with a user's own machine reachable as a worker from
+// elsewhere. It also needs a mode that accepts workers over the endpoint.
+func TestWorkspaceConfig_PersonalWorkersNeedALoopbackWorkerEndpoint(t *testing.T) {
+	head := "conversion:\n  mode: inprocess\n"
+	for _, tc := range []struct {
+		name, yaml, want string
+	}{
+		{"every interface", head + "worker_endpoint:\n  listen: 0.0.0.0:7788\n  insecure: true\nworkspace:\n  mode: remote\n  personal_workers: true\n", "loopback"},
+		{"no host", head + "worker_endpoint:\n  listen: \":7788\"\n  insecure: true\nworkspace:\n  mode: remote\n  personal_workers: true\n", "loopback"},
+		{"a hostname", head + "worker_endpoint:\n  listen: workers.example:7788\n  insecure: true\nworkspace:\n  mode: local+remote\n  personal_workers: true\n", "loopback"},
+		{"no remote workers", head + "workspace:\n  mode: local\n  personal_workers: true\n", "workspace.personal_workers"},
+		{"workspaces off", head + "workspace:\n  personal_workers: true\n", "workspace.personal_workers"},
+	} {
+		_, err := loadConversion(t, tc.yaml)
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: err = %v, want a refusal naming %q", tc.name, err, tc.want)
+		}
+	}
+	for _, listen := range []string{"127.0.0.1:7788", "[::1]:7788", "localhost:7788"} {
+		cfg, err := loadConversion(t, head+"worker_endpoint:\n  listen: \""+listen+"\"\nworkspace:\n  mode: remote\n  personal_workers: true\n")
+		if err != nil {
+			t.Errorf("%s: %v", listen, err)
+			continue
+		}
+		if !cfg.Workspace.Resolved().PersonalWorkers {
+			t.Errorf("%s: personal_workers not kept", listen)
+		}
+	}
+}
