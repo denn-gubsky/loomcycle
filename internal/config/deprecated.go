@@ -54,8 +54,8 @@ var deprecations = []Deprecation{
 	{DeprecatedKindTool, "Bashbox", "use the Workspace tool, which runs commands on a workspace worker", "bashbox"},
 	{DeprecatedKindTool, "mcp__sandbox__", "use the Workspace tool; a workspace worker's container engine replaces the builder sidecar", "the-builder-sidecar"},
 	{DeprecatedKindField, "shell_credentials", "give the workspace an egress route with a credential; no credential reaches a shell", "shell_credentials"},
-	{DeprecatedKindBundle, "sandbox", "use the Workspace tool on a workspace worker with the container engine", "the-builder-sidecar"},
-	{DeprecatedKindBundle, "dev-exec", "use the Workspace tool on a workspace worker with the container engine", "the-builder-sidecar"},
+	{DeprecatedKindBundle, "sandbox", "select the dev-workspace bundle, whose dev/exec runs the same envelope in a workspace on a workspace worker", "the-builder-sidecar"},
+	{DeprecatedKindBundle, "dev-exec", "select the dev-workspace bundle, whose dev/exec runs the same envelope in a workspace on a workspace worker", "the-builder-sidecar"},
 }
 
 // Deprecations is the table, a copy.

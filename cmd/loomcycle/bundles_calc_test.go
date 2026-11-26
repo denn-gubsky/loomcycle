@@ -16,6 +16,7 @@ var bundledCalc = map[string]map[string]bool{
 	"agent-teams":    {"agent/assistant": true, "team/assistant": true, "team/orchestrator": true},
 	"chat":           {"chat/medium": true, "chat/local": true, "chat/local-small": true},
 	"dev-exec":       {"dev/exec": false},
+	"dev-workspace":  {"dev/exec": false},
 	"doc-colorizer":  {"doc/colorizer": false},
 	"document-agent": {"doc/manager": true},
 	"knowledge-base": {
