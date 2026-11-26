@@ -86,6 +86,11 @@ type OperatorTokenDef struct {
 	// (config.PrincipalTenants, captured at boot like the principals themselves).
 	// create refuses a tenant that differs from one of these only by case.
 	ConfigTenants []string
+
+	// PersonalWorkers reports whether workspace.personal_workers is on, read
+	// at each create so a reload that turns it off stops new mints. Nil is
+	// off: a worker_personal create is refused.
+	PersonalWorkers func() bool
 }
 
 // operatorTokenNameRe constrains name / tenant_id / subject. RFC L:
@@ -117,6 +122,7 @@ const operatorTokenDefInputSchema = `{
     "overrides": {"description": "Optional (create). Locks the per-run settings for runs this token starts, and for retunes it makes: the string \"none\" (every such setting is locked — the model, provider, tier, effort, sampling, limits, output format and the rest), or an array of the settings it may still set. A request that sets a locked one is refused, not ignored. Omit for no lock."},
     "rate": {"type": "object", "description": "Optional (create). Bounds how often this token may start runs: {\"per_minute\": N, \"burst\": M}. burst is how many it may start at once from idle (default: per_minute). A start past the rate is refused with a time to wait. Omit to use the server's default, if it has one.", "properties": {"per_minute": {"type": "integer"}, "burst": {"type": "integer"}}, "required": ["per_minute"]},
     "retention": {"type": "string", "enum": ["none", "default"], "description": "Optional (create). \"none\" makes every run this token starts a no-trace run: its content is delivered to the caller and stored nowhere, and neither a request nor an agent can change that. Omit (or \"default\") to leave the mode to the request and the agent."},
+    "worker_personal": {"type": "boolean", "description": "Optional (create, scopes exactly [\"workers:attach\"] only; admin only; needs workspace.personal_workers on). true mints a user's PERSONAL workspace-worker token (RFC GW P13): the worker serves only subject's runs, and subject must be an enabled user of tenant_id. Never with worker_shared. A tenant operator mints one on POST /v1/_users/{subject}/tokens with purpose personal_worker instead."},
     "tenant_metrics": {"type": "boolean", "description": "Optional (create, scopes exactly [\"metrics:read\"] only). true limits the scrape token to its own tenant's series on GET /metrics, with none of the whole runtime's. Omit for the full view. Always on for a token a tenant operator mints, which may not set it false."},
     "worker_shared": {"type": "boolean", "description": "Optional (create, scopes exactly [\"workers:attach\"] only; admin only). true mints a SHARED workspace-worker token: the worker serves every tenant. Omit for a worker that serves only the token's tenant_id. A tenant operator cannot set it."},
     "grace_seconds": {"type": "integer", "description": "Rotation grace window override (rotate)."},
@@ -147,7 +153,9 @@ type operatorTokenDefInput struct {
 	// (RFC GW Q2). Only the admin path reads it; the tenant operator's path
 	// refuses the field.
 	WorkerShared *bool `json:"worker_shared,omitempty"`
-	GraceSeconds *int  `json:"grace_seconds,omitempty"`
+	// WorkerPersonal mints a user's personal worker token (RFC GW P13).
+	WorkerPersonal *bool `json:"worker_personal,omitempty"`
+	GraceSeconds   *int  `json:"grace_seconds,omitempty"`
 	// ImportToken (Decision 10 migration) binds an existing secret —
 	// the legacy LOOMCYCLE_AUTH_TOKEN via `--copy-from-env` — instead of
 	// minting. Admin-only; the plaintext is hashed, never echoed.
@@ -322,6 +330,12 @@ func (s *OperatorTokenDef) execCreate(ctx context.Context, in operatorTokenDefIn
 	}
 	if in.WorkerShared != nil {
 		restrictions.WorkerShared = *in.WorkerShared
+	}
+	if in.WorkerPersonal != nil && *in.WorkerPersonal {
+		if err := s.checkPersonalWorker(ctx, in); err != nil {
+			return errResult("create: " + err.Error()), nil
+		}
+		restrictions.WorkerPersonal = true
 	}
 	if err := restrictions.Validate(in.Agents != nil); err != nil {
 		return errResult(fmt.Sprintf("create: %s", err)), nil
@@ -629,6 +643,31 @@ func heldToMinter(ctx context.Context, r auth.Restrictions) (auth.Restrictions, 
 	return r.Within(p.Restrictions)
 }
 
+// checkPersonalWorker refuses a worker_personal create (RFC GW P13) the
+// deployment or the user does not allow: workspace.personal_workers must be
+// on, and the subject named explicitly and an enabled user of tenant_id. A
+// derived "tok-<name>" subject would bind the worker to nobody.
+func (s *OperatorTokenDef) checkPersonalWorker(ctx context.Context, in operatorTokenDefInput) error {
+	if s.PersonalWorkers == nil || !s.PersonalWorkers() {
+		return errors.New("personal workers are off on this server (workspace.personal_workers)")
+	}
+	if in.Subject == "" {
+		return errors.New("worker_personal needs subject: the user whose worker it is")
+	}
+	user, err := s.Store.UserGet(ctx, in.TenantID, in.Subject)
+	if err != nil {
+		var nf *store.ErrNotFound
+		if errors.As(err, &nf) {
+			return fmt.Errorf("subject %q is not a user of tenant %q", in.Subject, in.TenantID)
+		}
+		return err
+	}
+	if user.Status != "active" {
+		return fmt.Errorf("user %q is disabled", in.Subject)
+	}
+	return nil
+}
+
 // sameRestrictions reports whether a and b restrict the same things: the
 // same mode, the same rate (an unset burst reads as the per-minute rate), the
 // same overrides allowed, the same agents and the same surfaces, in any order,
@@ -649,7 +688,7 @@ func sameRestrictions(a, b auth.Restrictions) bool {
 		}
 		return true
 	}
-	if a.Retention != b.Retention || a.TenantMetrics != b.TenantMetrics || a.WorkerShared != b.WorkerShared || !sameSet(a.Agents, b.Agents) || !sameSet(a.Surfaces, b.Surfaces) {
+	if a.Retention != b.Retention || a.TenantMetrics != b.TenantMetrics || a.WorkerShared != b.WorkerShared || a.WorkerPersonal != b.WorkerPersonal || !sameSet(a.Agents, b.Agents) || !sameSet(a.Surfaces, b.Surfaces) {
 		return false
 	}
 	if (a.Rate == nil) != (b.Rate == nil) || (a.Rate != nil &&

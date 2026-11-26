@@ -1,10 +1,11 @@
 # exp9 — prime numbers via stdio → SQL memory → channel → validation agent (RFC AA)
 #
-# A Python sieve (primes.py) streams primes to stdout. The coding agent reads them via
-# Bash stdio, creates a SQL memory table in user scope, and batch-inserts every prime.
-# It then pings a channel. A validation agent waits on the channel, reads the primes
-# from the same user-scoped SQL table, and validates each one via a trial-division
-# Python snippet run through Bash — writing the verdict back to a second SQL table.
+# A Python sieve (work/primes.py) streams primes to stdout. The coding agent runs it in
+# a workspace and reads its output, creates a SQL memory table in user scope, and
+# batch-inserts every prime. It then pings a channel. A validation agent waits on the
+# channel, reads the primes from the same user-scoped SQL table, and validates each one
+# via a trial-division Python script run in its own workspace — writing the verdict
+# back to a second SQL table.
 #
 # RFC AA features exercised:
 #   - storage.sqlmem_enabled: true        (SQLite-backed per-scope DB)
@@ -14,7 +15,7 @@
 #
 # Topology:
 #   operator POST /v1/runs agent=exp9-coder user_id=exp9
-#     └─ Bash: python3 ../primes.py 500 → parse stdout
+#     └─ File copy volume:default:primes.py → workspace; Workspace exec python3 primes.py 500
 #     └─ Memory sql_exec scope=user: CREATE TABLE primes (n INTEGER PRIMARY KEY)
 #     └─ Memory sql_exec scope=user: INSERT INTO primes …  (batch, one stmt)
 #     └─ Channel op=publish exp9-primes-done {"count":<N>,"max":<P>}
@@ -22,7 +23,7 @@
 #   operator POST /v1/runs agent=exp9-validator user_id=exp9
 #     └─ Channel op=subscribe exp9-primes-done  (waits up to 5 min)
 #     └─ Memory sql_query scope=user: SELECT n FROM primes ORDER BY n
-#     └─ Bash: python3 inline trial-division over the list → lists any non-primes
+#     └─ Workspace write check.py + exec: trial division over the list → any non-primes
 #     └─ Memory sql_exec scope=user: CREATE TABLE prime_check (n INT, valid INT)
 #     └─ Memory sql_exec scope=user: INSERT INTO prime_check …
 #     └─ Memory sql_query scope=user: SELECT COUNT(*) FROM prime_check WHERE valid=0
@@ -66,6 +67,13 @@ volumes:
     mode: rw
     default: true
 
+# Commands run in a workspace on the local worker the runtime starts itself
+# (RFC GW). Local mode runs them as your own user with no isolation: use it on
+# your own machine only. The Bash tool this example used is deprecated (RFC GW
+# P15 removes it); docs/MIGRATING-FROM-BASH.md maps it to workspaces.
+workspace:
+  mode: local
+
 channels:
   exp9-primes-done:
     description: "Published by exp9-coder when the primes table is populated. Consumed by exp9-validator."
@@ -80,7 +88,8 @@ agents:
     tier: middle
     max_iterations: 20
     max_tokens: 4096
-    tools: [Context, Bash, Memory, Channel]
+    tools: [Context, Read, Workspace, File, Memory, Channel]
+    workspace: {ops: [read, write, exec], open: true}
     sql_scopes: [user]
     memory_scopes: [user]
     volumes: [default]
@@ -90,8 +99,10 @@ agents:
       You are the CODER agent for exp9: prime-number pipeline with SQL memory.
       Use Context op=tools once at start; Context op=doc name=<Tool> for argument shapes.
 
-      STEP 1 — Generate primes via Python stdio:
-        Bash: python3 ../primes.py 500
+      STEP 1 — Generate primes via Python stdio, in a workspace:
+        Workspace op=open name="py"
+        File op=copy from="volume:default:primes.py" to="workspace:py:primes.py"
+        Workspace op=exec name="py" command="python3 primes.py 500"
         The script prints all primes ≤ 500, one per line, to stdout.
         Capture the output. Parse it as a newline-separated list of integers.
         Output: "Generated <N> primes. Largest: <P>"
@@ -124,8 +135,8 @@ agents:
 
       RULES:
       - Never print .env*, *_KEY, *_TOKEN, *_SECRET values.
-      - The Bash python3 call must be exactly: python3 ../primes.py 500
-        (run.sh cd's into ./work, so ../primes.py is the correct relative path)
+      - The command must be exactly: python3 primes.py 500 (in the workspace
+        you copied primes.py into)
       - Non-empty tool output always.
 
   # ──────────── VALIDATOR — waits on channel, reads SQL memory, validates primes ────────────
@@ -133,7 +144,8 @@ agents:
     tier: middle
     max_iterations: 20
     max_tokens: 4096
-    tools: [Context, Bash, Memory, Channel]
+    tools: [Context, Workspace, Memory, Channel]
+    workspace: {ops: [read, write, exec], open: true}
     sql_scopes: [user]
     memory_scopes: [user]
     volumes: [default]
@@ -154,10 +166,11 @@ agents:
         The result has {"columns":["n"],"rows":[[2],[3],[5],...]}. Extract the list.
         Output: "Read <N> primes from DB."
 
-      STEP 3 — Validate via trial-division Python (inline Bash):
-        Build a Bash command that pipes the prime list into a Python snippet:
-          python3 -c "
-        import sys, math
+      STEP 3 — Validate via trial-division Python, in a workspace:
+        Workspace op=open name="check"
+        Workspace op=write name="check" path="check.py" with this content, the
+        list from Step 2 embedded as a Python literal:
+        import math
         nums = [<comma-separated list from Step 2>]
         def is_prime(n):
             if n < 2: return False
@@ -165,10 +178,8 @@ agents:
                 if n % i == 0: return False
             return True
         invalid = [n for n in nums if not is_prime(n)]
-        missing = [n for n in nums if n > 1 and is_prime(n) and n not in set(nums)]
         print(f'checked={len(nums)} invalid={invalid[:20]}')
-          "
-        (The list must be embedded as a Python literal in the Bash command.)
+        Workspace op=exec name="check" command="python3 check.py"
         Capture the output. Extract "checked" and "invalid".
         Output: "Trial division: checked=<N> invalid=<list>"
 

@@ -18,7 +18,7 @@
 # Topology:
 #   user POST /v1/runs → exp8-dispatcher (rw default)
 #     ├─ VolumeDef op=create name="lc-src" mode=rw ephemeral=true  → <EPHEMERAL_PATH>
-#     ├─ Bash: git clone <repo> <EPHEMERAL_PATH>/loomcycle
+#     ├─ Git op=clone volume=lc-src repo=loomcycle (the runtime's own git, no shell)
 #     ├─ Agent op=parallel_spawn: 8 × exp8-reviewer (inherit ephemeral vol, ro tools)
 #     │    each: Glob/Read/Grep lc-src/loomcycle/<path> → Memory review:<slice>:findings
 #     └─ Agent op=spawn: exp8-consolidator → reads Memory → Write exp8/review-report.md
@@ -66,8 +66,11 @@ defaults:
 # No agent binds dynamic-root: VolumeDef finds it from this config, and an
 # ephemeral volume is reached by its own name. `default` contains ./dynamic,
 # but the file tools refuse paths under the dynamic root through it, so a
-# volume's own mode and run are what decide who reaches it. Bash is not
-# confined that way: it can reach any path by an absolute path.
+# volume's own mode and run are what decide who reaches it. The dispatcher
+# clones with the Git tool, which works inside a volume and runs no program on
+# the host. (Until RFC GW P14 it ran `git clone` through the Bash tool, which
+# reaches any path by an absolute path; Bash is deprecated, see
+# docs/MIGRATING-FROM-BASH.md.)
 volumes:
   default:
     path: .
@@ -85,7 +88,10 @@ agents:
     tier: middle
     max_iterations: 30
     max_tokens: 4096
-    tools: [Context, VolumeDef, Bash, Agent, Memory]
+    tools: [Context, VolumeDef, Git, Glob, Agent, Memory]
+    # Clone only: no push. The host must also be in LOOMCYCLE_GIT_SOURCE_HOSTS
+    # (run.sh sets github.com).
+    git_remote: [fetch]
     volume_def_scopes: [any]
     memory_scopes: [user]
     volumes: [default]
@@ -100,11 +106,11 @@ agents:
         Output: "Ephemeral volume created: <EPHEMERAL_PATH>"
 
       STEP 2 — Clone loomcycle from GitHub into the ephemeral volume:
-        Bash: git clone --quiet https://github.com/denn-gubsky/loomcycle <EPHEMERAL_PATH>/loomcycle
-        Print the first line of git output (must be non-empty).
+        Git op=clone volume="lc-src" repo="loomcycle" url="https://github.com/denn-gubsky/loomcycle" depth=1
+        Print the returned head (branch + hash).
 
       STEP 3 — Verify clone:
-        Bash: ls <EPHEMERAL_PATH>/loomcycle/ | head -5
+        Glob volume="lc-src" pattern="loomcycle/*"
         If the listing is empty, output "FAIL: clone empty" and STOP.
 
       STEP 4 — Fan out 8 reviewers via Agent op=parallel_spawn (wait=true):
@@ -170,7 +176,7 @@ agents:
 
       6. Output ONE line: "REVIEWED slice=<slice> files=<n> issues=<k>"
 
-      RULES: READ-ONLY — no Bash, no Write, no Edit. volume="lc-src" on every file call.
+      RULES: READ-ONLY — no Write, no Edit, no commands. volume="lc-src" on every file call.
       Never print secrets. Non-empty Memory value always (even if issues=[]).
 
   # ──────────── CONSOLIDATOR — merges all findings, writes report ────────────

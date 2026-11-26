@@ -11,8 +11,8 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 export LOOMCYCLE_DATA_DIR="${LOOMCYCLE_DATA_DIR:-$HERE/data}"
 export LOOMCYCLE_LISTEN_ADDR="${LOOMCYCLE_LISTEN_ADDR:-127.0.0.1:8787}"
-# Bash tool — needed by coder to run primes.py
-export LOOMCYCLE_BASH_ENABLED="${LOOMCYCLE_BASH_ENABLED:-1}"
+# The coder runs primes.py in a workspace on the local worker (workspace.mode:
+# local in loomcycle.yaml): python3 must be on PATH.
 
 mkdir -p "$HERE/data" "$HERE/work"
 LOOMCYCLE_BIN="${LOOMCYCLE_BIN:-loomcycle}"
@@ -23,6 +23,6 @@ command -v "$LOOMCYCLE_BIN" >/dev/null 2>&1 || {
   exit 127
 }
 # cd into the volume root so the default volume path=. resolves to ./work.
-# primes.py is one level up (../primes.py from the coder's cwd).
+# primes.py is in ./work, the default volume; the coder copies it into a workspace.
 cd "$HERE/work"
 exec "$LOOMCYCLE_BIN" --config "$HERE/loomcycle.yaml"

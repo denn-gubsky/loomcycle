@@ -358,6 +358,13 @@ func (d *Dispatcher) authorize(ctx context.Context, bearer string) (owner string
 	if err != nil {
 		return "", att, status.Error(codes.PermissionDenied, err.Error())
 	}
+	// A personal worker (RFC GW P13) is served by its user: its own worker
+	// id, placement and ops held to (tenant, user). Until the dispatcher
+	// does that, one attaches nothing; read as a tenant worker it would
+	// take a tenant worker's id and serve every user of the tenant.
+	if att.Personal {
+		return "", att, status.Error(codes.PermissionDenied, "this runtime does not serve personal workers yet")
+	}
 	return grantKey(att), att, nil
 }
 
@@ -650,10 +657,13 @@ func (d *Dispatcher) markPending(w *worker, r store.WorkspaceRow) {
 // confirms, which recoverLost reports by returning true. A run that cannot
 // be read changes nothing until the next attach.
 func (d *Dispatcher) recoverLost(ctx context.Context, w *worker, r store.WorkspaceRow, log *slog.Logger) (remove bool) {
-	if r.OwnerKind == store.WorkspaceOwnerPrincipal {
-		// No run owns it (RFC GW D35): it comes back into service, and the
-		// principal release pass decides when it ends, as for one never lost.
-		// Read as a run, its pin key names no run row, and it would be removed.
+	if r.OwnerKind == store.WorkspaceOwnerPrincipal || r.Lifetime == store.WorkspaceLifetimeDurable {
+		// No run owns it (RFC GW D35), or it outlives its run (a durable
+		// workspace, RFC GW §8 "Worker death": durable disks keep their
+		// workspaces): it comes back into service, and its own release rule
+		// decides when it ends (the principal pass; for a durable one pinned
+		// to an ended run, the sweeper parks it). Read as a run, its pin key
+		// names no run row, and it would be removed.
 		if ok, err := d.store().WorkspaceSetState(ctx, r.TenantID, r.ID, store.WorkspaceLost, store.WorkspaceReady); err != nil {
 			log.Warn("cannot mark a returned workspace ready", "workspace_id", r.ID, "err", err)
 		} else if ok {

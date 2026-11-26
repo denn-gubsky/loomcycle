@@ -172,10 +172,14 @@ func TestEgress_WorkspaceNotReadyOnThatWorkerIsRefused(t *testing.T) {
 	opening.State = store.WorkspaceOpening
 	releasing := readyRow("ws_rel", "acme", acmeID("w1"), "pypi")
 	releasing.State = store.WorkspaceReleasing
+	// A parked durable workspace is ready, but no run holds it (RFC GW P12):
+	// nothing left running in it may send a request out.
+	parked := readyRow("ws_parked", "acme", acmeID("w1"), "pypi")
+	parked.OwnerKind, parked.OwnerRunID, parked.Lifetime = store.WorkspaceOwnerParked, store.WorkspaceParkedKey("ws_parked"), store.WorkspaceLifetimeDurable
 	st := newMemStore(
 		readyRow("ws_mine", "acme", acmeID("w1"), "pypi"),
 		readyRow("ws_w2", "acme", acmeID("w2"), "pypi"),
-		opening, releasing,
+		opening, releasing, parked,
 	)
 	d, target := core(t, st, dispatch.Options{})
 	rec := &recordingEgress{}
@@ -187,7 +191,7 @@ func TestEgress_WorkspaceNotReadyOnThatWorkerIsRefused(t *testing.T) {
 	w2.attach("w2")
 	w2.heartbeat(time.Second)
 
-	for _, id := range []string{"ws_w2", "ws_open", "ws_rel", "ws_unknown"} {
+	for _, id := range []string{"ws_w2", "ws_open", "ws_rel", "ws_unknown", "ws_parked"} {
 		_, err := w1.egress(egressStart("w1", id), nil)
 		if status.Code(err) != codes.PermissionDenied {
 			t.Errorf("%s from w1: %v, want PermissionDenied", id, err)

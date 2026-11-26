@@ -607,6 +607,32 @@ func TestAttach_ALostWorkspaceIsRecoveredOrRemovedByItsRun(t *testing.T) {
 	}
 }
 
+// A durable workspace that comes back with its worker is never removed,
+// whatever became of its last run (RFC GW §8 "Worker death": durable disks
+// keep their workspaces): a parked one and one pinned to an ended run are
+// ready again with their directories; the sweeper parks the second.
+func TestAttach_ALostDurableWorkspaceIsNeverRemoved(t *testing.T) {
+	id := acmeID("w1")
+	durable := func(ws, owner, kind string) store.WorkspaceRow {
+		return store.WorkspaceRow{ID: ws, TenantID: "acme", UserID: "alice", WorkerID: id, OwnerRunID: owner, OwnerKind: kind,
+			Lifetime: store.WorkspaceLifetimeDurable, State: store.WorkspaceLost}
+	}
+	st := newMemStore(durable("ws-parked", store.WorkspaceParkedKey("ws-parked"), store.WorkspaceOwnerParked),
+		durable("ws-ended", "run-done", store.WorkspaceOwnerRun), durable("ws-gone", "run-gone", store.WorkspaceOwnerRun))
+	st.runs["run-done"] = store.RunCompleted
+	d, target := core(t, st, dispatch.Options{})
+	root := t.TempDir()
+	mkdirs(t, root, "ws-parked", "ws-ended", "ws-gone")
+	realWorker(t, target, tokAcme, "w1", worker.Options{Root: root, IdleStreams: 1})
+	waitAttached(t, d, id)
+	for _, ws := range []string{"ws-parked", "ws-ended", "ws-gone"} {
+		waitFor(t, ws+" to be ready", func() bool { return st.state(ws) == store.WorkspaceReady })
+		if !exists(filepath.Join(root, ws)) {
+			t.Errorf("%s's directory was removed", ws)
+		}
+	}
+}
+
 // On the host engine every command runs as the worker's user over the
 // worker's whole disk, so a shared worker on it would let one tenant's
 // command reach another tenant's workspaces. Such an attachment is refused
@@ -651,4 +677,21 @@ func TestAttach_MarksTheWorkersWorkspacesAsSeen(t *testing.T) {
 	realWorker(t, target, tokAcme, "w1", worker.Options{IdleStreams: 1})
 	waitAttached(t, d, acmeID("w1"))
 	waitFor(t, "two touches", func() bool { return st.touched() >= 2 })
+}
+
+// RFC GW P13: until the dispatcher serves a personal worker by its user
+// (the user worker id, placement and ops held to (tenant, user)), a personal
+// worker token attaches nothing. Read as a tenant worker it would take a
+// "tenant:<T>/..." id, and with it another worker's id and rows, and serve
+// every user of the tenant.
+func TestAttach_APersonalWorkerTokenIsRefusedUntilServedByItsUser(t *testing.T) {
+	d, target := core(t, newMemStore(), dispatch.Options{})
+	f := dialFake(t, target, tokPersonal)
+	_, err := f.hello(&workspacepb.Hello{WorkerId: "w1", ProtocolVersion: workspace.ProtocolVersion, Engine: workspace.EngineHost, Capacity: 4})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("personal: err = %v, want PermissionDenied", err)
+	}
+	if n := len(d.Workers()); n != 0 {
+		t.Fatalf("%d workers attached", n)
+	}
 }

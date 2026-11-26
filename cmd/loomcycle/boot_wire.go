@@ -325,6 +325,8 @@ func (b *boot) bindStoreToTools() {
 		b.workspaces.SetTemplateDir(b.cfg.WorkspaceTemplateDir())
 		b.workspaces.SetExpose(lifecycle.ExposeLimits{Enabled: ws.Expose.Enabled, MaxPerWorkspace: ws.Expose.MaxPerWorkspace,
 			IdleTimeout: time.Duration(ws.Expose.IdleTimeoutS) * time.Second})
+		// RFC GW P12: durable workspaces, off unless the operator turns them on.
+		b.workspaces.SetDurable(lifecycle.DurableLimits{Enabled: ws.Durable.Enabled, MaxPerUser: ws.Durable.MaxPerUser})
 		// A run is told when one of its pages goes (RFC GW D24).
 		b.workspaces.SetSurfaceNotifier(builtin.SurfaceNotifier(storeIface))
 		b.workspaceTool.Manager = b.workspaces

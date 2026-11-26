@@ -539,6 +539,10 @@ func ceilWorkspace(ctx context.Context, def mergedDef, base *mergedDef, held str
 		return fmt.Errorf("workspace.expose: true is not within %s workspace grant, which may not expose workspace ports. "+
 			"A new agent can only be granted authority its author holds: remove it, or ask an operator to author this agent", held)
 	}
+	if def.Workspace.Durable && !ceiling.Durable {
+		return fmt.Errorf("workspace.durable: true is not within %s workspace grant, which may not open durable workspaces. "+
+			"A new agent can only be granted authority its author holds: remove it, or ask an operator to author this agent", held)
+	}
 	if def.Workspace.Connect && !ceiling.Connect {
 		return fmt.Errorf("workspace.connect: true is not within %s workspace grant, which may not connect to workspace ports. "+
 			"A new agent can only be granted authority its author holds: remove it, or ask an operator to author this agent", held)
@@ -568,7 +572,7 @@ func unionWorkspace(a, b tools.WorkspacePolicyValue) tools.WorkspacePolicyValue 
 	}
 	out := tools.WorkspacePolicyValue{
 		Read: a.Read || b.Read, Write: a.Write || b.Write, Exec: a.Exec || b.Exec,
-		Open: a.Open || b.Open, Share: a.Share || b.Share, Expose: a.Expose || b.Expose, Connect: a.Connect || b.Connect, Templates: a.Templates || b.Templates, Engine: b.Engine,
+		Open: a.Open || b.Open, Share: a.Share || b.Share, Expose: a.Expose || b.Expose, Connect: a.Connect || b.Connect, Durable: a.Durable || b.Durable, Templates: a.Templates || b.Templates, Engine: b.Engine,
 		Egress: slices.Clone(a.Egress),
 	}
 	for _, r := range b.Egress {

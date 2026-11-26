@@ -145,6 +145,13 @@ func TestAgentDefCreate_WorkspaceCeiling(t *testing.T) {
 	// RFC GW P6: templates is held to the author's own, as share is.
 	wantRefused(t, agentDefOp(t, tool, reader, "create", "sdlc/t1", `{"history_scope":["user"],"workspace":{"ops":["read"],"templates":true,"engine":"container"}}`),
 		"templates by an author that may not save templates", "workspace.templates")
+	// RFC GW P12: durable is held to the author's own, as connect is.
+	wantRefused(t, agentDefOp(t, tool, reader, "create", "sdlc/u1", `{"history_scope":["user"],"workspace":{"ops":["read"],"durable":true,"engine":"container"}}`),
+		"durable by an author that may not open durable workspaces", "workspace.durable")
+	keeper := tools.UpdateRunPolicy(reader, func(rp *tools.RunPolicy) { rp.Workspace.Durable = true })
+	if res := agentDefOp(t, tool, keeper, "create", "sdlc/u2", `{"history_scope":["user"],"workspace":{"ops":["read"],"durable":true,"engine":"container"}}`); res.IsError {
+		t.Fatalf("durable within the author's own grant refused: %s", res.Text)
+	}
 	// RFC GW P9: connect is held to the author's own, as share is.
 	wantRefused(t, agentDefOp(t, tool, reader, "create", "sdlc/c1", `{"history_scope":["user"],"workspace":{"ops":["read"],"connect":true,"engine":"container"}}`),
 		"connect by an author that may not connect", "workspace.connect")

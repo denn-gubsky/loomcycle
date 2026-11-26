@@ -361,6 +361,9 @@ type Config struct {
 	// release removes (RFC GW §9, deprecated.go), kept apart so `doctor` can
 	// report them under their own check rather than as advisories.
 	Deprecations []string `yaml:"-"`
+	// bundledWorkspace names the agents whose workspace grant an embedded
+	// bundle gave and no operator layer changed (bundledWorkspaceGrants).
+	bundledWorkspace map[string]bool
 
 	// UndrainedMemory lists the memory scopes agents can enqueue into with
 	// Memory op=add (or by banking evicted context) while no enabled schedule
@@ -5184,6 +5187,7 @@ func LoadLayersWith(opts LoadOptions, layers ...Layer) (*Config, error) {
 	// What a later release removes, while it still works (RFC GW §9).
 	cfg.Deprecations = append(deprecatedEnvWarnings(os.Environ()), deprecationWarnings(cfg, layers)...)
 	cfg.Warnings = append(cfg.Warnings, cfg.Deprecations...)
+	cfg.bundledWorkspace = bundledWorkspaceGrants(cfg, layers)
 
 	if err := applyEnvStorage(cfg, opts.OfflineTool); err != nil {
 		return nil, err
@@ -8748,7 +8752,7 @@ func workspaceFromDiscovered(w *agents.AgentWorkspace) *AgentWorkspace {
 	if w == nil {
 		return nil
 	}
-	return &AgentWorkspace{Ops: append([]string(nil), w.Ops...), Open: w.Open, Share: w.Share, Expose: w.Expose, Connect: w.Connect, Templates: w.Templates,
+	return &AgentWorkspace{Ops: append([]string(nil), w.Ops...), Open: w.Open, Share: w.Share, Expose: w.Expose, Connect: w.Connect, Durable: w.Durable, Templates: w.Templates,
 		Egress: append([]string(nil), w.Egress...), Engine: w.Engine}
 }
 
