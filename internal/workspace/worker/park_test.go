@@ -3,8 +3,10 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -44,8 +46,14 @@ func TestPark_EndsServersAndSessionAndKeepsTheFiles(t *testing.T) {
 	w.engine = rec
 	writeFile(t, filepath.Join(root, "ws1", "keep.txt"), 5)
 	port, pid := startChildServer(t, w, root)
+	// The server's update address (await, #2946) closes with it.
+	u, _ := hostUpdateURL(t, w, "ws1")
 
 	mustOK(t, park(w, "ws1"), "park")
+	if resp, err := http.Post(u.String(), "text/plain", strings.NewReader("after park")); err == nil {
+		resp.Body.Close()
+		t.Errorf("a post to the update address after park = %d, want it closed", resp.StatusCode)
+	}
 	waitFor(t, "the server to stop listening", func() bool { return !listening(port) })
 	waitFor(t, "the server's child to end", func() bool { return processGone(pid) })
 	if got := w.servers.list("ws1"); len(got) != 0 {

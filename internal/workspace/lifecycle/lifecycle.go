@@ -105,6 +105,8 @@ type Manager struct {
 	audit audit.Sink
 	// expose is workspace.expose (SetExpose): off until set.
 	expose ExposeLimits
+	// durable is workspace.durable (SetDurable): off until set.
+	durable DurableLimits
 	// surfaceClosed tells a run one of its pages went (SetSurfaceNotifier);
 	// nil tells no one.
 	surfaceClosed SurfaceNotifier
@@ -266,6 +268,8 @@ type OpenRequest struct {
 	// Template, when set, is the template the workspace starts as a copy
 	// of (RFC GW §5.5), found by FindTemplate. Toolchains are then its.
 	Template *store.WorkspaceTemplateRow
+	// Lifetime is "" (ephemeral) or store.WorkspaceLifetimeDurable.
+	Lifetime string
 }
 
 // Open opens a workspace named req.Name for the run. A ready workspace of
@@ -277,6 +281,13 @@ func (m *Manager) Open(ctx context.Context, o Owner, req OpenRequest) (store.Wor
 	if !ValidName(req.Name) {
 		return store.WorkspaceRow{}, fmt.Errorf("%w: 1 to %d letters, digits, '.', '-' or '_', starting with a letter or digit", ErrInvalidName, MaxNameLen)
 	}
+	switch req.Lifetime {
+	case "", store.WorkspaceLifetimeEphemeral:
+	case store.WorkspaceLifetimeDurable:
+		return m.openDurable(ctx, o, req)
+	default:
+		return store.WorkspaceRow{}, fmt.Errorf("%w: lifetime %q (want ephemeral or durable)", ErrInvalidName, req.Lifetime)
+	}
 	if r, err := m.Get(ctx, o, req.Name); err == nil {
 		if r.State == store.WorkspaceReady {
 			return r, nil
@@ -285,6 +296,12 @@ func (m *Manager) Open(ctx context.Context, o Owner, req OpenRequest) (store.Wor
 	} else if !errors.Is(err, ErrNotFound) {
 		return store.WorkspaceRow{}, err
 	}
+	return m.openPlaced(ctx, o, req, store.WorkspaceLifetimeEphemeral)
+}
+
+// openPlaced places and makes a new workspace of lifetime for the run.
+func (m *Manager) openPlaced(ctx context.Context, o Owner, req OpenRequest, lifetime string) (store.WorkspaceRow, error) {
+	req.Lifetime = lifetime
 	if req.Template != nil {
 		if req.Template.TenantID != o.TenantID {
 			return store.WorkspaceRow{}, ErrTemplateNotFound
@@ -320,7 +337,7 @@ func (m *Manager) Open(ctx context.Context, o Owner, req OpenRequest) (store.Wor
 // other's row, so neither passes a bound both together would break (both may
 // be refused, never both admitted).
 func (m *Manager) openOn(ctx context.Context, o Owner, req OpenRequest, workerID, engine string) (store.WorkspaceRow, error) {
-	return m.makeOn(ctx, o, req.Name, req.Egress, workerID, engine, func(id string) error {
+	return m.makeOn(ctx, o, req.Name, req.Lifetime, req.Egress, workerID, engine, func(id string) error {
 		if req.Template != nil {
 			return m.openFromTemplate(ctx, o, *req.Template, workerID, id)
 		}
@@ -331,13 +348,13 @@ func (m *Manager) openOn(ctx context.Context, o Owner, req OpenRequest, workerID
 // makeOn makes a workspace on one worker: its row (with the egress routes it
 // may use, RFC GW §6.3), the bounds, then place, which makes its directory
 // there (an open, or a fork), then the row ready.
-func (m *Manager) makeOn(ctx context.Context, o Owner, name string, egress []string, workerID, engine string, place func(id string) error) (store.WorkspaceRow, error) {
+func (m *Manager) makeOn(ctx context.Context, o Owner, name, lifetime string, egress []string, workerID, engine string, place func(id string) error) (store.WorkspaceRow, error) {
 	id, err := newID()
 	if err != nil {
 		return store.WorkspaceRow{}, fmt.Errorf("workspace id: %w", err)
 	}
 	row, err := m.store.WorkspaceCreate(ctx, store.WorkspaceRow{
-		ID: id, TenantID: o.TenantID, UserID: o.UserID, Name: name, WorkerID: workerID, Engine: engine,
+		ID: id, TenantID: o.TenantID, UserID: o.UserID, Name: name, WorkerID: workerID, Engine: engine, Lifetime: lifetime,
 		OwnerRunID: o.RunID, OwnerAgentID: o.AgentID, RootRunID: o.RootRunID, State: store.WorkspaceOpening,
 		OwnerKind: o.kind(), OpenedToken: o.TokenDefID,
 		Egress: append([]string{}, egress...),
@@ -353,6 +370,17 @@ func (m *Manager) makeOn(ctx context.Context, o Owner, name string, egress []str
 	if err := m.checkLimits(ctx, o); err != nil {
 		undo()
 		return store.WorkspaceRow{}, err
+	}
+	if lifetime == store.WorkspaceLifetimeDurable {
+		// Counted after the insert, as the run's bound is: two creates
+		// racing on two replicas cannot both pass it.
+		if n, err := m.store.WorkspaceCountDurableByUser(ctx, o.TenantID, o.UserID); err != nil || (m.durable.MaxPerUser > 0 && n > m.durable.MaxPerUser) {
+			undo()
+			if err == nil {
+				err = fmt.Errorf("%w: a user keeps at most %d durable workspaces (workspace.durable.max_per_user); discard one first", ErrLimit, m.durable.MaxPerUser)
+			}
+			return store.WorkspaceRow{}, err
+		}
 	}
 	if err := place(id); err != nil {
 		// The directory may have been made before the error (a worker lost
@@ -469,11 +497,21 @@ func (m *Manager) Status(ctx context.Context, r store.WorkspaceRow) (bool, error
 	return m.disp.Status(ctx, r.TenantID, r.UserID, r.WorkerID, r.ID)
 }
 
-// Release removes a workspace: its directory from the worker and then its
+// Release ends a workspace's pin: a durable one is parked, its files kept
+// (RFC GW §4.2); any other is removed. The run-end release and the sweeper
+// come here, so neither removes a durable workspace.
+func (m *Manager) Release(ctx context.Context, r store.WorkspaceRow) error {
+	if r.Lifetime == store.WorkspaceLifetimeDurable && r.State != store.WorkspaceReleasing {
+		return m.unpin(ctx, r)
+	}
+	return m.remove(ctx, r)
+}
+
+// remove removes a workspace: its directory from the worker and then its
 // row. A worker that is not attached here, or that fails the remove, leaves
 // the row releasing, and the worker's next attach removes the directory and
 // the row (dispatch's reconciliation).
-func (m *Manager) Release(ctx context.Context, r store.WorkspaceRow) error {
+func (m *Manager) remove(ctx context.Context, r store.WorkspaceRow) error {
 	// Its checkouts go with it, whatever the release's outcome: no commit
 	// can be asked of a workspace being released.
 	m.checkouts.forget(r.ID)

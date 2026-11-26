@@ -99,10 +99,10 @@ func TestValidateAgentWorkspace_RefusesUnknownAndRepeatedValues(t *testing.T) {
 // yaml one: a key a later phase adds is refused, not dropped.
 func TestAgentWorkspace_JSONRefusesUnknownKeys(t *testing.T) {
 	var w AgentWorkspace
-	if err := json.Unmarshal([]byte(`{"ops":["read"],"open":true,"share":true,"connect":true,"templates":true,"egress":["npm"],"engine":"host"}`), &w); err != nil {
+	if err := json.Unmarshal([]byte(`{"ops":["read"],"open":true,"share":true,"connect":true,"durable":true,"templates":true,"egress":["npm"],"engine":"host"}`), &w); err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(w, AgentWorkspace{Ops: []string{"read"}, Open: true, Share: true, Connect: true, Templates: true, Egress: []string{"npm"}, Engine: "host"}) {
+	if !reflect.DeepEqual(w, AgentWorkspace{Ops: []string{"read"}, Open: true, Share: true, Connect: true, Durable: true, Templates: true, Egress: []string{"npm"}, Engine: "host"}) {
 		t.Errorf("decoded %+v", w)
 	}
 	for _, in := range []string{`{"ops":["read"],"listen":true}`, `{"template":true}`} {
@@ -181,9 +181,9 @@ func TestWorkspaceFromDiscovered_CarriesEveryKey(t *testing.T) {
 	if mirror.NumField() != own.NumField() {
 		t.Fatalf("agents.AgentWorkspace has %d fields, config.AgentWorkspace %d: add the new key to both and to workspaceFromDiscovered", mirror.NumField(), own.NumField())
 	}
-	in := &agents.AgentWorkspace{Ops: []string{"read", "write"}, Open: true, Share: true, Expose: true, Connect: true, Templates: true, Egress: []string{"pypi"}, Engine: "container"}
+	in := &agents.AgentWorkspace{Ops: []string{"read", "write"}, Open: true, Share: true, Expose: true, Connect: true, Durable: true, Templates: true, Egress: []string{"pypi"}, Engine: "container"}
 	got := workspaceFromDiscovered(in)
-	want := &AgentWorkspace{Ops: []string{"read", "write"}, Open: true, Share: true, Expose: true, Connect: true, Templates: true, Egress: []string{"pypi"}, Engine: "container"}
+	want := &AgentWorkspace{Ops: []string{"read", "write"}, Open: true, Share: true, Expose: true, Connect: true, Durable: true, Templates: true, Egress: []string{"pypi"}, Engine: "container"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("workspaceFromDiscovered = %+v, want %+v", got, want)
 	}

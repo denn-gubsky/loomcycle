@@ -119,7 +119,8 @@ func (m *Manager) fork(ctx context.Context, dst Owner, src store.WorkspaceRow, a
 	if err != nil {
 		return store.WorkspaceRow{}, out, err
 	}
-	row, err := m.makeOn(ctx, dst, as, egress, src.WorkerID, src.Engine, func(id string) error {
+	// A fork is a new ephemeral workspace, whatever its source's lifetime.
+	row, err := m.makeOn(ctx, dst, as, store.WorkspaceLifetimeEphemeral, egress, src.WorkerID, src.Engine, func(id string) error {
 		res, err := m.disp.Do(ctx, src.WorkerID, dispatch.Request{TenantID: dst.TenantID, UserID: dst.UserID, WorkspaceID: id, Op: workspace.OpFork, Args: args, MaxOutput: maxCheckpointAnswer})
 		if err != nil {
 			return err

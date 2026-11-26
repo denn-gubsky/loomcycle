@@ -54,10 +54,10 @@ reason.
 
 | op | What it does | Main arguments |
 |---|---|---|
-| `open` | open (or return) a workspace of this run, empty or from a template | `name`, `toolchain`, `egress`, `template` |
+| `open` | open (or return) a workspace of this run, empty or from a template; `lifetime: durable` keeps it for your next run | `name`, `toolchain`, `egress`, `template`, `lifetime` |
 | `list` | this run's workspaces | — |
 | `status` | its state, and whether its directory is on the worker | `name` |
-| `release` | delete it now | `name` |
+| `release` | delete it now (a durable one is kept for your next run unless `discard`) | `name`, `discard` |
 | `exec` | run a shell command in it | `name`, `command`, `cwd`, `timeout_s` |
 | `run_cell` | run Python or Node code in an interpreter that keeps its variables | `name`, `code`, `kernel`, `timeout_s` |
 | `reset_kernel` | stop the interpreter; the next cell starts clean | `name`, `kernel` |

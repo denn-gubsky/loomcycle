@@ -253,4 +253,8 @@ type WorkspaceStore interface {
 	// parked, the parked key, no agent, no root and no shares. False when
 	// the row moved first, or is not a pinned durable row of the tenant.
 	WorkspaceUnpin(ctx context.Context, tenantID, id, fromRunID string) (bool, error)
+	// WorkspaceCountDurableByUser counts the tenant's durable rows of user,
+	// pinned or parked, in any state: what workspace.durable.max_per_user
+	// bounds.
+	WorkspaceCountDurableByUser(ctx context.Context, tenantID, userID string) (int, error)
 }
