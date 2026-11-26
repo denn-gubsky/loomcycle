@@ -487,6 +487,15 @@ func (d *Dispatcher) Attach(stream workspacepb.WorkspaceService_AttachServer) er
 				return err
 			}
 			d.touch(ctx, w, log)
+			// A release made on a replica this worker is not attached to
+			// leaves its row releasing; this replica, which the worker is
+			// on, finishes it now rather than at the worker's next attach
+			// (RFC GW P12 plan §3.5, G-A).
+			if rm := d.releasingToRemove(ctx, w, log); len(rm) > 0 {
+				if err := stream.Send(&workspacepb.CoreControl{Msg: &workspacepb.CoreControl_Remove{Remove: &workspacepb.Remove{WorkspaceIds: rm}}}); err != nil {
+					return err
+				}
+			}
 		case m := <-in:
 			t.Reset(d.opt.HeartbeatTimeout)
 			if r := m.GetRemoved(); r != nil {
@@ -1066,4 +1075,31 @@ func (d *Dispatcher) count(opName, outcome string) {
 	d.mu.Lock()
 	d.ops[opName+"/"+outcome]++
 	d.mu.Unlock()
+}
+
+// releasingToRemove is the ids of w's releasing rows not yet named in a
+// Remove on this attachment, each recorded as pending so its row is deleted
+// once the worker says the directory is gone. Every replica the worker is
+// attached to may name one; the row is deleted by id once, and a worker
+// asked twice removes a directory once.
+func (d *Dispatcher) releasingToRemove(ctx context.Context, w *worker, log *slog.Logger) []string {
+	rows, err := d.store().WorkspaceListByWorker(ctx, w.id, store.WorkspaceReleasing)
+	if err != nil {
+		log.Warn("cannot read the worker's released workspaces; finishing them at the next recheck", "err", err)
+		return nil
+	}
+	var ids []string
+	d.mu.Lock()
+	for _, r := range rows {
+		if r.WorkerID != w.id {
+			continue
+		}
+		if _, named := w.pending[r.ID]; named {
+			continue
+		}
+		w.pending[r.ID] = r
+		ids = append(ids, r.ID)
+	}
+	d.mu.Unlock()
+	return ids
 }
