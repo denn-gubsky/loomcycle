@@ -354,6 +354,13 @@ func (d *Dispatcher) authorize(ctx context.Context, bearer string) (owner string
 	if err != nil {
 		return "", att, status.Error(codes.PermissionDenied, err.Error())
 	}
+	// A personal worker (RFC GW P13) is served by its user: its own worker
+	// id, placement and ops held to (tenant, user). Until the dispatcher
+	// does that, one attaches nothing; read as a tenant worker it would
+	// take a tenant worker's id and serve every user of the tenant.
+	if att.Personal {
+		return "", att, status.Error(codes.PermissionDenied, "this runtime does not serve personal workers yet")
+	}
 	return grantKey(att), att, nil
 }
 
