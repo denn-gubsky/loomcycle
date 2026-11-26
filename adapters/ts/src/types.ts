@@ -65,7 +65,7 @@ export type EventType =
   // text. The payload rides `AgentEvent.transcription`.
   | "transcription"
   // A page the run exposed from its workspace (RFC GW D24), and its close
-  // (unexposed, released or idle). On the run's own stream only. The payload
+  // (unexposed, released, idle or lost). On the run's own stream only. The payload
   // rides `AgentEvent.surface`.
   | "surface"
   | "surface_closed"
@@ -780,7 +780,7 @@ export interface SurfaceInfo {
   base_path?: string;
   /** The idle deadline when told (RFC 3339); every use moves it on. */
   expires_at?: string;
-  /** On `surface_closed`: `unexposed`, `released` or `idle`. */
+  /** On `surface_closed`: `unexposed`, `released`, `idle` or `lost` (its worker went away). */
   reason?: string;
 }
 

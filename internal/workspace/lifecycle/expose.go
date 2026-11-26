@@ -237,6 +237,19 @@ func (m *Manager) SweepExposures(ctx context.Context) (int, error) {
 // dropExposures closes a workspace's exposures; a failure is logged, since
 // the route refuses a workspace that is not ready whatever its rows say.
 func (m *Manager) dropExposures(ctx context.Context, r store.WorkspaceRow) {
+	m.dropExposuresAs(ctx, r, SurfaceReleased)
+}
+
+// closeLostPages closes the pages of a workspace whose worker went away,
+// telling its run surface_closed with the reason lost (ruling Q6). The
+// route already refuses a workspace that is not ready; this tells the run
+// and drops the rows.
+func (m *Manager) closeLostPages(ctx context.Context, r store.WorkspaceRow) {
+	m.dropExposuresAs(ctx, r, SurfaceLost)
+}
+
+// dropExposuresAs closes r's exposures, telling its run why.
+func (m *Manager) dropExposuresAs(ctx context.Context, r store.WorkspaceRow, reason string) {
 	list, err := m.store.WorkspaceExposureListByWorkspace(ctx, r.TenantID, r.ID)
 	if err != nil {
 		m.log.Warn("cannot list a released workspace's exposures", "workspace_id", r.ID, "err", err)
@@ -249,7 +262,7 @@ func (m *Manager) dropExposures(ctx context.Context, r store.WorkspaceRow) {
 			continue
 		}
 		if ok {
-			m.tellClosed(ctx, r, e, SurfaceReleased)
+			m.tellClosed(ctx, r, e, reason)
 		}
 	}
 }
@@ -304,8 +317,10 @@ type SurfaceClosed struct {
 // The reasons a page goes.
 const (
 	SurfaceUnexposed = "unexposed"
-	SurfaceReleased  = "released"
-	SurfaceIdle      = "idle"
+	// SurfaceLost: the workspace's worker went away (RFC GW P12 ruling Q6).
+	SurfaceLost     = "lost"
+	SurfaceReleased = "released"
+	SurfaceIdle     = "idle"
 )
 
 // SurfaceNotifier tells the run ownerRunID that one of its pages went; ctx
