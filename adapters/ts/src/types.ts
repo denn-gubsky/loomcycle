@@ -2444,8 +2444,10 @@ export interface OntologyPlannedChange {
   /** The proposal's chunk id when the change is one accepting it makes;
    *  absent for a direct change. */
   proposal?: string;
-  /** What the class-rename job would do for a rename of a class something
-   *  rests on; absent for every other change. */
+  /** What the ontology job the change would start would do: the class-rename
+   *  job for a rename of a class something rests on, the concept re-tag job
+   *  for a change that moves a concept's or scheme's tag (`job.kind` says
+   *  which); absent for every other change. */
   job?: OntologyRenameJobPlan;
   /** The release a rollback plans toward (op `release`), on every change it
    *  expands to; absent otherwise. */
@@ -2507,6 +2509,17 @@ export interface OntologyRenameJobPlan {
   /** The tenant's unfinished job, when one exists: a second rename waits for it. */
   running?: OntologyJobStatus;
   notes?: string[];
+  /** The job's kind. */
+  kind?: "class_rename" | "concept_retag";
+  /** `concept_retag`: the tags the change moves, the topmost only; every tag
+   *  equal to `from`, or under it, becomes `to` with the same rest. */
+  tag_moves?: OntologyTagMove[];
+}
+
+/** One tag a concept re-tag job moves. */
+export interface OntologyTagMove {
+  from: string;
+  to: string;
 }
 
 /** One step of the rename job: the stored rows under the old name. */

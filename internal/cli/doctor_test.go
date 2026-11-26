@@ -646,6 +646,12 @@ func TestDoctor_ReportsTheWorkspaceModeAndInertGrants(t *testing.T) {
 			want: []string{"[PASS]  Workspaces", "0.0.0.0:7788", "workers:attach", "configuration only"}},
 		{ws: DoctorWorkspaces{Mode: config.WorkspaceModeOff, InertGrants: []string{"builder", "tester"}},
 			want: []string{"[WARN]  Workspace grants", "2 agents", "builder, tester"}},
+		// RFC GW P13: personal workers put a user's own folders in front of
+		// agents, on the host engine; doctor says so plainly.
+		{ws: DoctorWorkspaces{Mode: config.WorkspaceModeRemote, Endpoint: "127.0.0.1:7788", PersonalWorkers: true},
+			want: []string{"[WARN]  Personal workers", "workspace.personal_workers on", "not a sandbox", "workspace.roots", "127.0.0.1:7788"}},
+		{ws: DoctorWorkspaces{Mode: config.WorkspaceModeRemote, Endpoint: "127.0.0.1:7788"},
+			wantNot: []string{"Personal workers"}},
 	} {
 		t.Run(c.ws.Mode+strings.Join(c.ws.InertGrants, ","), func(t *testing.T) {
 			withTempHome(t)

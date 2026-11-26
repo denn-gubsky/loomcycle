@@ -92,6 +92,11 @@ type plannedChange struct {
 	// otherCollisions: for a class rename, the stored keys in user and agent scopes the
 	// rename job would move onto a key another row holds (counted, never listed).
 	otherCollisions int
+	// retagMoves are the concept tags the change's write would move (the concept re-tag
+	// job it would start); retagOther counts, per step, the rows that job would rewrite
+	// in the user and agent scopes the plan counted.
+	retagMoves []tagMove
+	retagOther map[string]int
 	// proposal is the proposal this change stands for (op proposal), "" for a direct one.
 	proposal string
 	// release is the release a rollback plans toward (op release), 0 for none.
@@ -233,6 +238,11 @@ func (d *Document) planChangesAt(ctx context.Context, key sqlmem.ScopeKey, mscop
 	for _, p := range planned {
 		p.noteLock(entries, ov)
 	}
+	for _, p := range planned {
+		if p.retagMoves, err = d.planRetagMoves(ctx, key, mscope, before, after, ov, p, len(planned) == 1); err != nil {
+			return out, planReadErr(err)
+		}
+	}
 
 	counted, skipped, complete, err := d.countPlanDependents(ctx, key, before, after, planned)
 	if err != nil {
@@ -255,6 +265,12 @@ func (d *Document) planChangesAt(ctx context.Context, key sqlmem.ScopeKey, mscop
 			if ch.Job.CollisionsTotal > 0 {
 				ch.Notes = append(ch.Notes[:len(ch.Notes):len(ch.Notes)], renameCollisionCode+": "+strconv.Itoa(ch.Job.CollisionsTotal)+
 					" stored keys would collide under the new name (job.collisions), so the rename would be refused")
+			}
+		}
+		if len(p.retagMoves) > 0 {
+			// The write moves concept tags: say what the concept re-tag job would do (P5.5).
+			if ch.Job, err = d.retagJobPlan(ctx, key, p, out.ScopesSkipped); err != nil {
+				return out, planReadErr(err)
 			}
 		}
 		if p.in.Op == connector.OntologyPlanEdit && p.editRenames && p.entry.Kind == planKindClass {

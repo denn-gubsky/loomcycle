@@ -102,6 +102,11 @@ const (
 	ClassProtocol = "protocol"
 )
 
+// ClassRepositoryNotFound is a git op's answer when the forge has no such
+// repository (gitsource's not_found, renamed so it never reads as
+// ClassNotFound).
+const ClassRepositoryNotFound = "repository_not_found"
+
 // KnownWorkerClasses are the classes a worker may answer with that the core
 // reports by name; any other is reported as ClassFailed, so a worker cannot
 // grow a metric's label set or put arbitrary text where a class is read.
@@ -114,6 +119,14 @@ var KnownWorkerClasses = map[string]bool{
 	ClassServerLimit: true, ClassServerNotFound: true, ClassPortNotServed: true, ClassPortUnreachable: true,
 	ClassTemplateMissing: true, ClassNotOnRoot: true, ClassRootBusy: true,
 	ClassBrowserUnavailable: true, ClassBrowserBusy: true, ClassBrowserTimedOut: true,
+	// A git op's (RFC GW P11): gitrepo's and gitsource's classes, with
+	// not_found as ClassRepositoryNotFound. The worker's drift test holds
+	// this to gitrepo.Classes.
+	"git_failed": true, "not_a_repository": true, "already_exists": true, "invalid_argument": true, "invalid_revision": true,
+	"non_fast_forward": true, "nothing_to_commit": true, "worktree_dirty": true, "push_rejected": true, "already_up_to_date": true,
+	"unsupported_repository_feature": true, "upload_too_large": true, "invalid_request": true, "auth_failed": true,
+	ClassRepositoryNotFound: true, "commit_not_found": true, "source_too_large": true, "timeout": true,
+	"merge_base_not_found": true, "fetch_failed": true,
 }
 
 // The engines a worker may run commands under, weakest first.

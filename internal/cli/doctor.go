@@ -256,6 +256,11 @@ func checkWorkspaces(r *doctorRun, cfg configForDoctor) {
 	default:
 		r.pass("Workspaces", fmt.Sprintf("workspace.mode %s — workers attach on %s with a workers:attach token; %s", ws.Mode, ws.Endpoint, live))
 	}
+	if ws.PersonalWorkers {
+		r.warn("Personal workers", fmt.Sprintf("workspace.personal_workers on — a user's own machine may attach on %s as a worker of that user's runs, "+
+			"offering folders of its own (roots). The host engine is not a sandbox: an agent with workspace.roots and exec has what the user's shell has "+
+			"in that folder and, by absolute path, beyond it. Grant roots only to agents a user would let work in their own files.", ws.Endpoint))
+	}
 	if len(ws.InertGrants) > 0 {
 		r.warn("Workspace grants", fmt.Sprintf("%d %s with a workspace grant that allows nothing (Workspace not in tools, or workspace.mode off): %s",
 			len(ws.InertGrants), plural(len(ws.InertGrants), "agent"), strings.Join(ws.InertGrants, ", ")))
@@ -415,6 +420,8 @@ type DoctorWorkspaces struct {
 	Endpoint string
 	// InertGrants are the agents whose workspace grant reaches nothing.
 	InertGrants []string
+	// PersonalWorkers is workspace.personal_workers (RFC GW P13).
+	PersonalWorkers bool
 }
 
 // DoctorEmbedder is the configured memory embedder, as doctor reports it.

@@ -450,3 +450,95 @@ func peelToCommit(s *filesystem.Storage, h plumbing.Hash) (plumbing.Hash, error)
 	}
 	return plumbing.ZeroHash, fmt.Errorf("%w: tags nested too deep", ErrInvalidRevision)
 }
+
+// TrackMirror makes a workspace's remote-tracking refs the mirror's heads
+// (refs/remotes/origin/<b> for each refs/heads/<b>), dropping those the
+// mirror no longer has, and pins each one in the mirror under the workspace
+// (refs/loom/workspaces/<id>/remotes/<b>), so no maintenance of the mirror
+// can remove a commit the workspace's history names (P11 plan G8). It
+// returns the tracking refs it moved.
+func (r *Repo) TrackMirror(m *Mirror, id string) ([]RefUpdate, error) {
+	if !r.workspace {
+		return nil, fmt.Errorf("%w: not a workspace's repository", ErrInvalidArgument)
+	}
+	if !workspaceIDRe.MatchString(id) {
+		return nil, fmt.Errorf("%w: a workspace id", ErrInvalidArgument)
+	}
+	heads, err := refsOf(m.store())
+	if err != nil {
+		return nil, err
+	}
+	want := map[plumbing.ReferenceName]plumbing.Hash{}
+	for name, h := range heads {
+		if name.IsBranch() {
+			want[plumbing.NewRemoteReferenceName(git.DefaultRemoteName, name.Short())] = h
+		}
+	}
+	before, err := r.refSnapshot()
+	if err != nil {
+		return nil, err
+	}
+	prefix := "refs/remotes/" + git.DefaultRemoteName + "/"
+	for name := range before {
+		if _, keep := want[name]; strings.HasPrefix(name.String(), prefix) && !keep {
+			if err := r.repo.Storer.RemoveReference(name); err != nil {
+				return nil, fmt.Errorf("drop %s: %w", name, err)
+			}
+		}
+	}
+	for name, h := range want {
+		if before[name] != h {
+			if err := r.repo.Storer.SetReference(plumbing.NewHashReference(name, h)); err != nil {
+				return nil, fmt.Errorf("set %s: %w", name, err)
+			}
+		}
+	}
+	if err := m.pinRemotes(id, want, prefix); err != nil {
+		return nil, err
+	}
+	after, err := r.refSnapshot()
+	if err != nil {
+		return nil, err
+	}
+	var out []RefUpdate
+	for _, u := range refUpdates(before, after) {
+		if strings.HasPrefix(u.Name, prefix) {
+			out = append(out, u)
+		}
+	}
+	return out, nil
+}
+
+// pinRemotes makes workspace id's remote pins exactly want's refs, renamed
+// from under prefix to refs/loom/workspaces/<id>/remotes/.
+func (m *Mirror) pinRemotes(id string, want map[plumbing.ReferenceName]plumbing.Hash, prefix string) error {
+	s := m.store()
+	pins := PinPrefix + id + "/remotes/"
+	it, err := s.IterReferences()
+	if err != nil {
+		return err
+	}
+	var stale []plumbing.ReferenceName
+	err = it.ForEach(func(ref *plumbing.Reference) error {
+		if n := ref.Name().String(); strings.HasPrefix(n, pins) {
+			if _, ok := want[plumbing.ReferenceName(prefix+strings.TrimPrefix(n, pins))]; !ok {
+				stale = append(stale, ref.Name())
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	for _, n := range stale {
+		if err := s.RemoveReference(n); err != nil {
+			return fmt.Errorf("unpin %s: %w", n, err)
+		}
+	}
+	for name, h := range want {
+		if err := m.Pin(id, "remotes/"+strings.TrimPrefix(name.String(), prefix), h); err != nil {
+			return err
+		}
+	}
+	return nil
+}

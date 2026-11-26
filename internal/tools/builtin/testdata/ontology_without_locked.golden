@@ -701,7 +701,39 @@ When you say what something is about or how it is classified, use these concepts
      "section": "schemes",
      "kind": "concept"
     }
-   ]
+   ],
+   "job": {
+    "steps": [
+     {
+      "name": "chunk_tags",
+      "tenant_scope": 0
+     },
+     {
+      "name": "document_tags",
+      "tenant_scope": 0
+     },
+     {
+      "name": "classification_tags",
+      "tenant_scope": 0
+     }
+    ],
+    "runnable": true,
+    "collisions_total": 0,
+    "scopes_not_counted": 0,
+    "notes": [
+     "the change starts a concept re-tag job: every tag equal to an old tag, or under it, becomes the new tag with the same rest, so the documents filed under a narrower concept follow it",
+     "the job rewrites the tenant scope, then every user and agent scope; a scope from before the document plane split is rewritten on its agent plane",
+     "the classification record on documents (fields.classification proposed_tags) is rewritten by the job's last step in each scope; the plan does not count it",
+     "the tenant ontology's own concept tags are left to the next confirm, which rewrites them from the concepts"
+    ],
+    "kind": "concept_retag",
+    "tag_moves": [
+     {
+      "from": "topics/risk-management",
+      "to": "topics/risk-management-2"
+     }
+    ]
+   }
   },
   {
    "op": "retire",
@@ -890,7 +922,39 @@ When you say what something is about or how it is classified, use these concepts
      "section": "schemes",
      "kind": "concept"
     }
-   ]
+   ],
+   "job": {
+    "steps": [
+     {
+      "name": "chunk_tags",
+      "tenant_scope": 0
+     },
+     {
+      "name": "document_tags",
+      "tenant_scope": 0
+     },
+     {
+      "name": "classification_tags",
+      "tenant_scope": 0
+     }
+    ],
+    "runnable": true,
+    "collisions_total": 0,
+    "scopes_not_counted": 0,
+    "notes": [
+     "the change starts a concept re-tag job: every tag equal to an old tag, or under it, becomes the new tag with the same rest, so the documents filed under a narrower concept follow it",
+     "the job rewrites the tenant scope, then every user and agent scope; a scope from before the document plane split is rewritten on its agent plane",
+     "the classification record on documents (fields.classification proposed_tags) is rewritten by the job's last step in each scope; the plan does not count it",
+     "the tenant ontology's own concept tags are left to the next confirm, which rewrites them from the concepts"
+    ],
+    "kind": "concept_retag",
+    "tag_moves": [
+     {
+      "from": "topics",
+      "to": "topics-2"
+     }
+    ]
+   }
   },
   {
    "op": "retire",

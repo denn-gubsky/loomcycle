@@ -491,6 +491,24 @@ jobs:
           grep -q -- '--- PASS: TestUpdateRelay_ContainerAddressIsTheSessionsAlone' updates.log
           ! grep -q -- '--- SKIP' updates.log
 
+      # A screenshot (RFC GW P10) in a real session of the browser image
+      # (Dockerfile.workspace --target browser): the picture is a PNG, and
+      # the page reaches only the declared port on 127.0.0.1, not a host
+      # name, a second loopback port or a literal address. A skip fails, and
+      # so does a run in which the test did not pass.
+      - name: Build the browser session image
+        run: docker buildx build --load --platform linux/amd64 -f Dockerfile.workspace --target browser -t ci-loomcycle-workspace-browser .
+
+      - name: Take a screenshot in a session
+        env:
+          LOOMCYCLE_REQUIRE_DOCKER: "1"
+          LOOMCYCLE_TEST_BROWSER_IMAGE: ci-loomcycle-workspace-browser
+        run: |
+          set -o pipefail
+          go test -count=1 -timeout 20m -run '^TestContainerScreenshot_' -v ./internal/workspace/worker/ | tee screenshot.log
+          grep -q -- '--- PASS: TestContainerScreenshot_' screenshot.log
+          ! grep -q -- '--- SKIP' screenshot.log
+
   go-race:
     # The race suite, split across runners (RFC EX Phase 1). On one 4-core
     # runner it took ~15 min, set by internal/api/http and
