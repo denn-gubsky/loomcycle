@@ -54,6 +54,8 @@ Bashbox's read-only interpreter and its host-command fallback are both replaced 
 
 The builder sidecar (`deploy/builder`, the `sandbox` and `dev-exec` bundles, the `mcp__sandbox__*` tools) is replaced by a workspace worker with the `container` engine, which runs each workspace in a container of its own. Its MCP tools map onto `Workspace` ops: open, exec, write, read, release.
 
+The `dev-workspace` bundle replaces the `sandbox` + `dev-exec` pair. Its `dev/exec` takes the same command envelope and returns the same result shape, running it in a workspace, and its `dev/exec-usage` skill replaces `dev/sandbox-usage`. Select `LOOMCYCLE_PRESETS=…,dev-workspace` in place of `sandbox,dev-exec`: both define `dev/exec`, and the later one wins. Envelope fields a workspace has no setting for (`session_id`, `keep_open`, `close`, `network`, `expose`, `cpu`, `mem_mb`, `pids`, `tmpfs_mb`, `git_setup`, `max_output_bytes`) are reported as ignored in `final_text`. A workspace is released when dev/exec's run ends; to keep files between calls, give dev/exec a fork of your own workspace (`Agent op=spawn … workspaces=[{fork: "<name>"}]`) and name it in the envelope's `workspace`.
+
 ## shell_credentials
 
 `shell_credentials` narrowed which operator credentials a shell received. A workspace's session receives none. A script reaches an API through an egress route, and the core adds the route's credential on the way out. Remove the field, and give the agent the routes it needs in `workspace.egress`.

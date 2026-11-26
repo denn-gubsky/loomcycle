@@ -15,7 +15,9 @@
 #   - team-examples sdlc/reviewer: reads the diff with Git, and runs the tests
 #     on its own workspace copy;
 #   - agent-teams team/orchestrator, on the team/sqldata path: writes rows
-#     into a workspace, totals them with a script and reads the report.
+#     into a workspace, totals them with a script and reads the report;
+#   - dev-workspace dev/exec (already code-js, run as shipped): runs a command
+#     envelope in a workspace, a failing command stopping the rest.
 #
 # Needs python3 and git on PATH; the suite skips cleanly without them.
 set -euo pipefail
@@ -78,10 +80,10 @@ agents:
     tools: [Agent, Document, TeamDef, Channel, Interruption, Context, Memory, VolumeDef, Workspace, File]
 YAML
 
-echo "[1/4] build + boot (agent-teams + team-examples, workspace.mode local)"
+echo "[1/5] build + boot (agent-teams + team-examples + dev-workspace, workspace.mode local)"
 go build -o bin/loomcycle ./cmd/loomcycle
 env -i PATH="$PATH" HOME="$TEST_DIR/home" \
-LOOMCYCLE_PRESETS=agent-teams,team-examples \
+LOOMCYCLE_PRESETS=agent-teams,team-examples,dev-workspace \
 LOOMCYCLE_MOCK_ENABLED=1 \
 LOOMCYCLE_CODE_AGENTS_ROOT="$SCRIPT_DIR/agent_code" \
 LOOMCYCLE_DATA_DIR="$DATA" \
@@ -98,7 +100,7 @@ done
 [[ "$READY" == "1" ]] || { echo "not ready:"; cat "$TEST_DIR/boot.log"; exit 1; }
 wait_until 15 grep -q "workspace worker attached" "$TEST_DIR/boot.log" || fail "the local worker did not attach"
 
-echo "[2/4] sdlc/coder: fix in the volume, test in a workspace"
+echo "[2/5] sdlc/coder: fix in the volume, test in a workspace"
 post_run "$TEST_DIR/coder.sse" sdlc/coder
 R=$(sse_text "$TEST_DIR/coder.sse")
 echo "      $R"
@@ -106,18 +108,33 @@ for want in "state=ready" "copied=yes" "tests=pass"; do
   echo "$R" | grep -q -- "$want" || fail "sdlc/coder: want '$want' in: $R"
 done
 
-echo "[3/4] sdlc/reviewer: Git diff, tests in its own workspace"
+echo "[3/5] sdlc/reviewer: Git diff, tests in its own workspace"
 post_run "$TEST_DIR/reviewer.sse" sdlc/reviewer
 R=$(sse_text "$TEST_DIR/reviewer.sse")
 echo "      $R"
 for want in "diff=seen" "tests=pass" "verdict=approve"; do
   echo "$R" | grep -q -- "$want" || fail "sdlc/reviewer: want '$want' in: $R"
 done
-echo "[4/4] team/orchestrator (team/sqldata): rows totalled in a workspace"
+echo "[4/5] team/orchestrator (team/sqldata): rows totalled in a workspace"
 post_run "$TEST_DIR/orch.sse" team/orchestrator
 R=$(sse_text "$TEST_DIR/orch.sse")
 echo "      $R"
 echo "$R" | grep -q -- "report=total=1545" || fail "team/orchestrator: want 'report=total=1545' in: $R"
-grep -q '^event: error$' "$TEST_DIR/coder.sse" "$TEST_DIR/reviewer.sse" "$TEST_DIR/orch.sse" && fail "an EventError appeared on a run stream"
+echo "[5/5] dev/exec (dev-workspace): a command envelope in a workspace"
+# post_run takes plain text; the envelope is JSON, so the request body is built
+# with python to escape it.
+envelope_run() {
+  python3 -I -c 'import json,sys; print(json.dumps({"agent":"dev/exec","user_id":"ws-user","segments":[{"role":"user","content":[{"type":"trusted-text","text":sys.argv[1]}]}]}))' "$2" |
+    curl -fsS -N -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+      -H "Accept: text/event-stream" -d @- "$BASE/v1/runs" > "$1"
+}
+envelope_run "$TEST_DIR/exec.sse" '{"files":[{"path":"sq.py","content":"import sys\nprint(int(sys.argv[1]) ** 2)\n"}],"commands":["python3 sq.py 12","false","echo never"],"read":["sq.py"],"keep_open":true}'
+R=$(sse_text "$TEST_DIR/exec.sse")
+echo "$R" | sed 's/^/      /'
+echo "$R" | grep -q "hint" && fail "dev/exec: a failed command's report carries the tool's help text: $R"
+for want in "1 ok, 1 failed, 1 skipped" "144" "[exit: 1]" "SKIPPED" "# read sq.py" "ignored (a workspace has no such setting): keep_open"; do
+  echo "$R" | grep -qF -- "$want" || fail "dev/exec: want '$want' in: $R"
+done
+grep -q '^event: error$' "$TEST_DIR/coder.sse" "$TEST_DIR/reviewer.sse" "$TEST_DIR/orch.sse" "$TEST_DIR/exec.sse" && fail "an EventError appeared on a run stream"
 wait_until 10 no_workspaces || fail "workspace directories left after the runs ended: $(workspaces)"
 echo "=== workspace-bundles runtime suite PASSED ==="
