@@ -83,6 +83,10 @@ func CarvedOut(method, path string) bool {
 	// (RFC GQ P3.4): the operator's to read.
 	case path == "/v1/_ontology/releases" || strings.HasPrefix(path, "/v1/_ontology/releases/"):
 		return true
+	// Rolling the ontology back to a release rewrites the tenant's vocabulary (RFC GQ
+	// P5.7): the operator's decision, as ruling on a proposal is.
+	case path == "/v1/_ontology/rollback":
+		return true
 	case path == "/v1/_limits" && (method == http.MethodPut || method == http.MethodDelete):
 		return true
 	// RFC EY: who may do what is the operator's to write and to read; a

@@ -648,8 +648,9 @@ paths:
                     type: object
                     required: [op]
                     properties:
-                      op: { type: string, enum: [retire, rename, move, edit, delete, proposal] }
-                      entry: { type: string, description: "Every op but proposal (required): an in-force entry's chunk id (a class, relation, scheme, concept or instance)." }
+                      op: { type: string, enum: [retire, unretire, rename, move, edit, delete, add, release, proposal] }
+                      entry: { type: string, description: "Every op but proposal and release (required): an in-force entry's chunk id (a class, relation, scheme, concept or instance); for unretire a retired one; for add a chunk id of release `seq` that is not in force now." }
+                      seq: { type: integer, minimum: 1, description: "release (required, and its only field; the request's only change): roll back to this release — the plan lists the direct changes that make the ontology declare what the release declared (rename, edit, move, retire, unretire of entries in both; delete of an entry added since, or retire when something rests on it; add of an entry only in the release), each carrying `release`. Apply it with POST /v1/_ontology/rollback. add (required): the release the entry is added back from." }
                       name: { type: string, description: "rename: the new name, one line, at most 200 characters." }
                       parent: { type: string, description: "move: the new parent — the entry's section, or an entry of it that can hold it." }
                       body: { type: string, description: "edit: the new body, at most 32 KiB." }
@@ -696,6 +697,7 @@ paths:
                           items: { type: object }
                         notes: { type: array, items: { type: string } }
                         proposal: { type: string, description: "The proposal's chunk id when the change is one accepting it makes; absent for a direct change." }
+                        release: { type: integer, description: "The release a rollback plans toward (op release), on every change it expands to; absent otherwise." }
                   issues: { type: array, items: { type: string } }
                   new_issues: { type: array, items: { type: string } }
                   scopes_counted: { type: integer }
@@ -709,6 +711,84 @@ paths:
           description: "`entry_not_found`: the tenant has no ontology, a change names no in-force entry, a move names a parent that cannot hold the entry, or a proposal id is not an open proposal of the tenant's ontology."
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
         "503": { description: "`unavailable`: no SQL Memory on this server." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /v1/_ontology/rollback:
+    post:
+      tags: [documents]
+      summary: Roll the tenant ontology back to a release.
+      description: |
+        Applies the plan of `{"op": "release", "seq": N}` (POST /v1/_ontology/plan)
+        so the ontology in force declares what release N declared (RFC GQ P5.7,
+        D8). Never automatic: the plan is computed again and the call is refused
+        unless `plan_fingerprint` is its fingerprint. The writes go through the
+        ontology's own guards (locks, the delete refusal, the rename job): an
+        entry added since the release is deleted only when nothing rests on it,
+        else retired; an entry removed since is added back under a new chunk id;
+        a class rename is carried by the rename job, and refused as a whole when
+        the job cannot carry it. Before each write the ontology must be what the
+        previous one left; a write by anyone else stops the rollback. A rollback
+        that applied takes a `rollback` release. `matches` says whether the
+        content version in force is now the release's (it is not after an entry
+        is added back, or a class renamed through the job keeps `@renamed_from`).
+        For a tenant operator (`substrate:tenant`, its own tenant) or an admin
+        (`?tenant=` focuses another).
+      operationId: rollbackOntology
+      parameters:
+        - name: tenant
+          in: query
+          required: false
+          description: An admin's focus on another tenant; ignored for anyone else.
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [seq, plan_fingerprint]
+              additionalProperties: false
+              properties:
+                seq: { type: integer, minimum: 1, description: "The release to roll back to." }
+                plan_fingerprint: { type: string, description: "The fingerprint of the plan of `{op: release, seq}`." }
+      responses:
+        "200":
+          description: The rollback was applied (or there was nothing to change).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tenant: { type: string }
+                  rollback:
+                    type: object
+                    properties:
+                      release: { type: integer }
+                      release_content_version: { type: string }
+                      content_version: { type: string, description: "The content version in force after the rollback." }
+                      matches: { type: boolean }
+                      risk: { type: string, enum: [destroys, stales, none] }
+                      applied:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            op: { type: string }
+                            entry: { type: string }
+                            name: { type: string }
+                            new_id: { type: string, description: "add: the chunk the entry was added back as." }
+                      rename_jobs: { type: array, items: { type: object } }
+                      rollback_release: { type: integer }
+                      notes: { type: array, items: { type: string } }
+                      warnings: { type: array, items: { type: string } }
+        "400":
+          description: "`invalid_body` or `invalid_request` (no seq, or a rollback that cannot be planned)."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "403": { description: "`forbidden`: not an admin or a tenant operator." }
+        "404": { description: "`entry_not_found`: no such complete release, or no ontology." }
+        "409":
+          description: "`plan_required` / `plan_stale` (the body carries the current `fingerprint`), `rename_job_pending`, `entry_locked`, or `partially_applied` (the body's `applied` lists the writes made before one was refused)."
+        "422": { description: "`invalid_request`: a write of the rollback was refused before anything was written." }
+        "503": { description: "`unavailable`: no SQL Memory on this server, or the ontology moved while the rollback was planned." }
         "401": { $ref: "#/components/responses/Unauthorized" }
   /v1/_ontology/releases:
     get:
