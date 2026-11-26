@@ -205,6 +205,9 @@ func (b *boot) wireCredentials() {
 		// limits and slots; push has its own host list and a resolver whose
 		// $ghapp: tokens may write.
 		gitTool.Source = gitSource
+		// RFC GW P11: a git workspace's open is a fetch, held to the same
+		// hosts, bounds, slots and read resolver.
+		b.workspaceTool.GitSource = gitSource
 		gitTool.PushCredential = builtin.GitPushCredentialResolver(credEngine, ghAppMinter.TokenForRepositoryWrite, registerSecret)
 		if len(gitTool.PushHosts) > 0 {
 			pushHosts := strings.Join(gitTool.PushHosts, ", ")
