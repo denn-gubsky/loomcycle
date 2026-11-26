@@ -6,7 +6,9 @@ import type { OntologyPlanResult } from "./ontologyRetirePlan";
  *  the direct changes accepting it makes. */
 export type OntologyPlanChange =
   | { op: "retire" | "rename" | "move" | "edit"; entry: string; name?: string; parent?: string; body?: string }
-  | { op: "proposal"; id: string };
+  | { op: "proposal"; id: string }
+  // RFC GQ P5.7: roll the ontology back to release seq; the request's only change.
+  | { op: "release"; seq: number };
 
 // changeConfirmText is what the operator reads before accepting a change proposal: the
 // change, and what the plan found resting on it.
