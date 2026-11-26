@@ -386,3 +386,56 @@ describe("ontology job", () => {
     expect(res.changes[0]!.job?.running?.kind).toBe("concept_retag");
   });
 });
+
+describe("ontology rollback", () => {
+  const report = {
+    tenant: "acme",
+    rollback: {
+      release: 2,
+      release_content_version: "aaaaaaaaaaaaaaaa",
+      content_version: "aaaaaaaaaaaaaaaa",
+      matches: true,
+      risk: "none",
+      applied: [{ op: "add", entry: "c2", name: "Ledger", new_id: "c9" }],
+      rollback_release: 3,
+    },
+  };
+
+  it("planOntology sends a release change and reads the release each change carries", async () => {
+    const { client, fetchMock } = makeClient([jsonResponse({
+      tenant: "acme",
+      fingerprint: "f".repeat(64),
+      changes: [{ op: "unretire", entry: { chunk_id: "c1", name: "Memo", section: "classes", kind: "class" }, risk: "none", counts: {}, release: 2 }],
+      issues: [],
+      new_issues: [],
+      scopes_counted: 0,
+      scopes_skipped: 0,
+      complete: true,
+    })]);
+    const res = await client.planOntology([{ op: "release", seq: 2 }]);
+    expect(res.changes[0]!.release).toBe(2);
+    expect(JSON.parse(fetchMock.mock.calls[0]![1]!.body as string)).toEqual({ changes: [{ op: "release", seq: 2 }] });
+  });
+
+  it("rollbackOntology POSTs seq and the plan's fingerprint and returns the report typed", async () => {
+    const { client, fetchMock } = makeClient([jsonResponse(report)]);
+    const res = await client.rollbackOntology(2, "f".repeat(64), { tenant: "globex" });
+    expect(res.rollback.matches).toBe(true);
+    expect(res.rollback.applied[0]!.new_id).toBe("c9");
+    const call = fetchMock.mock.calls[0]!;
+    expect(call[0]).toBe("http://test-loomcycle:8787/v1/_ontology/rollback?tenant=globex");
+    expect(call[1]!.method).toBe("POST");
+    expect(JSON.parse(call[1]!.body as string)).toEqual({ seq: 2, plan_fingerprint: "f".repeat(64) });
+  });
+
+  it("rollbackOntology throws plan_stale with the current fingerprint in its body", async () => {
+    const { client } = makeClient([
+      jsonResponse({ code: "plan_stale", error: "rollback: plan_stale: …", fingerprint: "e".repeat(64) }, 409),
+    ]);
+    const err = await client.rollbackOntology(2, "f".repeat(64)).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(LoomcycleError);
+    expect((err as LoomcycleError).status).toBe(409);
+    expect((err as LoomcycleError).code).toBe("plan_stale");
+    expect(JSON.parse((err as LoomcycleError).bodyText!).fingerprint).toBe("e".repeat(64));
+  });
+});

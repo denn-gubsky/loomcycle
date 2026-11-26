@@ -1,4 +1,4 @@
-import { useCallback, useContext, useEffect, useState } from "react";
+import { useCallback, useContext, useEffect, useMemo, useState } from "react";
 import type { ChunkRow } from "../types";
 import { chunkRowTint, effectiveScheme, statusDotColor, type ColorScheme } from "../lib/colorScheme";
 import { TreeIcon, TreeItem, TreeMarks, treeKeyDown, type TreeIconKind } from "./TreeRow";
@@ -114,6 +114,10 @@ export default function DocumentChunkTree({
 
   // Resolve the palette once (null → no tinting) and thread it down.
   const tintScheme = colorEnabled ? effectiveScheme(scheme) : null;
+  // Whether the chunk list carries the chunks' briefs (RFC HA with_summary):
+  // once any row has one, a row without one has no annotation of its own, and
+  // its card is not read for one.
+  const briefsListed = useMemo(() => someRow(tree, (r) => r.summary !== undefined), [tree]);
 
   if (tree.length === 0) {
     return (
@@ -150,10 +154,15 @@ export default function DocumentChunkTree({
           linkedIds={linkedIds}
           documentType={documentType}
           documentStatus={documentStatus}
+          briefsListed={briefsListed}
         />
       ))}
     </ul>
   );
+}
+
+function someRow(nodes: ChunkNode[], test: (r: ChunkRow) => boolean): boolean {
+  return nodes.some((n) => test(n.row) || someRow(n.children, test));
 }
 
 function ancestorIds(roots: ChunkNode[], id: string): string[] {
@@ -188,6 +197,7 @@ interface NodeProps {
   depth: number;
   // The id of the tree's one tab stop.
   tabStop?: string;
+  briefsListed?: boolean;
 }
 
 function ChunkTreeNode({
@@ -204,6 +214,7 @@ function ChunkTreeNode({
   documentStatus,
   depth,
   tabStop,
+  briefsListed,
 }: NodeProps) {
   const hasChildren = node.children.length > 0;
   const isOpen = expanded.get(node.row.id) !== false; // default-expanded
@@ -224,7 +235,7 @@ function ChunkTreeNode({
       tabbable={node.row.id === tabStop}
       icon={icon ? <TreeIcon kind={icon} /> : undefined}
       name={node.row.title || "(untitled)"}
-      card={chunkCard(node.row, cardScope)}
+      card={chunkCard(node.row, cardScope, briefsListed)}
       marks={
         <TreeMarks
           bare
@@ -258,6 +269,7 @@ function ChunkTreeNode({
               documentStatus={documentStatus}
               depth={depth + 1}
               tabStop={tabStop}
+              briefsListed={briefsListed}
             />
           ))
         : undefined}

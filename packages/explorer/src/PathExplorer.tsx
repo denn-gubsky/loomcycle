@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -27,6 +28,7 @@ import {
   documentIdsOf,
   listSubtree,
   parentPathOf,
+  type DirMap,
 } from "./lib/lazyPathTree";
 import {
   ExplorerRoot,
@@ -61,11 +63,13 @@ import { shortcutApplies, usePersistedFlag } from "./lib/persisted";
 import { useNarrow } from "./lib/useNarrow";
 import {
   NO_FILTER,
+  autoOpen,
   coverageLabel,
   filterActive,
   filterChoices,
   filterTree,
   findCoverage,
+  lsFilters,
   searchListed,
   type TreeFilter,
 } from "./lib/treeFind";
@@ -96,6 +100,13 @@ const NARROW_PX = 720;
 // document beside it, with its outline open, still reads at close to its
 // measure on a laptop-width window.
 const TREE_WIDTH_PX = 320;
+// How long typing in the filter pauses before the runtime is asked (RFC HA):
+// each ask is a fresh filtered listing, so not one per keystroke.
+const FILTER_DEBOUNCE_MS = 250;
+// The filtered tree's store while there is no filter to list.
+const NO_DIRS: DirMap = new Map();
+const noDirs = () => NO_DIRS;
+const noSubscribe = () => () => {};
 
 // joinPath appends a leaf segment to a canonical parent dir ("" = root).
 function joinPath(dir: string, name: string): string {
@@ -303,16 +314,93 @@ function PathExplorerBody({
     [browseProp?.scopeId, browseProp?.tenant],
   );
 
-  // One listing cache per (scope, subject): a new instance on a switch is also
-  // what makes a previous subject's in-flight pages land nowhere.
-  const lazy = useMemo(() => new LazyPathTree(data, scope, browse), [data, scope, browse]);
-  const dirs = useSyncExternalStore(lazy.subscribe, lazy.getSnapshot);
-
   // report hands a listing failure to the host. The tree already shows it
   // inline (root: the banner; a directory: its own row), so this never throws.
   const report = useCallback((e: unknown) => {
     onErrorRef.current?.(e);
   }, []);
+
+  // One listing cache per (scope, subject): a new instance on a switch is also
+  // what makes a previous subject's in-flight pages land nowhere. Every
+  // listing asks for its folders' document counts (RFC HA); a runtime that
+  // cannot count leaves them out and the count slots stay empty.
+  const lazy = useMemo(
+    () => new LazyPathTree(data, scope, browse, LS_PAGE_LIMIT, { withCounts: true }),
+    [data, scope, browse],
+  );
+  const dirs = useSyncExternalStore(lazy.subscribe, lazy.getSnapshot);
+
+  // Search and filter (RFC GZ): a second header line, closed until the search
+  // icon or "/" opens it. The search covers the folders already listed; the
+  // filter is the runtime's (RFC HA) and covers the whole tree (findCoverage).
+  const [findOpen, setFindOpen] = useState(false);
+  const [findMode, setFindMode] = useState<"search" | "filter">("search");
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState<TreeFilter>(NO_FILTER);
+  const filtering = findOpen && findMode === "filter" && filterActive(filter);
+
+  // The filter the runtime is asked with: the one typed, once typing pauses;
+  // none at once when the filter is cleared or closed.
+  const [asked, setAsked] = useState<TreeFilter>(NO_FILTER);
+  useEffect(() => {
+    const next = filtering ? filter : NO_FILTER;
+    const t = setTimeout(() => setAsked(next), filtering ? FILTER_DEBOUNCE_MS : 0);
+    return () => clearTimeout(t);
+  }, [filtering, filter]);
+
+  // A runtime that answers a filtered listing without filtering it (one from
+  // before RFC HA: no echo of the filters), or refuses it (a scope whose
+  // documents it cannot read), gets the filter applied here instead, to the
+  // folders already listed — until the tree is reloaded or switched.
+  const [localFilterIn, setLocalFilterIn] = useState<LazyPathTree | null>(null);
+  const localOnly = localFilterIn === lazy;
+  const askedKey = `${asked.name.trim()}\u0000${asked.type}\u0000${asked.status}`;
+  // The filtered tree is a listing cache of its own, one per filter: each of
+  // its folders is a one-level ls with the filters, opened as the reader (or
+  // autoOpen) opens it.
+  const flazy = useMemo(() => {
+    const f = lsFilters(asked);
+    return f && !localOnly
+      ? new LazyPathTree(data, scope, browse, LS_PAGE_LIMIT, { withCounts: true, filters: f })
+      : null;
+    // `asked` is read through its key, so an equal filter keeps its listing.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data, scope, browse, askedKey, localOnly]);
+  const fdirs = useSyncExternalStore(flazy?.subscribe ?? noSubscribe, flazy?.getSnapshot ?? noDirs);
+  // The folders open in the filtered tree: its own set, so closing the filter
+  // gives back the tree as the reader left it. autoTried is every folder the
+  // filtered tree opened by itself, never opened by it again.
+  const [filterOpen, setFilterOpen] = useState<ReadonlySet<string>>(() => new Set());
+  const autoTried = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    setFilterOpen(new Set());
+    autoTried.current = new Set();
+    // A refusal is not reported: it falls back to the local filter (below).
+    flazy?.loadDir("").catch(() => {});
+  }, [flazy]);
+  const froot = fdirs.get("");
+  const serverFiltered = !!flazy && !!froot?.loaded && findCoverage(froot) === "subtree";
+  const fsettled = !!froot && !froot.loading && (froot.loaded || froot.error !== undefined);
+  useEffect(() => {
+    if (flazy && fsettled && !serverFiltered) setLocalFilterIn(lazy);
+  }, [flazy, fsettled, serverFiltered, lazy]);
+  useEffect(() => {
+    if (!flazy) return;
+    for (const d of filterOpen) {
+      if (!fdirs.has(d)) flazy.loadDir(d).catch(report);
+    }
+  }, [flazy, filterOpen, fdirs, report]);
+  const ftree = useMemo(() => (serverFiltered ? buildLazyTree(fdirs) : []), [serverFiltered, fdirs]);
+  // Open the folders the filter kept, breadth first, up to AUTO_OPEN_FOLDERS:
+  // each leads to a match, so the reader sees where the matches are without
+  // opening them one by one; past the bound they open on a click.
+  useEffect(() => {
+    if (!serverFiltered) return;
+    const more = autoOpen(ftree, filterOpen, autoTried.current);
+    if (more.length === 0) return;
+    more.forEach((p) => autoTried.current.add(p));
+    setFilterOpen((prev) => new Set([...prev, ...more]));
+  }, [serverFiltered, ftree, filterOpen]);
 
   // The navigator slot (renderNavigator): which navigator shows, whether it has
   // the whole explorer, and what it is told. navReload bumps on every change the
@@ -358,9 +446,11 @@ function PathExplorerBody({
   const invalidate = useCallback(
     (p: string, opts?: { dropSubtree?: boolean }) => {
       setNavReload((n) => n + 1);
+      // The filtered tree, if one is shown, changes with it.
+      flazy?.invalidate(p, opts).catch(() => {});
       return lazy.invalidate(p, opts);
     },
-    [lazy],
+    [lazy, flazy],
   );
 
   // RFC BN: per-document type/status + color settings, so PathTree can color +
@@ -427,7 +517,7 @@ function PathExplorerBody({
 
   useEffect(() => {
     const fresh: string[] = [];
-    for (const listing of dirs.values()) {
+    for (const listing of [...dirs.values(), ...fdirs.values()]) {
       for (const id of documentIdsOf(listing.entries)) {
         if (!requested.current.has(id)) {
           requested.current.add(id);
@@ -449,27 +539,27 @@ function PathExplorerBody({
         })
         .catch(() => {});
     }
-  }, [data, dirs, scope, browse]);
+  }, [data, dirs, fdirs, scope, browse]);
 
   const tree = useMemo(() => buildLazyTree(dirs), [dirs]);
 
-  // Search and filter (RFC GZ): a second header line, closed until the search
-  // icon or "/" opens it. Both cover the folders already listed (findCoverage).
-  const [findOpen, setFindOpen] = useState(false);
-  const [findMode, setFindMode] = useState<"search" | "filter">("search");
-  const [query, setQuery] = useState("");
-  const [filter, setFilter] = useState<TreeFilter>(NO_FILTER);
   const [hitAt, setHitAt] = useState(0);
   const findInput = useRef<HTMLInputElement>(null);
-  const coverage = findCoverage(dirs.get(""));
-  const filtering = findOpen && findMode === "filter" && filterActive(filter);
+  // The runtime's filtered tree is drawn once it has answered with the filters
+  // it applied; until then (and on a runtime that does not filter) the filter
+  // is applied here to the folders already listed, and the line says so.
+  const serverTree = filtering && serverFiltered;
+  const coverage = findCoverage(findMode === "filter" && serverTree ? froot : dirs.get(""));
+  const listId = useId();
+  const typeWidened = serverTree && filter.type !== "" ? Math.max(0, (froot?.typeExpandedTo?.length ?? 0) - 1) : 0;
   const filtered = useMemo(
-    () => (filtering ? filterTree(tree, filter, summaries) : undefined),
-    [filtering, tree, filter, summaries],
+    () => (filtering && !serverTree ? filterTree(tree, filter, summaries) : undefined),
+    [filtering, serverTree, tree, filter, summaries],
   );
   const choices = useMemo(
-    () => (findOpen && findMode === "filter" ? filterChoices(tree, summaries) : { types: [], statuses: [] }),
-    [findOpen, findMode, tree, summaries],
+    () =>
+      findOpen && findMode === "filter" ? filterChoices([tree, ftree], summaries) : { types: [], statuses: [] },
+    [findOpen, findMode, tree, ftree, summaries],
   );
 
   // refresh re-lists the root and every open directory, then re-reveals the
@@ -478,9 +568,14 @@ function PathExplorerBody({
     setErr(null);
     resetSummaries();
     setNavReload((n) => n + 1);
-    await lazy.refresh(expanded).catch(report);
+    // A reload asks the runtime to filter again, even one that did not before.
+    setLocalFilterIn(null);
+    await Promise.all([
+      lazy.refresh(expanded).catch(report),
+      flazy?.refresh(filterOpen).catch(() => {}),
+    ]);
     if (selectedPath) await lazy.reveal(selectedPath).catch(report);
-  }, [lazy, expanded, selectedPath, resetSummaries, report]);
+  }, [lazy, flazy, expanded, filterOpen, selectedPath, resetSummaries, report]);
 
   const toggle = useCallback((dir: string) => {
     setExpanded((prev) => {
@@ -491,18 +586,32 @@ function PathExplorerBody({
     });
   }, []);
 
-  const loadMore = useCallback((dir: string) => lazy.loadMore(dir).catch(report), [lazy, report]);
+  const toggleFiltered = useCallback((dir: string) => {
+    setFilterOpen((prev) => {
+      const next = new Set(prev);
+      if (next.has(dir)) next.delete(dir);
+      else next.add(dir);
+      return next;
+    });
+  }, []);
+
+  // Paging and retry act on the tree that is drawn: the filtered one while it is.
+  const shownLazy = serverTree && flazy ? flazy : lazy;
+  const loadMore = useCallback((dir: string) => shownLazy.loadMore(dir).catch(report), [shownLazy, report]);
   const retry = useCallback(
     (dir: string) => {
-      const listing = lazy.getSnapshot().get(dir);
-      (listing?.loaded ? lazy.loadMore(dir) : lazy.loadDir(dir)).catch(report);
+      const listing = shownLazy.getSnapshot().get(dir);
+      (listing?.loaded ? shownLazy.loadMore(dir) : shownLazy.loadDir(dir)).catch(report);
     },
-    [lazy, report],
+    [shownLazy, report],
   );
 
+  // A pick in the filtered tree is found there until the full tree has
+  // revealed it (the selection effect lists its folders).
   const selected = useMemo(
-    () => (selectedPath ? findNode(tree, selectedPath) : undefined),
-    [tree, selectedPath],
+    () =>
+      selectedPath ? (findNode(tree, selectedPath) ?? (serverTree ? findNode(ftree, selectedPath) : undefined)) : undefined,
+    [tree, ftree, serverTree, selectedPath],
   );
   const rootErr = dirs.get("")?.error;
   const selectedAnnotation =
@@ -607,7 +716,7 @@ function PathExplorerBody({
         setSelected(p);
       },
     });
-  }, [data, lazy, currentDir, currentDirLabel, scope, browse, report, setSelected]);
+  }, [data, invalidate, currentDir, currentDirLabel, scope, browse, report, setSelected]);
 
   const newDocument = useCallback(() => {
     setModal({
@@ -627,7 +736,7 @@ function PathExplorerBody({
         setSelected(p);
       },
     });
-  }, [data, lazy, currentDir, currentDirLabel, scope, browse, report, setSelected]);
+  }, [data, invalidate, currentDir, currentDirLabel, scope, browse, report, setSelected]);
 
   const renameSelected = useCallback(() => {
     if (!selected) return;
@@ -646,7 +755,7 @@ function PathExplorerBody({
         setSelected(to);
       },
     });
-  }, [data, lazy, selected, scope, browse, report, setSelected]);
+  }, [data, invalidate, selected, scope, browse, report, setSelected]);
 
   const deleteSelected = useCallback(() => {
     if (!selected) return;
@@ -708,7 +817,7 @@ function PathExplorerBody({
         },
       });
     })();
-  }, [data, lazy, selected, scope, browse, report, setSelected]);
+  }, [data, invalidate, selected, scope, browse, report, setSelected]);
 
   const mutable = selected && (selected.kind === "directory" || selected.kind === "document");
 
@@ -1048,32 +1157,53 @@ function PathExplorerBody({
                 />
                 {findMode === "filter" && (
                   <>
-                    <select
-                      className="paths-find-select"
+                    {/* Free text with suggestions: any type or status can be
+                        typed (the runtime filters by it), and what the trees
+                        have shown is offered. Debounced with the name. */}
+                    <input
+                      className="paths-find-field"
+                      type="search"
                       value={filter.type}
+                      placeholder="any type"
                       aria-label="Filter by type"
+                      list={`${listId}-types`}
+                      autoComplete="off"
+                      spellCheck={false}
                       onChange={(e) => setFilter((f) => ({ ...f, type: e.target.value }))}
-                    >
-                      <option value="">any type</option>
+                      onKeyDown={(e) => {
+                        if (e.key === "Escape") {
+                          e.preventDefault();
+                          closeFind();
+                        }
+                      }}
+                    />
+                    <datalist id={`${listId}-types`}>
                       {choices.types.map((t) => (
-                        <option key={t} value={t}>
-                          {t}
-                        </option>
+                        <option key={t} value={t} />
                       ))}
-                    </select>
-                    <select
-                      className="paths-find-select"
+                    </datalist>
+                    <input
+                      className="paths-find-field"
+                      type="search"
                       value={filter.status}
+                      placeholder="any status"
                       aria-label="Filter by status"
+                      list={`${listId}-statuses`}
+                      autoComplete="off"
+                      spellCheck={false}
                       onChange={(e) => setFilter((f) => ({ ...f, status: e.target.value }))}
-                    >
-                      <option value="">any status</option>
+                      onKeyDown={(e) => {
+                        if (e.key === "Escape") {
+                          e.preventDefault();
+                          closeFind();
+                        }
+                      }}
+                    />
+                    <datalist id={`${listId}-statuses`}>
                       {choices.statuses.map((t) => (
-                        <option key={t} value={t}>
-                          {t}
-                        </option>
+                        <option key={t} value={t} />
                       ))}
-                    </select>
+                    </datalist>
                   </>
                 )}
                 <span className="paths-find-note" id="paths-find-note" role="status">
@@ -1084,6 +1214,7 @@ function PathExplorerBody({
                   )}
                   {coverageLabel(findMode, coverage)}
                   {findMode === "search" && searchBase !== "" && ` under ${searchBase}`}
+                  {typeWidened > 0 && ` · ${filter.type} with ${typeWidened} subtype${typeWidened === 1 ? "" : "s"}`}
                 </span>
                 <button type="button" className="paths-find-close" onClick={closeFind} aria-label="Close search">
                   <PaneIcon kind="close" />
@@ -1096,10 +1227,13 @@ function PathExplorerBody({
             ) : (
               <div className="paths-tree-box" ref={treeBox}>
                 <PathTree
-                  tree={filtered ? filtered.tree : tree}
-                  root={dirs.get("")}
-                  expanded={filtered ? new Set([...expanded, ...filtered.open]) : expanded}
-                  onToggle={toggle}
+                  tree={serverTree ? ftree : filtered ? filtered.tree : tree}
+                  root={serverTree ? froot : dirs.get("")}
+                  expanded={
+                    serverTree ? filterOpen : filtered ? new Set([...expanded, ...filtered.open]) : expanded
+                  }
+                  onToggle={serverTree ? toggleFiltered : toggle}
+                  filtered={serverTree}
                   onLoadMore={loadMore}
                   onRetry={retry}
                   selectedPath={selectedPath}

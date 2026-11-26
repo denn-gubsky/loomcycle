@@ -3,7 +3,7 @@ import type { PathEntry } from "../types";
 import type { DocSummary } from "./colorScheme";
 import type { DirListing } from "./lazyPathTree";
 import { buildLazyTree } from "../components/PathTree";
-import { coverageLabel, filterTree, findCoverage, searchListed } from "./treeFind";
+import { autoOpen, coverageLabel, filterChoices, filterTree, findCoverage, lsFilters, searchListed } from "./treeFind";
 
 const dir = (full_path: string): PathEntry => ({
   name: full_path.slice(full_path.lastIndexOf("/") + 1),
@@ -54,6 +54,53 @@ describe("treeFind", () => {
     expect(findCoverage(listing([]))).toBe("opened");
     expect(coverageLabel("search", "opened")).toBe("searching opened folders");
     expect(coverageLabel("filter", "opened")).toBe("filtering opened folders");
-    expect(findCoverage({ ...listing([]), appliedFilters: { name: "x" } })).toBe("subtree");
+    expect(findCoverage({ ...listing([]), appliedFilters: { name_contains: "x" } })).toBe("subtree");
+    expect(coverageLabel("filter", "subtree")).toBe("filtering the whole tree");
+  });
+
+  it("TestFilterChoices_UnitesTreesSeedsStatusesAndLeavesOutAnnotation", () => {
+    const other = buildLazyTree(new Map([["", listing([doc("/x", "x"), doc("/y/_annotation", "ann2")])]]));
+    const sums = new Map(summaries);
+    sums.set("x", { document_id: "x", title: "X", type: "Spec", status: "wip", color_enabled: false });
+    sums.set("ann2", { document_id: "ann2", title: "y", type: "Annotation", status: "done", color_enabled: false });
+    expect(filterChoices([tree, other], sums)).toEqual({
+      types: ["Guide", "Plan", "Spec"],
+      statuses: ["confirmed", "done", "draft", "review", "wip"],
+    });
+  });
+
+  it("TestLsFilters_SendsOnlyWhatIsSetWithTheNameTrimmed", () => {
+    expect(lsFilters({ name: "  ", type: "", status: "" })).toBeUndefined();
+    expect(lsFilters({ name: " plan ", type: "", status: "draft" })).toEqual({ name_contains: "plan", status: "draft" });
+    expect(lsFilters({ name: "", type: " Guide ", status: " " })).toEqual({ type: "Guide" });
+  });
+
+  it("TestAutoOpen_OpensKeptFoldersBreadthFirstWithinItsBudget", () => {
+    const ftree = buildLazyTree(
+      new Map([
+        [
+          "",
+          listing([
+            dir("/a"),
+            dir("/b"),
+            { ...doc("/hit", "h"), matched: true },
+            { ...doc("/spec", "s"), has_children: true },
+            { ...doc("/self", "m"), has_children: true, matched: true, documents: 0 },
+          ]),
+        ],
+        ["/a", listing([dir("/a/x"), dir("/a/y")])],
+      ]),
+    );
+    // Top level first: folders, and a document kept for what is below it; not
+    // a document that matched itself with nothing matching below.
+    expect(autoOpen(ftree, new Set(), new Set())).toEqual(["/a", "/b", "/spec"]);
+    // Then one level down, under what is open.
+    const open = new Set(["/a", "/b", "/spec"]);
+    expect(autoOpen(ftree, open, new Set(open))).toEqual(["/a/x", "/a/y"]);
+    // A folder already opened once (and closed by the reader) is left closed.
+    expect(autoOpen(ftree, new Set(["/b", "/spec"]), new Set(["/a", "/b", "/spec"]))).toEqual([]);
+    // The budget counts every folder it has opened.
+    expect(autoOpen(ftree, open, new Set(open), 4)).toEqual(["/a/x"]);
+    expect(autoOpen(ftree, open, new Set(open), 3)).toEqual([]);
   });
 });
