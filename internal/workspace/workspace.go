@@ -7,11 +7,25 @@ package workspace
 
 import "strings"
 
-// ProtocolVersion is the workspace worker protocol this build speaks. A
-// worker of another version is refused at attach (RFC GW §8). 2 added the
-// worker-to-core Egress stream (RFC GW P4): an older worker has no way out
-// for its sessions, and an older core refuses the stream as unimplemented.
-const ProtocolVersion = 2
+// ProtocolVersion is the workspace worker protocol this build speaks (RFC GW
+// §8). 2 added the worker-to-core Egress stream (RFC GW P4): an older worker
+// has no way out for its sessions, and an older core refuses the stream as
+// unimplemented. 3 added git requests on that stream (RFC GW P11).
+const ProtocolVersion = 3
+
+// MinProtocolVersion is the oldest worker protocol the core still attaches:
+// a v2 worker serves everything but git workspaces, so a fleet need not be
+// upgraded at once. A worker of a version outside
+// [MinProtocolVersion, ProtocolVersion] is refused at attach.
+const MinProtocolVersion = 2
+
+// GitProtocolVersion is the first protocol whose workers make git requests;
+// a git stream from an older worker is refused (ClassProtocolTooOld).
+const GitProtocolVersion = 3
+
+// ClassProtocolTooOld names a refusal of something the worker's protocol
+// predates.
+const ClassProtocolTooOld = "worker_protocol_too_old"
 
 // ChunkSize bounds one Chunk frame's data, either way (RFC GW §8).
 const ChunkSize = 64 << 10

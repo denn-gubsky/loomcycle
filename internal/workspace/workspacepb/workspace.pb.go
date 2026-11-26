@@ -36,6 +36,66 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+// GitShape is one of the four requests a git client makes over smart HTTP.
+type GitShape int32
+
+const (
+	GitShape_GIT_SHAPE_UNSPECIFIED GitShape = 0
+	// GET info/refs?service=git-upload-pack
+	GitShape_GIT_SHAPE_ADVERTISE_UPLOAD GitShape = 1
+	// GET info/refs?service=git-receive-pack
+	GitShape_GIT_SHAPE_ADVERTISE_RECEIVE GitShape = 2
+	// POST git-upload-pack
+	GitShape_GIT_SHAPE_UPLOAD_PACK GitShape = 3
+	// POST git-receive-pack
+	GitShape_GIT_SHAPE_RECEIVE_PACK GitShape = 4
+)
+
+// Enum value maps for GitShape.
+var (
+	GitShape_name = map[int32]string{
+		0: "GIT_SHAPE_UNSPECIFIED",
+		1: "GIT_SHAPE_ADVERTISE_UPLOAD",
+		2: "GIT_SHAPE_ADVERTISE_RECEIVE",
+		3: "GIT_SHAPE_UPLOAD_PACK",
+		4: "GIT_SHAPE_RECEIVE_PACK",
+	}
+	GitShape_value = map[string]int32{
+		"GIT_SHAPE_UNSPECIFIED":       0,
+		"GIT_SHAPE_ADVERTISE_UPLOAD":  1,
+		"GIT_SHAPE_ADVERTISE_RECEIVE": 2,
+		"GIT_SHAPE_UPLOAD_PACK":       3,
+		"GIT_SHAPE_RECEIVE_PACK":      4,
+	}
+)
+
+func (x GitShape) Enum() *GitShape {
+	p := new(GitShape)
+	*p = x
+	return p
+}
+
+func (x GitShape) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (GitShape) Descriptor() protoreflect.EnumDescriptor {
+	return file_workspace_proto_enumTypes[0].Descriptor()
+}
+
+func (GitShape) Type() protoreflect.EnumType {
+	return &file_workspace_proto_enumTypes[0]
+}
+
+func (x GitShape) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use GitShape.Descriptor instead.
+func (GitShape) EnumDescriptor() ([]byte, []int) {
+	return file_workspace_proto_rawDescGZIP(), []int{0}
+}
+
 // What a worker sends on its Attach stream.
 type WorkerMessage struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -1154,6 +1214,13 @@ type EgressStart struct {
 	HasBody bool `protobuf:"varint,7,opt,name=has_body,json=hasBody,proto3" json:"has_body,omitempty"`
 	// The body's length, -1 when unknown.
 	ContentLength int64 `protobuf:"varint,8,opt,name=content_length,json=contentLength,proto3" json:"content_length,omitempty"`
+	// A git request (RFC GW §6.1, P11): the shape the core builds the request
+	// for, from the repository on the workspace's row. Set, route, method and
+	// path are empty: a git request names no URL. Unset for a route's request.
+	GitShape GitShape `protobuf:"varint,9,opt,name=git_shape,json=gitShape,proto3,enum=loomcycle.workspace.v1.GitShape" json:"git_shape,omitempty"`
+	// The ticket of the git op the request belongs to, as the op's arguments
+	// gave it: good for that op's workspace and shapes, until the op ends.
+	Ticket        []byte `protobuf:"bytes,10,opt,name=ticket,proto3" json:"ticket,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1242,6 +1309,20 @@ func (x *EgressStart) GetContentLength() int64 {
 		return x.ContentLength
 	}
 	return 0
+}
+
+func (x *EgressStart) GetGitShape() GitShape {
+	if x != nil {
+		return x.GitShape
+	}
+	return GitShape_GIT_SHAPE_UNSPECIFIED
+}
+
+func (x *EgressStart) GetTicket() []byte {
+	if x != nil {
+		return x.Ticket
+	}
+	return nil
 }
 
 type Header struct {
@@ -1566,7 +1647,7 @@ const file_workspace_proto_rawDesc = "" +
 	"\x05start\x18\x01 \x01(\v2#.loomcycle.workspace.v1.EgressStartH\x00R\x05start\x123\n" +
 	"\x04body\x18\x02 \x01(\v2\x1d.loomcycle.workspace.v1.ChunkH\x00R\x04body\x12=\n" +
 	"\bbody_end\x18\x03 \x01(\v2 .loomcycle.workspace.v1.InputEndH\x00R\abodyEndB\x05\n" +
-	"\x03msg\"\x8b\x02\n" +
+	"\x03msg\"\xe2\x02\n" +
 	"\vEgressStart\x12\x1b\n" +
 	"\tworker_id\x18\x01 \x01(\tR\bworkerId\x12!\n" +
 	"\fworkspace_id\x18\x02 \x01(\tR\vworkspaceId\x12\x14\n" +
@@ -1575,7 +1656,10 @@ const file_workspace_proto_rawDesc = "" +
 	"\x04path\x18\x05 \x01(\tR\x04path\x128\n" +
 	"\aheaders\x18\x06 \x03(\v2\x1e.loomcycle.workspace.v1.HeaderR\aheaders\x12\x19\n" +
 	"\bhas_body\x18\a \x01(\bR\ahasBody\x12%\n" +
-	"\x0econtent_length\x18\b \x01(\x03R\rcontentLength\"2\n" +
+	"\x0econtent_length\x18\b \x01(\x03R\rcontentLength\x12=\n" +
+	"\tgit_shape\x18\t \x01(\x0e2 .loomcycle.workspace.v1.GitShapeR\bgitShape\x12\x16\n" +
+	"\x06ticket\x18\n" +
+	" \x01(\fR\x06ticket\"2\n" +
 	"\x06Header\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value\"\xc0\x01\n" +
@@ -1590,7 +1674,13 @@ const file_workspace_proto_rawDesc = "" +
 	"\aheaders\x18\x02 \x03(\v2\x1e.loomcycle.workspace.v1.HeaderR\aheaders\"\"\n" +
 	"\n" +
 	"EgressDone\x12\x14\n" +
-	"\x05error\x18\x01 \x01(\tR\x05error2\xa0\x02\n" +
+	"\x05error\x18\x01 \x01(\tR\x05error*\x9d\x01\n" +
+	"\bGitShape\x12\x19\n" +
+	"\x15GIT_SHAPE_UNSPECIFIED\x10\x00\x12\x1e\n" +
+	"\x1aGIT_SHAPE_ADVERTISE_UPLOAD\x10\x01\x12\x1f\n" +
+	"\x1bGIT_SHAPE_ADVERTISE_RECEIVE\x10\x02\x12\x19\n" +
+	"\x15GIT_SHAPE_UPLOAD_PACK\x10\x03\x12\x1a\n" +
+	"\x16GIT_SHAPE_RECEIVE_PACK\x10\x042\xa0\x02\n" +
 	"\x10WorkspaceService\x12X\n" +
 	"\x06Attach\x12%.loomcycle.workspace.v1.WorkerMessage\x1a#.loomcycle.workspace.v1.CoreControl(\x010\x01\x12R\n" +
 	"\x02Op\x12$.loomcycle.workspace.v1.OpFromWorker\x1a\".loomcycle.workspace.v1.OpToWorker(\x010\x01\x12^\n" +
@@ -1608,62 +1698,65 @@ func file_workspace_proto_rawDescGZIP() []byte {
 	return file_workspace_proto_rawDescData
 }
 
+var file_workspace_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
 var file_workspace_proto_msgTypes = make([]protoimpl.MessageInfo, 21)
 var file_workspace_proto_goTypes = []any{
-	(*WorkerMessage)(nil),    // 0: loomcycle.workspace.v1.WorkerMessage
-	(*Hello)(nil),            // 1: loomcycle.workspace.v1.Hello
-	(*Heartbeat)(nil),        // 2: loomcycle.workspace.v1.Heartbeat
-	(*Removed)(nil),          // 3: loomcycle.workspace.v1.Removed
-	(*CoreControl)(nil),      // 4: loomcycle.workspace.v1.CoreControl
-	(*Welcome)(nil),          // 5: loomcycle.workspace.v1.Welcome
-	(*OpenStreams)(nil),      // 6: loomcycle.workspace.v1.OpenStreams
-	(*Remove)(nil),           // 7: loomcycle.workspace.v1.Remove
-	(*OpFromWorker)(nil),     // 8: loomcycle.workspace.v1.OpFromWorker
-	(*Ready)(nil),            // 9: loomcycle.workspace.v1.Ready
-	(*Chunk)(nil),            // 10: loomcycle.workspace.v1.Chunk
-	(*OpDone)(nil),           // 11: loomcycle.workspace.v1.OpDone
-	(*OpToWorker)(nil),       // 12: loomcycle.workspace.v1.OpToWorker
-	(*OpStart)(nil),          // 13: loomcycle.workspace.v1.OpStart
-	(*InputEnd)(nil),         // 14: loomcycle.workspace.v1.InputEnd
-	(*EgressFromWorker)(nil), // 15: loomcycle.workspace.v1.EgressFromWorker
-	(*EgressStart)(nil),      // 16: loomcycle.workspace.v1.EgressStart
-	(*Header)(nil),           // 17: loomcycle.workspace.v1.Header
-	(*EgressToWorker)(nil),   // 18: loomcycle.workspace.v1.EgressToWorker
-	(*EgressHead)(nil),       // 19: loomcycle.workspace.v1.EgressHead
-	(*EgressDone)(nil),       // 20: loomcycle.workspace.v1.EgressDone
+	(GitShape)(0),            // 0: loomcycle.workspace.v1.GitShape
+	(*WorkerMessage)(nil),    // 1: loomcycle.workspace.v1.WorkerMessage
+	(*Hello)(nil),            // 2: loomcycle.workspace.v1.Hello
+	(*Heartbeat)(nil),        // 3: loomcycle.workspace.v1.Heartbeat
+	(*Removed)(nil),          // 4: loomcycle.workspace.v1.Removed
+	(*CoreControl)(nil),      // 5: loomcycle.workspace.v1.CoreControl
+	(*Welcome)(nil),          // 6: loomcycle.workspace.v1.Welcome
+	(*OpenStreams)(nil),      // 7: loomcycle.workspace.v1.OpenStreams
+	(*Remove)(nil),           // 8: loomcycle.workspace.v1.Remove
+	(*OpFromWorker)(nil),     // 9: loomcycle.workspace.v1.OpFromWorker
+	(*Ready)(nil),            // 10: loomcycle.workspace.v1.Ready
+	(*Chunk)(nil),            // 11: loomcycle.workspace.v1.Chunk
+	(*OpDone)(nil),           // 12: loomcycle.workspace.v1.OpDone
+	(*OpToWorker)(nil),       // 13: loomcycle.workspace.v1.OpToWorker
+	(*OpStart)(nil),          // 14: loomcycle.workspace.v1.OpStart
+	(*InputEnd)(nil),         // 15: loomcycle.workspace.v1.InputEnd
+	(*EgressFromWorker)(nil), // 16: loomcycle.workspace.v1.EgressFromWorker
+	(*EgressStart)(nil),      // 17: loomcycle.workspace.v1.EgressStart
+	(*Header)(nil),           // 18: loomcycle.workspace.v1.Header
+	(*EgressToWorker)(nil),   // 19: loomcycle.workspace.v1.EgressToWorker
+	(*EgressHead)(nil),       // 20: loomcycle.workspace.v1.EgressHead
+	(*EgressDone)(nil),       // 21: loomcycle.workspace.v1.EgressDone
 }
 var file_workspace_proto_depIdxs = []int32{
-	1,  // 0: loomcycle.workspace.v1.WorkerMessage.hello:type_name -> loomcycle.workspace.v1.Hello
-	2,  // 1: loomcycle.workspace.v1.WorkerMessage.heartbeat:type_name -> loomcycle.workspace.v1.Heartbeat
-	3,  // 2: loomcycle.workspace.v1.WorkerMessage.removed:type_name -> loomcycle.workspace.v1.Removed
-	5,  // 3: loomcycle.workspace.v1.CoreControl.welcome:type_name -> loomcycle.workspace.v1.Welcome
-	6,  // 4: loomcycle.workspace.v1.CoreControl.open_streams:type_name -> loomcycle.workspace.v1.OpenStreams
-	7,  // 5: loomcycle.workspace.v1.CoreControl.remove:type_name -> loomcycle.workspace.v1.Remove
-	9,  // 6: loomcycle.workspace.v1.OpFromWorker.ready:type_name -> loomcycle.workspace.v1.Ready
-	10, // 7: loomcycle.workspace.v1.OpFromWorker.output:type_name -> loomcycle.workspace.v1.Chunk
-	11, // 8: loomcycle.workspace.v1.OpFromWorker.done:type_name -> loomcycle.workspace.v1.OpDone
-	13, // 9: loomcycle.workspace.v1.OpToWorker.start:type_name -> loomcycle.workspace.v1.OpStart
-	10, // 10: loomcycle.workspace.v1.OpToWorker.input:type_name -> loomcycle.workspace.v1.Chunk
-	14, // 11: loomcycle.workspace.v1.OpToWorker.input_end:type_name -> loomcycle.workspace.v1.InputEnd
-	16, // 12: loomcycle.workspace.v1.EgressFromWorker.start:type_name -> loomcycle.workspace.v1.EgressStart
-	10, // 13: loomcycle.workspace.v1.EgressFromWorker.body:type_name -> loomcycle.workspace.v1.Chunk
-	14, // 14: loomcycle.workspace.v1.EgressFromWorker.body_end:type_name -> loomcycle.workspace.v1.InputEnd
-	17, // 15: loomcycle.workspace.v1.EgressStart.headers:type_name -> loomcycle.workspace.v1.Header
-	19, // 16: loomcycle.workspace.v1.EgressToWorker.head:type_name -> loomcycle.workspace.v1.EgressHead
-	10, // 17: loomcycle.workspace.v1.EgressToWorker.body:type_name -> loomcycle.workspace.v1.Chunk
-	20, // 18: loomcycle.workspace.v1.EgressToWorker.done:type_name -> loomcycle.workspace.v1.EgressDone
-	17, // 19: loomcycle.workspace.v1.EgressHead.headers:type_name -> loomcycle.workspace.v1.Header
-	0,  // 20: loomcycle.workspace.v1.WorkspaceService.Attach:input_type -> loomcycle.workspace.v1.WorkerMessage
-	8,  // 21: loomcycle.workspace.v1.WorkspaceService.Op:input_type -> loomcycle.workspace.v1.OpFromWorker
-	15, // 22: loomcycle.workspace.v1.WorkspaceService.Egress:input_type -> loomcycle.workspace.v1.EgressFromWorker
-	4,  // 23: loomcycle.workspace.v1.WorkspaceService.Attach:output_type -> loomcycle.workspace.v1.CoreControl
-	12, // 24: loomcycle.workspace.v1.WorkspaceService.Op:output_type -> loomcycle.workspace.v1.OpToWorker
-	18, // 25: loomcycle.workspace.v1.WorkspaceService.Egress:output_type -> loomcycle.workspace.v1.EgressToWorker
-	23, // [23:26] is the sub-list for method output_type
-	20, // [20:23] is the sub-list for method input_type
-	20, // [20:20] is the sub-list for extension type_name
-	20, // [20:20] is the sub-list for extension extendee
-	0,  // [0:20] is the sub-list for field type_name
+	2,  // 0: loomcycle.workspace.v1.WorkerMessage.hello:type_name -> loomcycle.workspace.v1.Hello
+	3,  // 1: loomcycle.workspace.v1.WorkerMessage.heartbeat:type_name -> loomcycle.workspace.v1.Heartbeat
+	4,  // 2: loomcycle.workspace.v1.WorkerMessage.removed:type_name -> loomcycle.workspace.v1.Removed
+	6,  // 3: loomcycle.workspace.v1.CoreControl.welcome:type_name -> loomcycle.workspace.v1.Welcome
+	7,  // 4: loomcycle.workspace.v1.CoreControl.open_streams:type_name -> loomcycle.workspace.v1.OpenStreams
+	8,  // 5: loomcycle.workspace.v1.CoreControl.remove:type_name -> loomcycle.workspace.v1.Remove
+	10, // 6: loomcycle.workspace.v1.OpFromWorker.ready:type_name -> loomcycle.workspace.v1.Ready
+	11, // 7: loomcycle.workspace.v1.OpFromWorker.output:type_name -> loomcycle.workspace.v1.Chunk
+	12, // 8: loomcycle.workspace.v1.OpFromWorker.done:type_name -> loomcycle.workspace.v1.OpDone
+	14, // 9: loomcycle.workspace.v1.OpToWorker.start:type_name -> loomcycle.workspace.v1.OpStart
+	11, // 10: loomcycle.workspace.v1.OpToWorker.input:type_name -> loomcycle.workspace.v1.Chunk
+	15, // 11: loomcycle.workspace.v1.OpToWorker.input_end:type_name -> loomcycle.workspace.v1.InputEnd
+	17, // 12: loomcycle.workspace.v1.EgressFromWorker.start:type_name -> loomcycle.workspace.v1.EgressStart
+	11, // 13: loomcycle.workspace.v1.EgressFromWorker.body:type_name -> loomcycle.workspace.v1.Chunk
+	15, // 14: loomcycle.workspace.v1.EgressFromWorker.body_end:type_name -> loomcycle.workspace.v1.InputEnd
+	18, // 15: loomcycle.workspace.v1.EgressStart.headers:type_name -> loomcycle.workspace.v1.Header
+	0,  // 16: loomcycle.workspace.v1.EgressStart.git_shape:type_name -> loomcycle.workspace.v1.GitShape
+	20, // 17: loomcycle.workspace.v1.EgressToWorker.head:type_name -> loomcycle.workspace.v1.EgressHead
+	11, // 18: loomcycle.workspace.v1.EgressToWorker.body:type_name -> loomcycle.workspace.v1.Chunk
+	21, // 19: loomcycle.workspace.v1.EgressToWorker.done:type_name -> loomcycle.workspace.v1.EgressDone
+	18, // 20: loomcycle.workspace.v1.EgressHead.headers:type_name -> loomcycle.workspace.v1.Header
+	1,  // 21: loomcycle.workspace.v1.WorkspaceService.Attach:input_type -> loomcycle.workspace.v1.WorkerMessage
+	9,  // 22: loomcycle.workspace.v1.WorkspaceService.Op:input_type -> loomcycle.workspace.v1.OpFromWorker
+	16, // 23: loomcycle.workspace.v1.WorkspaceService.Egress:input_type -> loomcycle.workspace.v1.EgressFromWorker
+	5,  // 24: loomcycle.workspace.v1.WorkspaceService.Attach:output_type -> loomcycle.workspace.v1.CoreControl
+	13, // 25: loomcycle.workspace.v1.WorkspaceService.Op:output_type -> loomcycle.workspace.v1.OpToWorker
+	19, // 26: loomcycle.workspace.v1.WorkspaceService.Egress:output_type -> loomcycle.workspace.v1.EgressToWorker
+	24, // [24:27] is the sub-list for method output_type
+	21, // [21:24] is the sub-list for method input_type
+	21, // [21:21] is the sub-list for extension type_name
+	21, // [21:21] is the sub-list for extension extendee
+	0,  // [0:21] is the sub-list for field type_name
 }
 
 func init() { file_workspace_proto_init() }
@@ -1706,13 +1799,14 @@ func file_workspace_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_workspace_proto_rawDesc), len(file_workspace_proto_rawDesc)),
-			NumEnums:      0,
+			NumEnums:      1,
 			NumMessages:   21,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
 		GoTypes:           file_workspace_proto_goTypes,
 		DependencyIndexes: file_workspace_proto_depIdxs,
+		EnumInfos:         file_workspace_proto_enumTypes,
 		MessageInfos:      file_workspace_proto_msgTypes,
 	}.Build()
 	File_workspace_proto = out.File
