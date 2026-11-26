@@ -38,13 +38,19 @@ type Workspace struct {
 	// interrupted cell has to stop before its kernel is killed. Zero is
 	// config's default.
 	KernelGrace time.Duration
+	// GitSource is the Git tool's network settings (hosts, bounds, slots,
+	// the read credential resolver), shared by git workspaces (RFC GW P11).
+	// Nil: no git workspace is opened.
+	GitSource *GitSourceConfig
+	// GitPush is workspace.push, resolved.
+	GitPush config.WorkspacePushConfig
 }
 
 func (w *Workspace) Name() string { return "Workspace" }
 
 func (w *Workspace) Description() string {
 	return "Open a workspace — a directory on a workspace worker, away from the runtime — and run shell commands and file operations in it. " +
-		"Pick the operation with `op`: open (`name`, optional `toolchain`, optional `egress`: the routes it may reach the network through, default all your grant names), list, status, release; exec (`command`, optional `cwd`, `timeout_s`); " +
+		"Pick the operation with `op`: open (`name`, optional `toolchain`, optional `egress`: the routes it may reach the network through, default all your grant names; with `repo`, an https repository URL, a git workspace: the repository checked out on its own branch, optional `branch` (default loom/<name>-<id>), `base` (a full ref or commit to start at, default the forge's default branch) and `credential` ($cred:<name>), which needs your git_remote fetch), list, status, release; exec (`command`, optional `cwd`, `timeout_s`); " +
 		"read, write, edit, glob, grep with the same arguments as the Read, Write, Edit, Glob and Grep tools (no `volume`); " +
 		"run_cell (`code`, optional `kernel` python|node, `timeout_s`) runs code in an interpreter that keeps its variables between cells, reset_kernel starts it clean. " +
 		"view (`path`) shows you a PNG, JPEG, GIF or WebP from the workspace as a picture, e.g. a chart you drew. " +
@@ -88,6 +94,10 @@ func (w *Workspace) InputSchema() json.RawMessage {
 			"checkpoint":       {"type": "string", "description": "restore, delete_checkpoint: the checkpoint's id (checkpoints lists them); fork: the checkpoint to start from (default the present files); save_template: the checkpoint to save."},
 			"as":               {"type": "string", "description": "fork: the new workspace's name; save_template: the template's name."},
 			"template":         {"type": "string", "description": "open: a template to start the workspace from, by name (templates lists them; your own first, then your tenant's); delete_template: the template to delete."},
+			"repo":             {"type": "string", "description": "open: an https repository URL on a host the operator lists; the workspace is that repository checked out (a git workspace)."},
+			"branch":           {"type": "string", "description": "open with repo: the workspace's own branch, the only one a push may move; never the forge's default branch, and one the forge already has only when the operator allows it. Default loom/<name>-<id>."},
+			"base":             {"type": "string", "description": "open with repo: the full ref (refs/heads/..., refs/tags/...) or commit to start at. Default the forge's default branch."},
+			"credential":       {"type": "string", "description": "open with repo: the credential to fetch with, $cred:<name>, restricted to URLs covering the repository. Omit for a public repository."},
 			"all_users":        {"type": "boolean", "description": "templates: every user's templates of your tenant too (a tenant operator's session only)."},
 			"owner":            {"type": "string", "description": "delete_template with scope user: the user whose template to delete (a tenant operator's session only; default yourself)."},
 			"scope":            {"type": "string", "enum": ["user","tenant"], "description": "save_template, delete_template: user (your runs only) or tenant (every user of your tenant; needs the tenant value in memory_scopes)."},
@@ -117,7 +127,7 @@ func (w *Workspace) InputSchema() json.RawMessage {
 // another op takes is refused, as a misspelt one is: silently dropping it
 // would do something the caller did not ask for.
 var workspaceOpArgs = map[string][]string{
-	"open":         {"name", "toolchain", "egress", "template", "lifetime"},
+	"open":         {"name", "toolchain", "egress", "template", "lifetime", "repo", "branch", "base", "credential"},
 	"release":      {"name", "discard"},
 	"list":         {},
 	"status":       {"name"},
@@ -255,6 +265,10 @@ type workspaceInput struct {
 	Checkpoint string            `json:"checkpoint"`
 	As         string            `json:"as"`
 	Template   string            `json:"template"`
+	Repo       string            `json:"repo"`
+	Branch     string            `json:"branch"`
+	Base       string            `json:"base"`
+	Credential string            `json:"credential"`
 	AllUsers   bool              `json:"all_users"`
 	Owner      string            `json:"owner"`
 	Scope      string            `json:"scope"`
@@ -513,6 +527,16 @@ func workspaceError(err error, name string) tools.Result {
 		return workspaceRefusal("limit", err.Error())
 	case errors.Is(err, lifecycle.ErrShareBusy):
 		return workspaceRefusal("busy", err.Error())
+	case errors.Is(err, lifecycle.ErrGitAccess):
+		return workspaceRefusal("git_access_denied", err.Error())
+	case errors.Is(err, lifecycle.ErrGitBranch):
+		return workspaceRefusal("invalid_branch", err.Error())
+	case errors.Is(err, lifecycle.ErrGitBranchExists):
+		return workspaceRefusal("branch_exists", err.Error()+"; name another branch")
+	case errors.Is(err, lifecycle.ErrInvalidGitOpen):
+		return workspaceRefusal("invalid_argument", err.Error())
+	case errors.Is(err, lifecycle.ErrGitUnsupported):
+		return workspaceRefusal("not_supported_on_git", err.Error())
 	case errors.Is(err, lifecycle.ErrNameTaken):
 		return workspaceRefusal("exists", err.Error()+"; fork as another name, or release that one first")
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
@@ -540,6 +564,20 @@ func (w *Workspace) open(ctx context.Context, o lifecycle.Owner, pol tools.Works
 		return refusal
 	}
 	req := lifecycle.OpenRequest{Name: in.Name, Engine: pol.Engine, Egress: routes, Lifetime: in.Lifetime}
+	if in.Repo == "" && (in.Branch != "" || in.Base != "" || in.Credential != "") {
+		return workspaceRefusal("invalid_argument", "branch, base and credential are for a git workspace: open it with repo")
+	}
+	if in.Repo != "" {
+		if in.Template != "" {
+			return workspaceRefusal("invalid_argument", "a git workspace does not start from a template")
+		}
+		git, release, refusal, ok := w.gitOpen(ctx, o, in)
+		if !ok {
+			return refusal
+		}
+		defer release()
+		req.Git = &git
+	}
 	if in.Template != "" {
 		if in.Toolchain != "" {
 			return workspaceRefusal("invalid_argument", "a template names its own toolchains; open it without toolchain")
@@ -575,6 +613,7 @@ func (w *Workspace) finishOpen(ctx context.Context, o lifecycle.Owner, req lifec
 	if req.Template != nil {
 		out["template"] = req.Template.Name
 	}
+	withGit(out, row.Git)
 	withEgress(out, row.Egress)
 	return workspaceOK(out)
 }
