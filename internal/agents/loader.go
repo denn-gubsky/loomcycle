@@ -214,6 +214,7 @@ type AgentWorkspace struct {
 	Templates bool     `yaml:"templates"`
 	Connect   bool     `yaml:"connect"`
 	Durable   bool     `yaml:"durable"`
+	Roots     bool     `yaml:"roots"`
 	Egress    []string `yaml:"egress"`
 	Engine    string   `yaml:"engine"`
 }
@@ -222,9 +223,9 @@ func (w *AgentWorkspace) UnmarshalYAML(n *yaml.Node) error {
 	if n.Kind == yaml.MappingNode {
 		for i := 0; i+1 < len(n.Content); i += 2 {
 			switch k := n.Content[i].Value; k {
-			case "ops", "open", "share", "expose", "connect", "durable", "templates", "egress", "engine":
+			case "ops", "open", "share", "expose", "connect", "durable", "templates", "roots", "egress", "engine":
 			default:
-				return fmt.Errorf("workspace: unknown key %q (the block takes: egress, engine, expose, open, ops, share, templates)", k)
+				return fmt.Errorf("workspace: unknown key %q (the block takes: connect, durable, egress, engine, expose, open, ops, roots, share, templates)", k)
 			}
 		}
 	}

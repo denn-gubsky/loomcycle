@@ -73,6 +73,7 @@ func (w *Workspace) InputSchema() json.RawMessage {
 			"with":             {"type": "string", "description": "share/unshare: the agent id of the run to share with: your parent, a child, a sibling or another run of your user."},
 			"access":           {"type": "string", "enum": ["read","read_write"], "description": "share: read (read, glob, grep and copying files out) or read_write (also writing files in). Never commands."},
 			"lifetime":         {"type": "string", "enum": ["ephemeral","durable"], "description": "open: ephemeral (default, gone when your run ends) or durable (kept under your user and this name for your next run; needs workspace.durable)."},
+			"root":             {"type": "string", "description": "open: a folder of your user's own machine, by the name their personal worker offers it under; the workspace IS that folder, the user's real files (needs workspace.roots; not with template, toolchain or lifetime durable). Checkpoints, fork, templates and shares are refused on it, and release leaves the folder."},
 			"discard":          {"type": "boolean", "description": "release: delete a durable workspace, files and all, instead of keeping it (default false)."},
 			"connect":          {"type": "boolean", "description": "share: also let the peer send requests to the ports you exposed (needs your workspace.connect grant; default false)."},
 			"toolchain":        {"type": "string", "enum": ["python","node"], "description": "open: the toolchain the worker must have. Omit for a general workspace, on a worker with both."},
@@ -129,7 +130,7 @@ func (w *Workspace) InputSchema() json.RawMessage {
 // another op takes is refused, as a misspelt one is: silently dropping it
 // would do something the caller did not ask for.
 var workspaceOpArgs = map[string][]string{
-	"open":         {"name", "toolchain", "egress", "template", "lifetime", "repo", "branch", "base", "credential"},
+	"open":         {"name", "toolchain", "egress", "template", "lifetime", "root", "repo", "branch", "base", "credential"},
 	"release":      {"name", "discard"},
 	"list":         {},
 	"status":       {"name"},
@@ -241,6 +242,9 @@ type workspaceInput struct {
 	Toolchain string `json:"toolchain"`
 	// Lifetime is open's: "" or ephemeral, or durable (RFC GW §4.2, P12).
 	Lifetime string `json:"lifetime"`
+	// Root is open's: a folder of the user's own machine their personal
+	// worker offers, by name (RFC GW §4.5, P13).
+	Root string `json:"root"`
 	// Discard is release's: remove a durable workspace instead of parking it.
 	Discard         bool   `json:"discard"`
 	Command         string `json:"command"`
@@ -361,6 +365,11 @@ func (w *Workspace) Execute(ctx context.Context, input json.RawMessage) (tools.R
 	default:
 		return workspaceRefusal("invalid_argument", fmt.Sprintf("lifetime %q: want ephemeral or durable", in.Lifetime)), nil
 	}
+	// A root is the user's real folder: its own grant (RFC GW P13, owner
+	// ruling Q1), beside open, checked before anything is placed.
+	if in.Root != "" && !pol.Roots {
+		return workspaceRefusal("not_granted", "this agent's workspace grant does not allow opening a user's own folder (workspace.roots)"), nil
+	}
 	// discard destroys a durable workspace, which another run may have
 	// made: the durable grant too (security review of #2973), checked
 	// before anything is read.
@@ -438,6 +447,7 @@ func (w *Workspace) Execute(ctx context.Context, input json.RawMessage) (tools.R
 		return workspaceOK(out), nil
 	case "status":
 		out := map[string]any{"name": row.Name, "state": string(row.State), "engine": row.Engine}
+		withRoot(out, row.Root)
 		withEgress(out, row.Egress)
 		if row.State == store.WorkspaceReady {
 			exists, err := w.Manager.Status(ctx, row)
@@ -522,8 +532,10 @@ func workspaceError(err error, name string) tools.Result {
 		return workspaceRefusal("not_granted", err.Error())
 	case errors.Is(err, lifecycle.ErrDurableNoUser), errors.Is(err, lifecycle.ErrDurableTemplate):
 		return workspaceRefusal("invalid_argument", err.Error())
-	case errors.Is(err, lifecycle.ErrDurableOverMCP):
+	case errors.Is(err, lifecycle.ErrDurableOverMCP), errors.Is(err, lifecycle.ErrRootOverMCP):
 		return workspaceRefusal("not_over_mcp", err.Error())
+	case errors.Is(err, lifecycle.ErrRootRefused):
+		return workspaceRefusal(workspace.ClassNotOnRoot, err.Error())
 	case errors.Is(err, lifecycle.ErrNotFound):
 		return workspaceRefusal("not_found", fmt.Sprintf("this run has no workspace named %q; open it first (list shows yours)", name))
 	case errors.Is(err, lifecycle.ErrInvalidName):
@@ -580,9 +592,22 @@ func (w *Workspace) open(ctx context.Context, o lifecycle.Owner, pol tools.Works
 	if !ok {
 		return refusal
 	}
-	req := lifecycle.OpenRequest{Name: in.Name, Engine: pol.Engine, Egress: routes, Lifetime: in.Lifetime}
+	req := lifecycle.OpenRequest{Name: in.Name, Engine: pol.Engine, Egress: routes, Lifetime: in.Lifetime, Root: in.Root}
+	// A root is the user's own folder as it is; a git workspace is a clone
+	// the runtime makes (RFC GW P11). One workspace is never both.
+	if in.Root != "" && in.Repo != "" {
+		return workspaceRefusal("invalid_argument", "open takes repo or root, never both: a root is your own folder as it is, not a clone")
+	}
 	if in.Repo == "" && (in.Branch != "" || in.Base != "" || in.Credential != "") {
 		return workspaceRefusal("invalid_argument", "branch, base and credential are for a git workspace: open it with repo")
+	}
+	if in.Root != "" {
+		// A root is the user's folder as it is: no template, no toolchain
+		// (the lifecycle refuses durable, and every other mismatch).
+		if in.Template != "" || in.Toolchain != "" {
+			return workspaceRefusal("invalid_argument", "a root is your folder as it is: open it without template or toolchain")
+		}
+		return w.finishOpen(ctx, o, req)
 	}
 	if in.Repo != "" {
 		if in.Template != "" {
@@ -627,12 +652,21 @@ func (w *Workspace) finishOpen(ctx context.Context, o lifecycle.Owner, req lifec
 		return workspaceError(err, req.Name)
 	}
 	out := map[string]any{"name": row.Name, "state": string(row.State), "engine": row.Engine}
+	withRoot(out, row.Root)
 	if req.Template != nil {
 		out["template"] = req.Template.Name
 	}
 	withGit(out, row.Git)
 	withEgress(out, row.Egress)
 	return workspaceOK(out)
+}
+
+// withRoot names the root a workspace is on (RFC GW P13), by its name only:
+// its path is the worker's and never reaches the core.
+func withRoot(out map[string]any, root string) {
+	if root != "" {
+		out["root"] = root
+	}
 }
 
 // openEgress is the routes an open records (RFC GW §6.3, O4 of the P4 plan):
@@ -676,6 +710,7 @@ func (w *Workspace) list(ctx context.Context, o lifecycle.Owner) tools.Result {
 		if r.Lifetime == store.WorkspaceLifetimeDurable {
 			e["lifetime"] = r.Lifetime
 		}
+		withRoot(e, r.Root)
 		withEgress(e, r.Egress)
 		if len(r.Shares) > 0 {
 			shares := make([]map[string]any, 0, len(r.Shares))

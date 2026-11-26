@@ -150,6 +150,11 @@ func (m *Manager) SaveTemplate(ctx context.Context, o Owner, src store.Workspace
 	if o.RunID == "" || src.OwnerRunID != o.RunID || src.TenantID != o.TenantID || src.OwnerKind != o.kind() {
 		return store.WorkspaceTemplateRow{}, ErrNotFound
 	}
+	// A root is the user's own folder: never packed into a template that
+	// other runs open (RFC GW §4.5).
+	if src.Root != "" {
+		return store.WorkspaceTemplateRow{}, ErrRootRefused
+	}
 	// A template would carry the git directory, whose objects are the
 	// mirror's (RFC GW P11 plan: save_template is refused).
 	if src.Kind == store.WorkspaceKindGit {

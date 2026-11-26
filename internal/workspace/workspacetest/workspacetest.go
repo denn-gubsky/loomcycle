@@ -8,6 +8,7 @@ import (
 	"context"
 	"net"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -32,6 +33,8 @@ type Harness struct {
 	opt      worker.Options
 	tenant   string
 	stop     func()
+	// personal are the personal workers AddPersonalWorker attached.
+	personal map[string]bool
 }
 
 // Start serves a dispatcher over st on a loopback port and attaches one
@@ -43,8 +46,13 @@ func Start(t *testing.T, st dispatch.Store, tenant string, opt worker.Options) *
 	if err != nil {
 		t.Fatal(err)
 	}
-	d := dispatch.New(dispatch.Options{})
+	// Personal workers are on: only AddPersonalWorker's token is one.
+	d := dispatch.New(dispatch.Options{PersonalWorkers: func() bool { return true }})
 	d.Activate(st, func(_ context.Context, bearer string) (auth.Principal, bool) {
+		if user, ok := strings.CutPrefix(bearer, personalToken); ok && user != "" {
+			return auth.Principal{TenantID: tenant, Subject: user, Scopes: []string{auth.ScopeWorkersAttach}, TokenDefID: "def-personal-" + user,
+				Restrictions: auth.Restrictions{WorkerPersonal: true}}, true
+		}
 		if bearer != token {
 			return auth.Principal{}, false
 		}
@@ -109,6 +117,46 @@ func (h *Harness) AddWorker(id string, capacity int) string {
 		}
 		if time.Now().After(deadline) {
 			h.t.Fatalf("timed out waiting for worker %s", id)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// personalToken, followed by a user, is that user's personal worker token
+// in the harness's resolver (RFC GW P13). Not a real token.
+const personalToken = "workspacetest-personal-"
+
+// AddPersonalWorker attaches a personal worker of user (RFC GW P13) on the
+// host engine, offering roots, and waits until it is attached. It returns
+// the core's id for it; the worker stops with the test.
+func (h *Harness) AddPersonalWorker(user string, roots []worker.Root) string {
+	h.t.Helper()
+	opt := h.opt
+	opt.ID, opt.Root, opt.Token = "laptop", h.t.TempDir(), personalToken+user
+	opt.Personal, opt.Roots, opt.Engine = true, roots, ""
+	ctx, cancel := context.WithCancel(context.Background())
+	finished := make(chan struct{})
+	safego.Go(ctx, "workspacetest.personal", func() {
+		defer close(finished)
+		_ = worker.Run(ctx, opt)
+	})
+	h.t.Cleanup(func() { cancel(); <-finished })
+	deadline := time.Now().Add(10 * time.Second)
+	// The dispatcher names it user:<tenant>/<hash of the user>/laptop; the
+	// harness does not rebuild the hash, it finds the one personal worker
+	// it attached for this user.
+	for {
+		for _, w := range h.D.Workers() {
+			if strings.HasPrefix(w.ID, "user:"+h.tenant+"/") && strings.HasSuffix(w.ID, "/laptop") && !h.personal[w.ID] {
+				if h.personal == nil {
+					h.personal = map[string]bool{}
+				}
+				h.personal[w.ID] = true
+				return w.ID
+			}
+		}
+		if time.Now().After(deadline) {
+			h.t.Fatalf("timed out waiting for %s's personal worker", user)
 		}
 		time.Sleep(5 * time.Millisecond)
 	}

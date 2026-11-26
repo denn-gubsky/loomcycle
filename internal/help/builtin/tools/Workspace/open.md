@@ -28,11 +28,20 @@ workspace unchanged.
   Needs your grant's `workspace.durable` and the operator's
   `workspace.durable.enabled`. An open without `lifetime` never reaches a
   durable workspace: it makes an ephemeral one.
+- `root` — a folder of your user's own machine, by the name their personal
+  worker offers it under. The workspace IS that folder: the user's real
+  files, not a copy, and a command runs with the user's own rights there.
+  Needs your grant's `workspace.roots`, and the user's personal worker
+  attached. Not with `template`, `toolchain` or `lifetime: durable`.
+  `checkpoint`, `checkpoints`, `restore`, `delete_checkpoint`, `fork`,
+  `save_template` and `share` are refused on it (`not_on_root`); `release`
+  leaves the folder as it is. Not offered over loomcycle's MCP server.
 
 ## Returns
 
-`{name, state, engine, template?, egress?}`; `state` is `ready`; `egress`
-lists the routes when it has any.
+`{name, state, engine, root?, template?, egress?}`; `state` is `ready`;
+`root` names the root a workspace is on; `egress` lists the routes when it
+has any.
 
 ## Errors
 
