@@ -1257,6 +1257,9 @@ type workspaceReleaser interface {
 	Share(ctx context.Context, o lifecycle.Owner, name string, p lifecycle.Peer, access string, connect bool) (store.WorkspaceRow, error)
 	// ForkForChild makes a spawn's workspace forks for its child (RFC GW P6).
 	ForkForChild(ctx context.Context, parent lifecycle.Owner, f lifecycle.ChildFork) (store.WorkspaceRow, error)
+	// EraseDurable removes a user's durable workspaces: their erasure
+	// (RFC GW P12 ruling Q2).
+	EraseDurable(ctx context.Context, tenantID, userID string) (int, error)
 }
 
 // SetWorkspaceExposures serves the workspaces' exposed ports (RFC GW §5.3)
