@@ -354,6 +354,9 @@ func columnsSection2() schemaPlan {
 		// The routes a workspace may send requests out through (RFC GW
 		// P4); none for every row before. Mirrors postgres 0140.
 		`ALTER TABLE workspaces ADD COLUMN egress TEXT NOT NULL DEFAULT '[]'`,
+		// The user's folder a workspace is, on a personal worker (RFC GW
+		// P13); none for every row before. Mirrors postgres 0144.
+		`ALTER TABLE workspaces ADD COLUMN root TEXT NOT NULL DEFAULT ''`,
 	}}
 }
 
