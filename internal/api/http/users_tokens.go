@@ -89,6 +89,39 @@ type mintUserTokenRequest struct {
 	// default (LOOMCYCLE_TOKEN_AUTHORITY_INHERIT). Either way the ceiling is
 	// the user's own access_mode grant — it names no scope.
 	Authority string `json:"authority,omitempty"`
+	// Purpose "personal_worker" mints the user's personal worker token
+	// instead (RFC GW §4.5, P13): exactly [workers:attach] marked
+	// worker_personal, frozen, bound to the user. Only ttl_seconds and name
+	// may go with it. Empty is a person's token as before.
+	Purpose string `json:"purpose,omitempty"`
+}
+
+// purposePersonalWorker is the mint request's purpose for a personal worker
+// token.
+const purposePersonalWorker = "personal_worker"
+
+// personalWorkerNameSuffix ends a personal worker token's derived name, so
+// the user's token list tells it from their sign-in tokens.
+const personalWorkerNameSuffix = "-worker"
+
+// checkPersonalWorker refuses a personal worker mint the request does not
+// fit: only ttl_seconds and name ride with it, since everything else of a
+// person's token (agents, overrides, retention, authority, max_active)
+// narrows or bounds runs, which a worker token never starts.
+func (r mintUserTokenRequest) checkPersonalWorker() error {
+	if r.Agents != nil || len(r.Surfaces) > 0 || r.Overrides != nil || r.Rate != nil ||
+		r.Retention != "" || r.Authority != "" || r.MaxActive != nil {
+		return errors.New("a personal worker token takes only ttl_seconds and name")
+	}
+	return nil
+}
+
+// isPersonalWorkerToken reports whether row is a personal worker token. A
+// record that does not parse is not one: the row is then judged as it was
+// before the marker existed.
+func isPersonalWorkerToken(row store.OperatorTokenDefRow) bool {
+	r, err := auth.ParseRestrictions(row.RestrictionsJSON)
+	return err == nil && r.WorkerPersonal
 }
 
 // storedAuthority is the authority column value a mint writes: "" for frozen
@@ -383,6 +416,12 @@ func isDelegatedUserToken(row store.OperatorTokenDefRow, tenant, subject string)
 	if row.TenantID != tenant || row.Subject != subject {
 		return false
 	}
+	// A personal worker token (RFC GW P13) is the user's too, so it goes
+	// with them on a disable, a deletion and an erasure, though its one
+	// scope is single-purpose.
+	if isPersonalWorkerToken(row) {
+		return true
+	}
 	return !auth.HasScope(row.AllowedScopes, auth.ScopeAdmin) &&
 		!auth.HasScope(row.AllowedScopes, auth.ScopeTenant) &&
 		!auth.HoldsSinglePurposeScope(row.AllowedScopes)
@@ -405,7 +444,9 @@ func (s *Server) retireUserTokensBeyond(ctx context.Context, tenant, subject str
 	}
 	var active []store.OperatorTokenDefRow
 	for _, row := range rows {
-		if isDelegatedUserToken(row, tenant, subject) && tokenActive(row) {
+		// A personal worker token is not one of the user's sign-ins:
+		// max_active bounds those and never retires a worker.
+		if isDelegatedUserToken(row, tenant, subject) && tokenActive(row) && !isPersonalWorkerToken(row) {
 			active = append(active, row)
 		}
 	}
@@ -525,12 +566,39 @@ func (s *Server) handleMintUserToken(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "invalid_body", "invalid request body: "+err.Error())
 		return
 	}
+	personal := req.Purpose == purposePersonalWorker
+	if req.Purpose != "" && !personal {
+		writeJSONError(w, http.StatusBadRequest, "invalid_purpose", "purpose must be "+purposePersonalWorker+" or absent")
+		return
+	}
+	if personal {
+		// The route holds this mint to a tenant operator; so does the
+		// handler, so a route-table mistake cannot hand a member a worker.
+		if p, ok := auth.PrincipalFromContext(r.Context()); !ok || !auth.HasScope(p.Scopes, auth.ScopeTenant) {
+			writeJSONError(w, http.StatusForbidden, "tenant_operator_required",
+				"a personal worker token is minted by a tenant operator or an admin")
+			return
+		}
+		// Read live: turning the setting off stops new mints at once.
+		if !s.PersonalWorkersOn() {
+			writeJSONError(w, http.StatusForbidden, "personal_workers_off",
+				"personal workers are off on this server (workspace.personal_workers)")
+			return
+		}
+		if err := req.checkPersonalWorker(); err != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid_body", err.Error())
+			return
+		}
+	}
 	lifetime, err := s.userTokenLifetime(req.TTLSeconds)
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid_ttl", err.Error())
 		return
 	}
 	name := deriveTokenName(subject)
+	if personal {
+		name = name[:min(len(name), 64-len(personalWorkerNameSuffix))] + personalWorkerNameSuffix
+	}
 	if req.Name != "" {
 		if !userTokenLabelRe.MatchString(req.Name) {
 			writeJSONError(w, http.StatusBadRequest, "invalid_name", "name must match [a-zA-Z0-9_-]{1,62}")
@@ -547,15 +615,25 @@ func (s *Server) handleMintUserToken(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "invalid_authority", err.Error())
 		return
 	}
+	if personal {
+		// FROZEN at [workers:attach] (D-P13-10): the user's access mode,
+		// and the deployment's inherit default, never reach it.
+		authority = ""
+	}
 	restrictions, err := req.restrictions()
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid_restrictions", err.Error())
 		return
 	}
+	if personal {
+		// The marker alone: it is the token's own, never the minter's
+		// (Within), and a worker token starts no run to narrow.
+		restrictions = auth.Restrictions{WorkerPersonal: true}
+	}
 	// Held to the minting token's own restrictions, the stricter of each, as
 	// its lifetime is held to the minter's (boundByMinter): a no-trace or
 	// rate-limited operator token must not mint itself a way out.
-	if p, ok := auth.PrincipalFromContext(r.Context()); ok {
+	if p, ok := auth.PrincipalFromContext(r.Context()); ok && !personal {
 		if restrictions, err = restrictions.Within(p.Restrictions); err != nil {
 			writeJSONError(w, http.StatusBadRequest, "invalid_restrictions", err.Error())
 			return
@@ -565,6 +643,12 @@ func (s *Server) handleMintUserToken(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "mint_failed", err.Error())
 		return
+	}
+	if personal {
+		if err := restrictions.CheckScopes([]string{auth.ScopeWorkersAttach}); err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "mint_failed", err.Error())
+			return
+		}
 	}
 
 	// The target must be a registered member of THIS tenant. A cross-tenant (or
@@ -587,6 +671,11 @@ func (s *Server) handleMintUserToken(w http.ResponseWriter, r *http.Request) {
 
 	// Scopes are DERIVED from the member's access_mode, never from the request.
 	scopes, err := auth.GrantableUserScopes(user.AccessMode)
+	if personal {
+		// Not derived: a worker token's one scope, whatever the user's mode
+		// (an isolated member may have a personal worker, owner ruling Q4).
+		scopes, err = []string{auth.ScopeWorkersAttach}, nil
+	}
 	if err != nil {
 		// access_mode is enum-validated on every write, so reaching here is a
 		// store invariant break, not a client error — fail closed (500), never

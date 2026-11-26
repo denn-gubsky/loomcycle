@@ -42,6 +42,14 @@ func (s *Server) LegacyTokenSet() bool {
 	return s.cfg().Env.AuthToken != ""
 }
 
+// PersonalWorkersOn reports whether the CURRENT config turns
+// workspace.personal_workers on. The token tool reads it at each
+// worker_personal create, so a reload that turns it off stops new mints.
+func (s *Server) PersonalWorkersOn() bool {
+	c := s.cfg()
+	return c != nil && c.Workspace.PersonalWorkers
+}
+
 // refuseReloadLosingAuth refuses a config reload that would take away what the
 // running server authenticates with:
 //
