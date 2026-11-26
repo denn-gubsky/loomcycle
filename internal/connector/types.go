@@ -1686,6 +1686,50 @@ type OntologyJobResult struct {
 	Job    *OntologyJobStatus `json:"job"`
 }
 
+// ApplyOntologyRollbackRequest applies the plan of rolling the tenant ontology back
+// to release Seq (RFC GQ P5.7): PlanFingerprint is the fingerprint of the plan of
+// {op: release, seq}, which the rollback computes again and refuses unless it is
+// the same. Tenant: only an admin may name one.
+type ApplyOntologyRollbackRequest struct {
+	Tenant          string `json:"tenant,omitempty"`
+	Seq             int64  `json:"seq"`
+	PlanFingerprint string `json:"plan_fingerprint"`
+}
+
+// OntologyRollbackStep is one write a rollback made: the op, the entry's chunk id
+// and name.
+type OntologyRollbackStep struct {
+	Op    string `json:"op"`
+	Entry string `json:"entry"`
+	Name  string `json:"name"`
+	// NewID is the chunk an entry added back was written as (ruling Q6).
+	NewID string `json:"new_id,omitempty"`
+}
+
+// OntologyRollbackReport says what rolling the ontology back to a release did.
+type OntologyRollbackReport struct {
+	Release int64 `json:"release"`
+	// ReleaseContentVersion is what the release declared; ContentVersion what the
+	// ontology in force declares after the rollback. Matches is their equality.
+	ReleaseContentVersion string                 `json:"release_content_version"`
+	ContentVersion        string                 `json:"content_version"`
+	Matches               bool                   `json:"matches"`
+	Risk                  string                 `json:"risk"`
+	Applied               []OntologyRollbackStep `json:"applied"`
+	// RenameJobs are the class-rename jobs the rollback's renames started.
+	RenameJobs []OntologyJobStatus `json:"rename_jobs,omitempty"`
+	// RollbackRelease is the release taken of the ontology the rollback left.
+	RollbackRelease int64    `json:"rollback_release,omitempty"`
+	Notes           []string `json:"notes,omitempty"`
+	Warnings        []string `json:"warnings,omitempty"`
+}
+
+// ApplyOntologyRollbackResult is an applied rollback.
+type ApplyOntologyRollbackResult struct {
+	Tenant   string                 `json:"tenant"`
+	Rollback OntologyRollbackReport `json:"rollback"`
+}
+
 // PlanOntologyResult is a plan. It wrote nothing. Fingerprint identifies the
 // ontology it was computed against (a later change that destroys or stales
 // will be asked for it). Issues are the advisories of the ontology as it would
