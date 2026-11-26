@@ -25,9 +25,10 @@ import { App, ExpressAdapter } from "@microsoft/teams.apps";
 
 import { parseCardAction, renderCard } from "./cards.js";
 import type { TeamsConfig } from "./config.js";
+import { attachmentsSummary, dumpFields } from "./dump.js";
 import { groupsOf, identify, uninstalledSub } from "./identity.js";
 import { routeMessage, seenOf } from "./inbound.js";
-import { teamsFilePort, teamsVoicePort } from "./voice.js";
+import { filesOf, teamsFilePort, teamsVoicePort } from "./voice.js";
 
 const ADAPTIVE_CARD = "application/vnd.microsoft.card.adaptive";
 
@@ -163,9 +164,32 @@ export function createTeamsBridge(cfg: TeamsConfig, opts: TeamsBridgeOptions = {
     // uses it only with BRIDGE_FILES=1.
     files: teamsFilePort({ hosts: cfg.fileHosts, fetch: opts.fileFetch, log: opts.logger ?? consoleLogger }),
     async start(ctx) {
+      if (cfg.dumpActivities) {
+        // Registered first, so it sees every activity that passed the SDK's
+        // request check, whatever its type, before any handler runs.
+        app.use(async ({ activity, next }) => {
+          ctx.log.info("teams activity", dumpFields(activity as never));
+          return next();
+        });
+        ctx.log.warn("TEAMS_BRIDGE_DUMP_ACTIVITIES is on: every inbound activity is logged, what people write included");
+      }
       app.on("message", async ({ activity, ref }) => {
         // Card submits from older clients arrive as messages with no text.
         const text = stripMentionsText(activity) ?? "";
+        // A message whose attachments held no file a bot can download (only
+        // file.download.info is one) is logged, by count and content type,
+        // when it looks like a file the bot never got: no text beside it, or
+        // an attachment other than the text/html body Teams adds to a
+        // formatted message. A plain message is not logged.
+        const atts = activity.attachments ?? [];
+        const unread = atts.some((a) => !(a.contentType ?? "").toLowerCase().startsWith("text/html"));
+        if (atts.length > 0 && filesOf(atts, false).length === 0 && (unread || !text.trim())) {
+          ctx.log.info("teams message carried no file", {
+            conversation: activity.conversation?.id,
+            conversationType: activity.conversation?.conversationType,
+            ...attachmentsSummary(activity.attachments),
+          });
+        }
         await routeMessage(
           ctx.router,
           identify(activity, cfg.allowedTenants, gate),

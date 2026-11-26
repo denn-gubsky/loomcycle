@@ -80,6 +80,8 @@ const (
 	Loomcycle_PlanOntology_FullMethodName         = "/loomcycle.v1.Loomcycle/PlanOntology"
 	Loomcycle_ListOntologyReleases_FullMethodName = "/loomcycle.v1.Loomcycle/ListOntologyReleases"
 	Loomcycle_DiffOntologyReleases_FullMethodName = "/loomcycle.v1.Loomcycle/DiffOntologyReleases"
+	Loomcycle_GetOntologyJob_FullMethodName       = "/loomcycle.v1.Loomcycle/GetOntologyJob"
+	Loomcycle_ResumeOntologyJob_FullMethodName    = "/loomcycle.v1.Loomcycle/ResumeOntologyJob"
 	Loomcycle_ListReviewQueue_FullMethodName      = "/loomcycle.v1.Loomcycle/ListReviewQueue"
 	Loomcycle_RuleStatements_FullMethodName       = "/loomcycle.v1.Loomcycle/RuleStatements"
 	Loomcycle_RevertRuling_FullMethodName         = "/loomcycle.v1.Loomcycle/RevertRuling"
@@ -472,6 +474,31 @@ type LoomcycleClient interface {
 	//
 	// Mirrors GET /v1/_ontology/releases/diff.
 	DiffOntologyReleases(ctx context.Context, in *DiffOntologyReleasesRequest, opts ...grpc.CallOption) (*DiffOntologyReleasesResponse, error)
+	// GetOntologyJob reads the tenant's ontology job — the class rename or
+	// concept re-tag carrying a change through the stored rows of the tenant
+	// scope and every user and agent scope: the unfinished one, else the one
+	// updated last; job is absent when the tenant never had one. It writes
+	// nothing.
+	//
+	// Operator-only, as PlanOntology: the job rewrites rows in every scope of
+	// the tenant. An admin may name another tenant. A refusal carries a
+	// google.rpc.ErrorInfo whose reason is the code HTTP returns (forbidden,
+	// unavailable).
+	//
+	// Mirrors GET /v1/_ontology/job.
+	GetOntologyJob(ctx context.Context, in *GetOntologyJobRequest, opts ...grpc.CallOption) (*OntologyJobResponse, error)
+	// ResumeOntologyJob gives the tenant's unfinished ontology job one slice of
+	// work under the ontology rename lease, from the scope and step it is at,
+	// as the next class rename or concept move would; a job whose change never
+	// reached the ontology is marked abandoned. Answers with the job as the
+	// slice left it.
+	//
+	// Operator-only, as GetOntologyJob. A refusal carries a google.rpc.ErrorInfo
+	// whose reason is the code HTTP returns (job_not_found, job_busy,
+	// forbidden, unavailable).
+	//
+	// Mirrors POST /v1/_ontology/job/resume.
+	ResumeOntologyJob(ctx context.Context, in *ResumeOntologyJobRequest, opts ...grpc.CallOption) (*OntologyJobResponse, error)
 	// ListReviewQueue lists a document scope's statements awaiting review
 	// (proposed unless the filter names another status), narrowed by the queue
 	// filters, newest first; or, with summarize, their counts grouped by kind,
@@ -1350,6 +1377,26 @@ func (c *loomcycleClient) DiffOntologyReleases(ctx context.Context, in *DiffOnto
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(DiffOntologyReleasesResponse)
 	err := c.cc.Invoke(ctx, Loomcycle_DiffOntologyReleases_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomcycleClient) GetOntologyJob(ctx context.Context, in *GetOntologyJobRequest, opts ...grpc.CallOption) (*OntologyJobResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(OntologyJobResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_GetOntologyJob_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomcycleClient) ResumeOntologyJob(ctx context.Context, in *ResumeOntologyJobRequest, opts ...grpc.CallOption) (*OntologyJobResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(OntologyJobResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_ResumeOntologyJob_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -2268,6 +2315,31 @@ type LoomcycleServer interface {
 	//
 	// Mirrors GET /v1/_ontology/releases/diff.
 	DiffOntologyReleases(context.Context, *DiffOntologyReleasesRequest) (*DiffOntologyReleasesResponse, error)
+	// GetOntologyJob reads the tenant's ontology job — the class rename or
+	// concept re-tag carrying a change through the stored rows of the tenant
+	// scope and every user and agent scope: the unfinished one, else the one
+	// updated last; job is absent when the tenant never had one. It writes
+	// nothing.
+	//
+	// Operator-only, as PlanOntology: the job rewrites rows in every scope of
+	// the tenant. An admin may name another tenant. A refusal carries a
+	// google.rpc.ErrorInfo whose reason is the code HTTP returns (forbidden,
+	// unavailable).
+	//
+	// Mirrors GET /v1/_ontology/job.
+	GetOntologyJob(context.Context, *GetOntologyJobRequest) (*OntologyJobResponse, error)
+	// ResumeOntologyJob gives the tenant's unfinished ontology job one slice of
+	// work under the ontology rename lease, from the scope and step it is at,
+	// as the next class rename or concept move would; a job whose change never
+	// reached the ontology is marked abandoned. Answers with the job as the
+	// slice left it.
+	//
+	// Operator-only, as GetOntologyJob. A refusal carries a google.rpc.ErrorInfo
+	// whose reason is the code HTTP returns (job_not_found, job_busy,
+	// forbidden, unavailable).
+	//
+	// Mirrors POST /v1/_ontology/job/resume.
+	ResumeOntologyJob(context.Context, *ResumeOntologyJobRequest) (*OntologyJobResponse, error)
 	// ListReviewQueue lists a document scope's statements awaiting review
 	// (proposed unless the filter names another status), narrowed by the queue
 	// filters, newest first; or, with summarize, their counts grouped by kind,
@@ -2818,6 +2890,12 @@ func (UnimplementedLoomcycleServer) ListOntologyReleases(context.Context, *ListO
 }
 func (UnimplementedLoomcycleServer) DiffOntologyReleases(context.Context, *DiffOntologyReleasesRequest) (*DiffOntologyReleasesResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DiffOntologyReleases not implemented")
+}
+func (UnimplementedLoomcycleServer) GetOntologyJob(context.Context, *GetOntologyJobRequest) (*OntologyJobResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetOntologyJob not implemented")
+}
+func (UnimplementedLoomcycleServer) ResumeOntologyJob(context.Context, *ResumeOntologyJobRequest) (*OntologyJobResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ResumeOntologyJob not implemented")
 }
 func (UnimplementedLoomcycleServer) ListReviewQueue(context.Context, *ListReviewQueueRequest) (*ListReviewQueueResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListReviewQueue not implemented")
@@ -3724,6 +3802,42 @@ func _Loomcycle_DiffOntologyReleases_Handler(srv interface{}, ctx context.Contex
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(LoomcycleServer).DiffOntologyReleases(ctx, req.(*DiffOntologyReleasesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Loomcycle_GetOntologyJob_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetOntologyJobRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).GetOntologyJob(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_GetOntologyJob_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).GetOntologyJob(ctx, req.(*GetOntologyJobRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Loomcycle_ResumeOntologyJob_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ResumeOntologyJobRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).ResumeOntologyJob(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_ResumeOntologyJob_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).ResumeOntologyJob(ctx, req.(*ResumeOntologyJobRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -4901,6 +5015,14 @@ var Loomcycle_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DiffOntologyReleases",
 			Handler:    _Loomcycle_DiffOntologyReleases_Handler,
+		},
+		{
+			MethodName: "GetOntologyJob",
+			Handler:    _Loomcycle_GetOntologyJob_Handler,
+		},
+		{
+			MethodName: "ResumeOntologyJob",
+			Handler:    _Loomcycle_ResumeOntologyJob_Handler,
 		},
 		{
 			MethodName: "ListReviewQueue",

@@ -72,6 +72,11 @@ Present when they apply:
   you write (`method: rule:<name>`; a code agent only); `judge`; `link`, your
   tenant-scope `link_chunks` is asserted rather than filed for review;
   `remember`, you may call Document `remember`. Absent means none.
+- `deprecations` — `[{name, replacement}]`: each tool or field you were given
+  that a future release removes (`Bash`, `Bashbox`, the `mcp__sandbox__`
+  tools, `shell_credentials`) and what replaces it. When it is present, prefer
+  the replacement (usually the `Workspace` tool) where you hold it. Absent
+  means none.
 - `self_names` — the names the end-user declared for themselves.
 - `principal` — the credential this run acts under: `tenant_id`, `subject`,
   `scopes`, `is_admin`, `legacy`, `token_def_id`, `token_suffix`. Never the

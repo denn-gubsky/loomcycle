@@ -43,15 +43,19 @@ import {
   deleteOntologyEntry,
   diffOntologyReleases,
   getOntology,
+  getOntologyJob,
   getOntologyRelease,
   listOntologyReleases,
+  OntologyJobStatus,
   planOntologyChanges,
+  resumeOntologyJob,
   planOntologyRetire,
   retireOntologyEntry,
   resolveOntologyProposal,
   setOntologyStatus,
 } from "../api";
 import { applyWithPlan, retireWithPlan } from "../lib/ontologyRetirePlan";
+import { jobProgress, jobStateLabel, jobTitle, jobUnfinished } from "../lib/ontologyJob";
 
 // The ontology page (/ontology): the tenant ontology's confirm gate and the
 // layered result, one section per tab.
@@ -705,6 +709,78 @@ function OntologyHealthTab({ state }: { state: OntologyResponse }) {
   );
 }
 
+// ─── The rename and re-tag job (RFC GQ P5.6) ─────────────────────────────────
+
+// OntologyJobPanel shows the job that carries a class rename or a concept move
+// through the tenant's stored rows: where it is, and — while it is unfinished — a
+// button that gives it its next slice, as the next rename would. Shown to an operator
+// only (the routes are an operator's); a refusal of the read hides the panel, since
+// the page itself stays readable to whoever may read it.
+function OntologyJobPanel() {
+  const [job, setJob] = useState<OntologyJobStatus | null>(null);
+  const [readFailed, setReadFailed] = useState(false);
+  const [actErr, setActErr] = useState<unknown>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    let live = true;
+    getOntologyJob().then(
+      (r) => {
+        if (live) setJob(r.job);
+      },
+      () => {
+        if (live) setReadFailed(true);
+      },
+    );
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  const resume = async () => {
+    if (!job || busy) return;
+    setBusy(true);
+    setActErr(null);
+    try {
+      setJob((await resumeOntologyJob(job.id)).job);
+    } catch (e) {
+      setActErr(e);
+      // The job may have moved on under another call: show where it is now.
+      getOntologyJob().then((r) => setJob(r.job), () => undefined);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (readFailed || !job) return null;
+  const unfinished = jobUnfinished(job);
+  const progress = jobProgress(job);
+  return (
+    <div className="settings-row ontology-job" aria-label="ontology job">
+      <div>
+        <strong>{unfinished ? "Rename job" : "Last rename job"}</strong>{" "}
+        <span className="settings-muted">{jobStateLabel(job.state)}</span>
+        <div>{jobTitle(job)}</div>
+        {progress && <div className="settings-muted">{progress}</div>}
+        {job.state === "blocked" && job.error && <div className="settings-error">{job.error}</div>}
+        {unfinished && (
+          <div className="settings-help">
+            Until it finishes, every class rename and concept move is refused; rows not yet
+            rewritten still read under the old name. Each rename also carries it on.
+          </div>
+        )}
+        {job.updated_at ? <div className="settings-muted">updated {releaseTime(job.updated_at)}</div> : null}
+        {actErr != null && <ErrorNotice error={actErr} />}
+      </div>
+      {unfinished && (
+        <button type="button" onClick={() => void resume()} disabled={busy}>
+          {busy ? "Resuming…" : "Resume"}
+        </button>
+      )}
+    </div>
+  );
+}
+
 // ─── Releases (RFC GQ P3.7) ──────────────────────────────────────────────────
 
 const RELEASES_TAB: OntologyTab = { id: "releases", label: "releases", warn: false };
@@ -1141,6 +1217,8 @@ export default function OntologySection() {
               {n}
             </p>
           ))}
+
+          {decides && <OntologyJobPanel />}
 
           {oddStatus && (
             <p className="settings-help">

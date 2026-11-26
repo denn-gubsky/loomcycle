@@ -78,7 +78,9 @@ func (s *Server) handleConfigTeams(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusInternalServerError, "store_error", err.Error())
 		return
 	}
-	writeJSONOK(w, configTeamsResponse(teams, rows, s.configTeamsLast.Load()))
+	body := configTeamsResponse(teams, rows, s.configTeamsLast.Load())
+	body["deprecations"] = deprecationsReport(s.cfg().Deprecations, s.deprecatedUse.snapshot())
+	writeJSONOK(w, body)
 }
 
 // configTeamsResponse builds the GET /v1/_config/teams body from the

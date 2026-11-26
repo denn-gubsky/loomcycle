@@ -83,6 +83,8 @@ type WorkspaceConfig struct {
 	Checkpoint WorkspaceCheckpointConfig `yaml:"checkpoint,omitempty"`
 	// Template bounds workspace templates (RFC GW §5.5).
 	Template WorkspaceTemplateConfig `yaml:"template,omitempty"`
+	// Push bounds a git workspace's push (RFC GW §6.2, P11).
+	Push WorkspacePushConfig `yaml:"push,omitempty"`
 }
 
 // WorkspaceTemplateConfig is `workspace.template`: the size of one template's
@@ -340,6 +342,7 @@ func (w WorkspaceConfig) Resolved() WorkspaceConfig {
 		w.Template.MaxPerUser = min(DefaultWorkspaceUserTemplates, w.Template.MaxPerTenant)
 	}
 	w.Egress = w.Egress.Resolved()
+	w.Push = w.Push.Resolved()
 	if w.Expose.MaxPerWorkspace == 0 {
 		w.Expose.MaxPerWorkspace = DefaultWorkspaceExposeMaxPerWorkspace
 	}
@@ -490,6 +493,9 @@ func validateWorkspace(c *Config) error {
 	if g := w.Kernel.InterruptGraceSeconds; g < 0 || g > maxWorkspaceKernelGraceS {
 		return fmt.Errorf("workspace.kernel.interrupt_grace_seconds: %d is out of range (1 to %d)", g, maxWorkspaceKernelGraceS)
 	}
+	if err := validateWorkspacePush(w.Push); err != nil {
+		return err
+	}
 	if c := w.Checkpoint.MaxPerWorkspace; c < 0 || c > maxWorkspaceCheckpoints {
 		return fmt.Errorf("workspace.checkpoint.max_per_workspace: %d is out of range (1 to %d)", c, maxWorkspaceCheckpoints)
 	}
@@ -576,6 +582,9 @@ func (w *WorkspaceConfig) UnmarshalYAML(n *yaml.Node) error {
 		return err
 	}
 	if err := strictKeys(valueOf(n, "kernel"), "workspace.kernel", nil, reflect.TypeOf(WorkspaceKernelConfig{})); err != nil {
+		return err
+	}
+	if err := strictKeys(valueOf(n, "push"), "workspace.push", nil, reflect.TypeOf(WorkspacePushConfig{})); err != nil {
 		return err
 	}
 	if err := strictKeys(valueOf(n, "checkpoint"), "workspace.checkpoint", nil, reflect.TypeOf(WorkspaceCheckpointConfig{})); err != nil {

@@ -5,6 +5,7 @@ import { NAV_ITEMS } from "../components/navItems";
 import { accessSummary, erasureGate, residueMeaning } from "../lib/erasure";
 import { countMeaning, exportMisconfigured, familyEffect } from "../lib/retention";
 import {
+  ConfigDeprecations,
   ConfigTeamsResponse,
   HealthResponse,
   MemoryOrphanReport,
@@ -876,6 +877,7 @@ function HealthSection() {
         </table>
       )}
       {teams && teams.teams.length > 0 && <ConfigTeamsTable teams={teams} />}
+      {teams?.deprecations && <DeprecationsList deprecations={teams.deprecations} />}
       <button type="button" className="ghost-btn" onClick={refresh}>
         refresh
       </button>
@@ -886,6 +888,47 @@ function HealthSection() {
 // ConfigTeamsTable lists the teams of the server's configuration (RFC GS) and
 // whether each was written into the shared tier. The boot only logs a name
 // conflict or a refused team; this is where an operator sees one later.
+// DeprecationsList shows what a future release removes that this deployment
+// still uses (RFC GW P14): the config's uses, and the runs this replica gave
+// a deprecated tool or field. Nothing when neither has any.
+function DeprecationsList({ deprecations }: { deprecations: ConfigDeprecations }) {
+  const config = deprecations.config ?? [];
+  const runs = deprecations.runs ?? [];
+  if (config.length === 0 && runs.length === 0) return null;
+  return (
+    <>
+      <h3>Deprecated</h3>
+      <p className="settings-help">
+        These will be removed in a future release. <code>docs/MIGRATING-FROM-BASH.md</code> maps each to its
+        replacement.
+      </p>
+      {config.length > 0 && (
+        <ul className="deprecations-config">
+          {config.map((line) => (
+            <li key={line}>{line}</li>
+          ))}
+        </ul>
+      )}
+      {runs.length > 0 && (
+        <table className="settings-table deprecations-runs">
+          <tbody>
+            {runs.map((r) => (
+              <tr key={r.kind + ":" + r.name}>
+                <td>
+                  <code>{r.name}</code>
+                </td>
+                <td>
+                  {r.count} {r.count === 1 ? "run" : "runs"} on this replica
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </>
+  );
+}
+
 function ConfigTeamsTable({ teams }: { teams: ConfigTeamsResponse }) {
   return (
     <>

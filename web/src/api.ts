@@ -207,10 +207,27 @@ export interface ConfigTeamStatus {
   detail?: string;
 }
 
+// One series of loomcycle_deprecated_use_total: how many runs this replica
+// gave a deprecated tool or field since it started.
+export interface DeprecatedUseCount {
+  kind: string;
+  name: string;
+  count: number;
+}
+
+// What a future release removes that this deployment still uses (RFC GW
+// P14): config is the load's lines (what boot and doctor print), runs this
+// replica's run counts, the only place a stored definition's use shows.
+export interface ConfigDeprecations {
+  config: string[];
+  runs: DeprecatedUseCount[];
+}
+
 export interface ConfigTeamsResponse {
   teams: ConfigTeamStatus[];
   reconciled_at?: string; // when this replica wrote the teams; absent on another replica
   reconcile_error?: string;
+  deprecations?: ConfigDeprecations; // absent from an older server
 }
 
 // getConfigTeams reads GET /v1/_config/teams (admin).
@@ -4098,6 +4115,55 @@ export function getOntologyRelease(seq: number): Promise<GetOntologyReleaseResul
 export function diffOntologyReleases(from: number, to: number | "current"): Promise<DiffOntologyReleasesResult> {
   const q = new URLSearchParams({ from: String(from), to: String(to) });
   return jsonFetch<DiffOntologyReleasesResult>(`/v1/_ontology/releases/diff?${q}`);
+}
+
+// ---- The ontology job (RFC GQ P5.6: GET /v1/_ontology/job, POST …/resume) ----
+//
+// The same shape as @loomcycle/client's OntologyJobStatus. An operator's read
+// and action: a member gets 403.
+
+/** A job carrying a class rename or a concept re-tag through the stored rows
+ *  of the tenant scope and every user and agent scope. */
+export interface OntologyJobStatus {
+  id: string;
+  kind: "class_rename" | "concept_retag" | string;
+  entry: string;
+  /** The old names (a class rename) or the old tags (a re-tag). */
+  from: string[];
+  /** The new name; for a re-tag the new tags joined by ", ". */
+  to: string;
+  to_tags?: string[];
+  state: "pending" | "running" | "blocked" | "done" | "abandoned" | string;
+  step?: string;
+  /** Rows rewritten so far, by step. */
+  done?: Record<string, number>;
+  /** Why a blocked job cannot go on. */
+  error?: string;
+  /** Rows still under an old name in the scope the job is at. */
+  remaining: number;
+  scope?: "tenant" | "user" | "agent" | string;
+  scopes_done?: number;
+  scopes_total?: number;
+  /** Unix nanoseconds (display only). */
+  created_at?: number;
+  updated_at?: number;
+}
+
+export interface OntologyJobResult {
+  tenant: string;
+  /** The unfinished job, else the one updated last; null when there never was one. */
+  job: OntologyJobStatus | null;
+}
+
+/** The tenant's ontology job. Writes nothing. */
+export function getOntologyJob(): Promise<OntologyJobResult> {
+  return jsonFetch<OntologyJobResult>("/v1/_ontology/job");
+}
+
+/** Give the unfinished job one slice of work; `id` refuses the resume unless that
+ *  job is still the unfinished one. */
+export function resumeOntologyJob(id?: string): Promise<OntologyJobResult> {
+  return postJSON<OntologyJobResult>("/v1/_ontology/job/resume", JSON.stringify(id ? { id } : {}));
 }
 
 // ---- Ontology subject merge (POST /v1/_ontology/subjects/merge) ----

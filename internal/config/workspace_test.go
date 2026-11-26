@@ -19,6 +19,7 @@ func TestWorkspaceConfig_AbsentIsOffAtTheDefaults(t *testing.T) {
 		Checkout: WorkspaceCheckoutConfig{MaxDocuments: 500, MaxBytes: 256 << 20}, Convert: WorkspaceConvertConfig{MemoryLimitMB: 1024},
 		Kernel: WorkspaceKernelConfig{InterruptGraceSeconds: 5}, Checkpoint: WorkspaceCheckpointConfig{MaxPerWorkspace: 8},
 		Template: WorkspaceTemplateConfig{MaxMB: 1024, MaxPerTenant: 20, MaxPerUser: 5},
+		Push:     WorkspacePushConfig{RefPrefixes: []string{"refs/heads/"}, MaxBytes: 64 << 20},
 		Egress:   WorkspaceEgressConfig{Limits: WorkspaceEgressLimits{RatePerMinute: 600, MaxBytes: 4 << 30}},
 		MCP:      WorkspaceMCPConfig{Ops: []string{"read", "write"}, IdleReleaseS: 3600, MaxLifetimeS: 86400},
 		Expose: WorkspaceExposeConfig{MaxPerWorkspace: 2, MaxConnections: 32, IdleTimeoutS: 900, RequestsPerSecond: 20, BytesPerSecond: 8 << 20,
@@ -51,6 +52,7 @@ func TestWorkspaceConfig_RemoteKeepsWhatIsWritten(t *testing.T) {
 		MCP:      WorkspaceMCPConfig{Enabled: true, Ops: []string{"read", "exec"}, IdleReleaseS: 600, MaxLifetimeS: 7200},
 		Expose: WorkspaceExposeConfig{Enabled: true, MaxPerWorkspace: 4, MaxConnections: 8, IdleTimeoutS: 60, RequestsPerSecond: 5, BytesPerSecond: 1024,
 			MaxMessageBytes: 4096, SocketLifetimeS: 600},
+		Push:    WorkspacePushConfig{RefPrefixes: []string{"refs/heads/"}, MaxBytes: 64 << 20},
 		Durable: WorkspaceDurableConfig{Enabled: true, MaxPerUser: 3}}
 	if got := cfg.Workspace.Resolved(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("resolved = %+v, want %+v", got, want)

@@ -226,6 +226,7 @@ async def test_plan_ontology():
                 "subtree": [{"chunk_id": "c2", "name": "Article", "section": "classes", "kind": "class"}],
                 "notes": ["n"],
                 "proposal": "p1",
+                "job": None,
             }
         ],
         "issues": ["i"],
@@ -402,6 +403,129 @@ async def test_ontology_release_refusal_carries_the_code_as_reason(method, rpc, 
     setattr(stub, rpc, _raise)
     client = _client(stub)
     call = client.list_ontology_releases() if method == "list" else client.diff_ontology_releases(9)
+    with pytest.raises(LoomcycleError) as ei:
+        await call
+    assert ei.value.reason == reason
+
+
+def _pb_job(**kw):
+    return pb.OntologyJobStatus(
+        id="j1", kind="concept_retag", entry="c1", to="topics/reporting/risk",
+        to_tags=["topics/reporting/risk"], state="running", step="document_tags", done={"chunk_tags": 4},
+        error="", remaining=7, scope="user", scopes_done=1, scopes_total=3,
+        created_at=1764000000123456789, updated_at=1764000000123456790,
+        **{"from": ["topics/risk"]}, **kw,
+    )
+
+
+_JOB = {
+    "id": "j1", "kind": "concept_retag", "entry": "c1", "from": ["topics/risk"], "to": "topics/reporting/risk",
+    "to_tags": ["topics/reporting/risk"], "state": "running", "step": "document_tags", "done": {"chunk_tags": 4},
+    "error": "", "remaining": 7, "scope": "user", "scopes_done": 1, "scopes_total": 3,
+    "created_at": 1764000000123456789, "updated_at": 1764000000123456790,
+}
+
+
+class _JobStub:
+    def __init__(self, job=None):
+        self.req = None
+        self.job = job
+
+    async def GetOntologyJob(self, req, metadata=None):
+        self.req = req
+        return pb.OntologyJobResponse(tenant="acme", job=self.job)
+
+    async def ResumeOntologyJob(self, req, metadata=None):
+        self.req = req
+        return pb.OntologyJobResponse(tenant="acme", job=self.job)
+
+
+@pytest.mark.asyncio
+async def test_get_ontology_job_returns_every_field_of_the_job():
+    stub = _JobStub(_pb_job())
+    got = await _client(stub).get_ontology_job(tenant="globex")
+    assert stub.req.tenant == "globex"
+    assert got == {"tenant": "acme", "job": _JOB}
+
+
+@pytest.mark.asyncio
+async def test_get_ontology_job_reads_no_job_as_none():
+    got = await _client(_JobStub()).get_ontology_job()
+    assert got == {"tenant": "acme", "job": None}
+
+
+@pytest.mark.asyncio
+async def test_resume_ontology_job_sends_the_id_and_returns_the_job():
+    stub = _JobStub(_pb_job())
+    got = await _client(stub).resume_ontology_job(id="j1", tenant="globex")
+    assert (stub.req.id, stub.req.tenant) == ("j1", "globex")
+    assert got["job"] == _JOB
+
+
+@pytest.mark.asyncio
+async def test_plan_ontology_carries_a_class_renames_job_block():
+    class _RenamePlanStub:
+        async def PlanOntology(self, req, metadata=None):
+            return pb.PlanOntologyResponse(
+                tenant="acme",
+                changes=[
+                    pb.OntologyPlannedChange(
+                        op="rename",
+                        entry=pb.OntologyPlanEntry(chunk_id="c1", name="Bulletin", section="classes", kind="class"),
+                        risk="stales",
+                        job=pb.OntologyRenameJobPlan(
+                            steps=[pb.OntologyRenameJobStep(name="documents_type", tenant_scope=2, other_scopes=5)],
+                            blocked=["the plan could not count every scope"],
+                            collisions=[pb.OntologyRenameCollision(column="identity_key", key="bulletin:a", into="circular:a", holder="c9")],
+                            collisions_total=3, collisions_other_scopes=2, scopes_not_counted=1,
+                            running=_pb_job(), notes=["n"],
+                        ),
+                    )
+                ],
+            )
+
+    got = await _client(_RenamePlanStub()).plan_ontology([{"op": "rename", "entry": "c1", "name": "Circular"}])
+    assert got["changes"][0]["job"] == {
+        "steps": [{"name": "documents_type", "tenant_scope": 2, "other_scopes": 5}],
+        "runnable": False,
+        "blocked": ["the plan could not count every scope"],
+        "collisions": [{"column": "identity_key", "key": "bulletin:a", "into": "circular:a", "holder": "c9"}],
+        "collisions_total": 3,
+        "collisions_other_scopes": 2,
+        "scopes_not_counted": 1,
+        "running": _JOB,
+        "notes": ["n"],
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("rpc", "code", "status", "reason"),
+    [
+        ("GetOntologyJob", grpc.StatusCode.PERMISSION_DENIED, 7, "forbidden"),
+        ("ResumeOntologyJob", grpc.StatusCode.NOT_FOUND, 5, "job_not_found"),
+        ("ResumeOntologyJob", grpc.StatusCode.ABORTED, 10, "job_busy"),
+        ("ResumeOntologyJob", grpc.StatusCode.UNAVAILABLE, 14, "unavailable"),
+    ],
+)
+async def test_ontology_job_refusal_carries_the_code_as_reason(rpc, code, status, reason):
+    trailing = grpc.aio.Metadata()
+    trailing.add("grpc-status-details-bin", _status_details(status, "refused", reason))
+    err = grpc.aio.AioRpcError(
+        code=code,
+        initial_metadata=grpc.aio.Metadata(),
+        trailing_metadata=trailing,
+        details="refused",
+        debug_error_string="",
+    )
+
+    async def _raise(req, metadata=None):
+        raise err
+
+    stub = type("_Refusing", (), {})()
+    setattr(stub, rpc, _raise)
+    client = _client(stub)
+    call = client.get_ontology_job() if rpc == "GetOntologyJob" else client.resume_ontology_job()
     with pytest.raises(LoomcycleError) as ei:
         await call
     assert ei.value.reason == reason

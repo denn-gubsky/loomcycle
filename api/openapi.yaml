@@ -700,6 +700,7 @@ paths:
                         notes: { type: array, items: { type: string } }
                         proposal: { type: string, description: "The proposal's chunk id when the change is one accepting it makes; absent for a direct change." }
                         release: { type: integer, description: "The release a rollback plans toward (op release), on every change it expands to; absent otherwise." }
+                        job: { $ref: "#/components/schemas/OntologyRenameJobPlan" }
                   issues: { type: array, items: { type: string } }
                   new_issues: { type: array, items: { type: string } }
                   scopes_counted: { type: integer }
@@ -791,6 +792,64 @@ paths:
           description: "`plan_required` / `plan_stale` (the body carries the current `fingerprint`), `rename_job_pending`, `entry_locked`, or `partially_applied` (the body's `applied` lists the writes made before one was refused)."
         "422": { description: "`invalid_request`: a write of the rollback was refused before anything was written." }
         "503": { description: "`unavailable`: no SQL Memory on this server, or the ontology moved while the rollback was planned." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /v1/_ontology/job:
+    get:
+      tags: [documents]
+      summary: Read the tenant's ontology job.
+      description: |
+        A class rename something rests on, and a concept rename or move that moves
+        a tag, start a job that carries the change through the stored rows of the
+        tenant scope and every user and agent scope (RFC GQ P5). Each ontology
+        write that moves a name or a tag first gives an unfinished job a slice;
+        this reads where the job is. Returns the unfinished job, else the one
+        updated last, else `job: null`. Reads only. For a tenant operator
+        (`substrate:tenant`, its own tenant) or an admin (`?tenant=` focuses
+        another).
+      operationId: getOntologyJob
+      parameters:
+        - { $ref: "#/components/parameters/OntologyReleaseTenant" }
+      responses:
+        "200":
+          description: The job.
+          content: { application/json: { schema: { $ref: "#/components/schemas/OntologyJobResult" } } }
+        "403": { description: "`forbidden`: not an admin or a tenant operator." }
+        "503": { description: "`unavailable`: no SQL Memory on this server." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /v1/_ontology/job/resume:
+    post:
+      tags: [documents]
+      summary: Give the tenant's unfinished ontology job a slice of work.
+      description: |
+        Runs the unfinished job for one slice (about 20 seconds) under the
+        ontology rename lease, from the scope and step it is at, exactly as the
+        next class rename or concept move would before its own change. A job
+        whose change never reached the ontology is marked `abandoned`. Answers
+        with the job as the slice left it; call again while it is unfinished. For
+        a tenant operator or an admin, as the status read.
+      operationId: resumeOntologyJob
+      parameters:
+        - { $ref: "#/components/parameters/OntologyReleaseTenant" }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                id: { type: string, description: "The job's id from the status read: the resume is refused (job_not_found) unless that job is the one still unfinished." }
+      responses:
+        "200":
+          description: The job after its slice.
+          content: { application/json: { schema: { $ref: "#/components/schemas/OntologyJobResult" } } }
+        "400":
+          description: "`invalid_body`: not JSON, or an unknown field."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "403": { description: "`forbidden`: not an admin or a tenant operator." }
+        "404": { description: "`job_not_found`: no unfinished job, or not the one `id` names." }
+        "409": { description: "`job_busy`: a class rename or concept move is being checked or carried out right now." }
+        "503": { description: "`unavailable`: no SQL Memory on this server." }
         "401": { $ref: "#/components/responses/Unauthorized" }
   /v1/_ontology/releases:
     get:
@@ -3029,6 +3088,65 @@ components:
         actor: { type: string }
         created_at: { type: integer, description: Unix nanoseconds. }
         entries: { type: integer, description: How many chunks of the ontology document it copied. }
+    OntologyJob:
+      description: |
+        A job carrying an ontology change through stored rows (RFC GQ P5): a class
+        rename (`class_rename`) or a concept re-tag (`concept_retag`). It walks the
+        tenant scope, then every user and agent scope of the tenant, step by step.
+      type: object
+      properties:
+        id: { type: string }
+        kind: { type: string, enum: [class_rename, concept_retag] }
+        entry: { type: string, description: "The renamed or moved entry's chunk id." }
+        from: { type: array, items: { type: string }, description: "The old names (a class rename) or the old tags (a re-tag)." }
+        to: { type: string, description: "The new name; for a re-tag the new tags joined by \", \"." }
+        to_tags: { type: array, items: { type: string }, description: "A re-tag's new tags, index-aligned with from." }
+        state: { type: string, enum: [pending, running, blocked, done, abandoned] }
+        step: { type: string, description: "The step it is at; absent once done." }
+        done: { type: object, additionalProperties: { type: integer }, description: Rows rewritten so far, by step. }
+        error: { type: string, description: "Why a blocked job cannot go on. In a user or agent scope it names only the kind of scope and the step." }
+        remaining: { type: integer, description: "Rows still under an old name in the scope the job is at." }
+        scope: { type: string, enum: [tenant, user, agent], description: The kind of scope the job is at. }
+        scopes_done: { type: integer }
+        scopes_total: { type: integer, description: "The scopes the job walks; set by the status read and the resume." }
+        created_at: { type: integer, description: "Unix nanoseconds; set by the status read and the resume." }
+        updated_at: { type: integer, description: "Unix nanoseconds; set by the status read and the resume." }
+    OntologyJobResult:
+      type: object
+      properties:
+        tenant: { type: string }
+        job:
+          description: The unfinished job, else the one updated last; null when the tenant never had one.
+          oneOf: [{ $ref: "#/components/schemas/OntologyJob" }, { type: "null" }]
+    OntologyRenameJobPlan:
+      description: What the class-rename job would do for a rename of a class something rests on; absent for every other change.
+      type: object
+      properties:
+        steps:
+          type: array
+          items:
+            type: object
+            properties:
+              name: { type: string }
+              tenant_scope: { type: integer }
+              other_scopes: { type: integer }
+        runnable: { type: boolean }
+        blocked: { type: array, items: { type: string }, description: "Why the job cannot carry the rename (rename_job_pending)." }
+        collisions:
+          type: array
+          description: "Stored keys that would collide under the new name (rename_identity_collision): the tenant scope's first five."
+          items:
+            type: object
+            properties:
+              column: { type: string, enum: [identity_key, natural_key] }
+              key: { type: string }
+              into: { type: string }
+              holder: { type: string }
+        collisions_total: { type: integer }
+        collisions_other_scopes: { type: integer, description: Counted in user and agent scopes, never listed. }
+        scopes_not_counted: { type: integer }
+        running: { $ref: "#/components/schemas/OntologyJob" }
+        notes: { type: array, items: { type: string } }
     OntologyDiffSide:
       type: object
       properties:
