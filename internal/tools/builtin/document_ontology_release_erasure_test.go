@@ -2,6 +2,7 @@ package builtin
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -159,6 +160,43 @@ func TestReleaseErasure_DiffReportsTheEntryAsErased(t *testing.T) {
 		}
 		if len(exp.direct)+len(exp.fixed) != 0 {
 			t.Errorf("the rollback plans %+v %+v, want nothing", exp.direct, exp.fixed)
+		}
+	})
+}
+
+// TestReleaseErasure_ACandidateTheReleaseCannotClassifyIsRedacted: a copy cut off
+// before it completed cannot be parsed (no reader lists it), so nothing shows what its
+// entries are. Acme's entry in it holds Acme's text all the same, and is redacted with
+// the complete releases' copies; Globex's beside it stays.
+func TestReleaseErasure_ACandidateTheReleaseCannotClassifyIsRedacted(t *testing.T) {
+	statementsBothTiers(t, func(t *testing.T, d *Document, base context.Context) {
+		f, bound := releaseErasureFixture(t, d, base)
+		acme := f.chunk("Acme")
+		cut := errors.New("cut off")
+		d.afterReleaseBatch = func() error { return cut }
+		if _, err := d.TakeOntologyRelease(f.ctx, OntologyReleaseApply, nil); !errors.Is(err, cut) {
+			t.Fatalf("take = %v, want the cut", err)
+		}
+		d.afterReleaseBatch = nil
+		const incomplete = `SELECT count(*) FROM ontology_release_entries e JOIN ontology_releases r ON r.seq = e.release_seq
+			WHERE r.complete = 0 AND e.title = ?`
+		if releaseCount(t, d, f.ctx, incomplete, "Acme") != 1 {
+			t.Fatal("the cut copy holds no entry of Acme; the test does not reach the state it is for")
+		}
+
+		got, err := d.EraseSubjectsFromReleases(f.ctx, bound, false)
+		if err != nil {
+			t.Fatalf("erase: %v", err)
+		}
+		if got.Entries != 4 {
+			t.Errorf("erasure = %+v, want Acme's 3 complete copies and the cut one", got)
+		}
+		if n := releaseCount(t, d, f.ctx, incomplete+` AND e.chunk_id = ? AND e.body_sha = ?`,
+			releaseErasedTitle, acme, releaseErasedSHA); n != 1 {
+			t.Error("Acme's entry in the cut copy is not erased")
+		}
+		if n := releaseCount(t, d, f.ctx, incomplete, "Globex"); n != 1 {
+			t.Error("Globex's entry in the cut copy did not stay")
 		}
 	})
 }

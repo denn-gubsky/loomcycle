@@ -188,6 +188,8 @@ type loadedRelease struct {
 	orphans int
 	// erased names the entries a subject erasure redacted (release_erasure.go).
 	erased map[string]bool
+	// structural names the chunks that are no entry: the root and section headers.
+	structural map[string]bool
 	// body reads one chunk's body and fields from the release.
 	body func(id string) (chunkBody, error)
 }
@@ -267,7 +269,23 @@ func (d *Document) loadRelease(ctx context.Context, key sqlmem.ScopeKey, seq int
 	rel.body = src.body
 	read, treeParent := parseOntology(src, nil)
 	rel.items, rel.partial = diffItems(read, treeParent), read.partial
+	// What the release shows is not an entry at all: its root and section headers.
+	rel.structural = map[string]bool{src.rootID: true}
+	for _, id := range read.SectionChunks {
+		rel.structural[id] = true
+	}
 	return rel, nil
+}
+
+// notAnInstance reports whether the release shows chunk id to be something other than
+// an instance entry: an entry of another kind, a section header or the root. An entry
+// the reader did not place (under an uncopied proposal or an erased entry, past a
+// partial read) is not shown to be anything, and reports false.
+func (r *loadedRelease) notAnInstance(id string) bool {
+	if it, ok := r.items[id]; ok {
+		return it.kind != planKindInstance
+	}
+	return r.structural[id]
 }
 
 // diffItem is one in-force entry of a side, as compared.

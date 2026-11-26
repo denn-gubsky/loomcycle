@@ -24,9 +24,10 @@ package builtin
 // as a change, and a rollback leaves it as it is.
 //
 // Matched by the rule the plan sets (3.2): the entry's fields.registry_key is a bound
-// subject's natural key, or its chunk id is the instance chunk the subject records; and
-// either way only an entry its release's reader parses as an instance (a subject root's
-// fields are not runtime-only, so an instance_chunk naming a class must not erase it). Not
+// subject's natural key, or its chunk id is the instance chunk the subject records;
+// either way never an entry its release shows to be something else (a subject root's
+// fields are not runtime-only, so an instance_chunk naming a class must not erase it),
+// while an entry the release cannot classify is redacted (instanceEntriesOnly). Not
 // reached, and reported: a release's plan_summary (the accept or rollback report it was
 // taken with) may name the entry and is not rewritten; another entry whose own text names
 // the subject is that entry's, and stays; and a subject deleted before the erasure is no
@@ -246,32 +247,36 @@ func (d *Document) releaseEntriesOf(ctx context.Context, key sqlmem.ScopeKey, ke
 	return out, nil
 }
 
-// instanceEntriesOnly keeps the candidates that are instance entries of their release,
-// as the reader parses it. The chunk ids come from a subject root's
-// fields.instance_chunk, which is not runtime-only, and a key may sit in any entry's
-// fields; neither may redact a class, a concept or a section of a release. A release
-// that cannot be read (incomplete, its copy cut off, which the next release removes)
-// is not redacted.
+// instanceEntriesOnly drops the candidates their release positively shows are not
+// instance entries: a class, grammar, relation, scheme or concept, a section header or
+// the root, as the release's reader parses it. The chunk ids come from a subject
+// root's fields.instance_chunk, which is not runtime-only, and a key may sit in any
+// entry's fields; neither may redact what the release shows to be something else.
+//
+// Every other candidate is kept and redacted, so a doubt never spares the subject's
+// text: an entry the reader does not place (under an uncopied proposal, past a partial
+// read) and every candidate of a release the reader cannot load (an incomplete copy,
+// cut off before it completed and not yet removed by the next release). No stored
+// column names an entry's kind (the chunk type is not it), so the parse is the record.
 func (d *Document) instanceEntriesOnly(ctx context.Context, key sqlmem.ScopeKey, candidates []releaseMatch) ([]releaseMatch, error) {
-	kinds := map[int64]map[string]diffItem{}
+	rels := map[int64]*loadedRelease{}
 	var out []releaseMatch
 	for _, m := range candidates {
-		items, ok := kinds[m.seq]
+		rel, ok := rels[m.seq]
 		if !ok {
-			rel, err := d.loadRelease(ctx, key, m.seq)
+			var err error
+			rel, err = d.loadRelease(ctx, key, m.seq)
 			if errors.Is(err, connector.ErrOntologyReleaseNotFound) {
-				kinds[m.seq] = nil
-				continue
-			}
-			if err != nil {
+				rel = nil // incomplete: nothing is shown, so nothing is excluded
+			} else if err != nil {
 				return nil, err
 			}
-			items = rel.items
-			kinds[m.seq] = items
+			rels[m.seq] = rel
 		}
-		if items[m.chunkID].kind == planKindInstance {
-			out = append(out, m)
+		if rel != nil && rel.notAnInstance(m.chunkID) {
+			continue
 		}
+		out = append(out, m)
 	}
 	return out, nil
 }
