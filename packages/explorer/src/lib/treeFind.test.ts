@@ -3,7 +3,7 @@ import type { PathEntry } from "../types";
 import type { DocSummary } from "./colorScheme";
 import type { DirListing } from "./lazyPathTree";
 import { buildLazyTree } from "../components/PathTree";
-import { autoOpen, coverageLabel, filterTree, findCoverage, lsFilters, searchListed } from "./treeFind";
+import { autoOpen, coverageLabel, filterChoices, filterTree, findCoverage, lsFilters, searchListed } from "./treeFind";
 
 const dir = (full_path: string): PathEntry => ({
   name: full_path.slice(full_path.lastIndexOf("/") + 1),
@@ -58,10 +58,21 @@ describe("treeFind", () => {
     expect(coverageLabel("filter", "subtree")).toBe("filtering the whole tree");
   });
 
+  it("TestFilterChoices_UnitesTreesSeedsStatusesAndLeavesOutAnnotation", () => {
+    const other = buildLazyTree(new Map([["", listing([doc("/x", "x"), doc("/y/_annotation", "ann2")])]]));
+    const sums = new Map(summaries);
+    sums.set("x", { document_id: "x", title: "X", type: "Spec", status: "wip", color_enabled: false });
+    sums.set("ann2", { document_id: "ann2", title: "y", type: "Annotation", status: "done", color_enabled: false });
+    expect(filterChoices([tree, other], sums)).toEqual({
+      types: ["Guide", "Plan", "Spec"],
+      statuses: ["confirmed", "done", "draft", "review", "wip"],
+    });
+  });
+
   it("TestLsFilters_SendsOnlyWhatIsSetWithTheNameTrimmed", () => {
     expect(lsFilters({ name: "  ", type: "", status: "" })).toBeUndefined();
     expect(lsFilters({ name: " plan ", type: "", status: "draft" })).toEqual({ name_contains: "plan", status: "draft" });
-    expect(lsFilters({ name: "", type: "Guide", status: "" })).toEqual({ type: "Guide" });
+    expect(lsFilters({ name: "", type: " Guide ", status: " " })).toEqual({ type: "Guide" });
   });
 
   it("TestAutoOpen_OpensKeptFoldersBreadthFirstWithinItsBudget", () => {

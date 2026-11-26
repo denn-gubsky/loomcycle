@@ -33,7 +33,7 @@ const listings: Record<string, PathEntry[]> = {
   "/notes": [doc("/notes/archive", "archive")],
 };
 const summaries = [
-  { document_id: "ann", title: "kb", color_enabled: false, brief: "The knowledge base." },
+  { document_id: "ann", title: "kb", type: "Annotation", color_enabled: false, brief: "The knowledge base." },
   { document_id: "arch", title: "Architecture", type: "DesignNote", status: "done", color_enabled: false },
   { document_id: "plan", title: "Plan", type: "Plan", status: "draft", color_enabled: false },
   { document_id: "archive", title: "Archive", type: "Plan", status: "done", color_enabled: false },
@@ -153,8 +153,14 @@ async function openFilter(el: HTMLElement) {
       .click(),
   );
 }
-async function typeFilterName(el: HTMLElement, v: string) {
-  const input = el.querySelector<HTMLInputElement>(".paths-find-input")!;
+// suggestions lists what a filter field's datalist offers.
+function suggestions(el: HTMLElement, label: string): string[] {
+  const input = el.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`)!;
+  const list = el.querySelector(`datalist[id="${input.getAttribute("list")}"]`);
+  return Array.from(list?.querySelectorAll("option") ?? []).map((o) => o.value);
+}
+async function typeFilterName(el: HTMLElement, v: string, label = "Filter by name") {
+  const input = el.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`)!;
   await act(async () => {
     const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
     set.call(input, v);
@@ -240,12 +246,12 @@ describe("PathExplorer", () => {
         .click(),
     );
     expect(el.querySelector(".paths-find-note")!.textContent).toBe("filtering opened folders");
-    const status = el.querySelector<HTMLSelectElement>('select[aria-label="Filter by status"]')!;
-    expect(Array.from(status.options).map((o) => o.value)).toEqual(["", "done", "draft"]);
-    await act(async () => {
-      status.value = "draft";
-      status.dispatchEvent(new Event("change", { bubbles: true }));
-    });
+    // Suggestions: the statuses the knowledge base works with plus those seen;
+    // the types seen, never a folder's Annotation.
+    expect(suggestions(el, "Filter by status")).toEqual(["confirmed", "done", "draft", "review"]);
+    expect(suggestions(el, "Filter by type")).toEqual(["DesignNote", "Plan"]);
+    // Any value can be typed; the local filter compares it ignoring case.
+    await typeFilterName(el, " DRAFT", "Filter by status");
     // Only "plan" is a draft: /notes has nothing and is gone; the folders
     // above "plan" stay, open.
     expect(rowNames(el)).toEqual(["kb", "docs", "plan"]);
@@ -357,15 +363,8 @@ describe("PathExplorer", () => {
     const { data, pathLs } = serverData({ pageOf: 1 });
     const el = await mount({}, data);
     await openFilter(el);
-    const status = el.querySelector<HTMLSelectElement>('select[aria-label="Filter by status"]')!;
-    // The picker offers what the loaded documents carry; "done" is set directly.
-    await act(async () => {
-      const opt = document.createElement("option");
-      opt.value = "done";
-      status.appendChild(opt);
-      status.value = "done";
-      status.dispatchEvent(new Event("change", { bubbles: true }));
-    });
+    // Nothing below the root is loaded: the status is typed.
+    await typeFilterName(el, "done", "Filter by status");
     await vi.waitFor(() => expect(note(el)).toBe("filtering the whole tree"));
     await vi.waitFor(() => expect(rowNames(el)).toEqual(["kb", "docs", "architecture"]));
     const more = () =>
@@ -428,5 +427,17 @@ describe("PathExplorer", () => {
     expect(note(el)).toBe("filtering opened folders");
     expect(rowNames(el)).toEqual(["notes", "archive"]);
     expect(el.querySelector(".paths-err")).toBeNull();
+  });
+
+  it("TestPathExplorer_FilterSuggestionsComeFromTheFilteredTreeToo", async () => {
+    // A fresh tree lists only the root; the documents a filter draws are what
+    // the type and status suggestions learn from.
+    const { data } = serverData();
+    const el = await mount({}, data);
+    await openFilter(el);
+    await typeFilterName(el, "plan");
+    await vi.waitFor(() => expect(rowNames(el)).toEqual(["kb", "docs", "plan"]));
+    await vi.waitFor(() => expect(suggestions(el, "Filter by type")).toContain("Plan"));
+    expect(suggestions(el, "Filter by status")).toContain("draft");
   });
 });

@@ -2309,12 +2309,17 @@
   height: 26px;
   padding: 2px 8px;
 }
-.loomcycle-explorer .paths-find .paths-find-select {
-  flex: 0 1 auto;
-  min-width: 0;
-  max-width: 130px;
+/* The filter's type and status: free text with suggestions, narrower than
+   the name, the placeholder ("any type") reading as the unset value. */
+.loomcycle-explorer .paths-find .paths-find-field {
+  flex: 0 1 112px;
+  min-width: 72px;
+  max-width: 140px;
   height: 26px;
-  padding: 2px 4px;
+  padding: 2px 8px;
+}
+.loomcycle-explorer .paths-find .paths-find-field::placeholder {
+  color: var(--fg-soft);
 }
 .loomcycle-explorer .paths-find-note {
   order: 10;

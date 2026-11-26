@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -549,6 +550,7 @@ function PathExplorerBody({
   // is applied here to the folders already listed, and the line says so.
   const serverTree = filtering && serverFiltered;
   const coverage = findCoverage(findMode === "filter" && serverTree ? froot : dirs.get(""));
+  const listId = useId();
   const typeWidened = serverTree && filter.type !== "" ? Math.max(0, (froot?.typeExpandedTo?.length ?? 0) - 1) : 0;
   const filtered = useMemo(
     () => (filtering && !serverTree ? filterTree(tree, filter, summaries) : undefined),
@@ -556,7 +558,7 @@ function PathExplorerBody({
   );
   const choices = useMemo(
     () =>
-      findOpen && findMode === "filter" ? filterChoices([...tree, ...ftree], summaries) : { types: [], statuses: [] },
+      findOpen && findMode === "filter" ? filterChoices([tree, ftree], summaries) : { types: [], statuses: [] },
     [findOpen, findMode, tree, ftree, summaries],
   );
 
@@ -1155,32 +1157,53 @@ function PathExplorerBody({
                 />
                 {findMode === "filter" && (
                   <>
-                    <select
-                      className="paths-find-select"
+                    {/* Free text with suggestions: any type or status can be
+                        typed (the runtime filters by it), and what the trees
+                        have shown is offered. Debounced with the name. */}
+                    <input
+                      className="paths-find-field"
+                      type="search"
                       value={filter.type}
+                      placeholder="any type"
                       aria-label="Filter by type"
+                      list={`${listId}-types`}
+                      autoComplete="off"
+                      spellCheck={false}
                       onChange={(e) => setFilter((f) => ({ ...f, type: e.target.value }))}
-                    >
-                      <option value="">any type</option>
+                      onKeyDown={(e) => {
+                        if (e.key === "Escape") {
+                          e.preventDefault();
+                          closeFind();
+                        }
+                      }}
+                    />
+                    <datalist id={`${listId}-types`}>
                       {choices.types.map((t) => (
-                        <option key={t} value={t}>
-                          {t}
-                        </option>
+                        <option key={t} value={t} />
                       ))}
-                    </select>
-                    <select
-                      className="paths-find-select"
+                    </datalist>
+                    <input
+                      className="paths-find-field"
+                      type="search"
                       value={filter.status}
+                      placeholder="any status"
                       aria-label="Filter by status"
+                      list={`${listId}-statuses`}
+                      autoComplete="off"
+                      spellCheck={false}
                       onChange={(e) => setFilter((f) => ({ ...f, status: e.target.value }))}
-                    >
-                      <option value="">any status</option>
+                      onKeyDown={(e) => {
+                        if (e.key === "Escape") {
+                          e.preventDefault();
+                          closeFind();
+                        }
+                      }}
+                    />
+                    <datalist id={`${listId}-statuses`}>
                       {choices.statuses.map((t) => (
-                        <option key={t} value={t}>
-                          {t}
-                        </option>
+                        <option key={t} value={t} />
                       ))}
-                    </select>
+                    </datalist>
                   </>
                 )}
                 <span className="paths-find-note" id="paths-find-note" role="status">
