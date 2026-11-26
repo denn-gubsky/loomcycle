@@ -426,6 +426,7 @@ var httpRoutes = []Route{
 	row("GET /v1/_ontology/releases", ScopeTenant, false, q("read", "document", "*")),
 	row("GET /v1/_ontology/releases/diff", ScopeTenant, false, q("read", "document", "*")),
 	row("GET /v1/_ontology/releases/{seq}", ScopeTenant, false, q("read", "document", "*")),
+	row("POST /v1/_ontology/rollback", ScopeTenant, false, q("write", "document", "*")),
 	row("POST /v1/_ontology/subjects/merge", ScopeTenant, false, q("write", "document", "*")),
 	row("POST /v1/_ontology/subjects/principal", ScopeTenant, false, q("write", "document", "*")),
 	// Token minting: a tenant operator only for its own tenant's scrape

@@ -42,6 +42,7 @@ type planItem struct {
 	index    int
 	change   connector.OntologyChange
 	proposal string
+	release  int64
 	fixed    *connector.OntologyPlannedChange
 }
 
@@ -53,6 +54,16 @@ func (d *Document) expandPlanProposals(ctx context.Context, key sqlmem.ScopeKey,
 	items := make([]planItem, 0, len(changes))
 	direct := 0
 	for i, ch := range changes {
+		if ch.Op == connector.OntologyPlanAdd {
+			// Adding back an entry of a release: nothing rests on it, so it is final here
+			// and costs no counting (document_ontology_rollback.go).
+			fixed, err := d.planAddBack(ctx, key, i, ch, before)
+			if err != nil {
+				return nil, err
+			}
+			items = append(items, planItem{index: i, fixed: fixed})
+			continue
+		}
 		if ch.Op != connector.OntologyPlanProposal {
 			items = append(items, planItem{index: i, change: ch})
 			direct++

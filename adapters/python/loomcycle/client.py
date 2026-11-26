@@ -2250,6 +2250,113 @@ class LoomcycleClient:
             "complete": resp.complete,
         }
 
+    async def list_ontology_releases(self, *, tenant: str = "") -> Mapping[str, Any]:
+        """List the tenant ontology's releases — the copies taken when it
+        was confirmed and on each applied or rolled-back change, the newest
+        50 kept — newest first. Writes nothing. Mirrors
+        ``GET /v1/_ontology/releases`` over the ``ListOntologyReleases`` RPC.
+
+        Returns ``{tenant, releases}``, each release ``{seq,
+        content_version, fingerprint, reason, actor, created_at, entries}``
+        (``reason`` is ``confirm``, ``apply``, ``rollback`` or ``catch_up``;
+        ``actor`` "" when none was known; ``created_at`` in unix
+        nanoseconds).
+
+        There is no RPC to read one release with its Markdown export: that
+        is ``GET /v1/_ontology/releases/{seq}`` on HTTP only.
+
+        For an admin or a tenant operator only; *tenant* is honored only for
+        an admin token. A refusal raises the error class its gRPC code maps
+        to, with the code (``forbidden``, ``unavailable``) on its
+        ``.reason``."""
+        req = pb.ListOntologyReleasesRequest(tenant=tenant)
+        try:
+            resp = await self._stub.ListOntologyReleases(req, metadata=self._auth_metadata())
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+        return {
+            "tenant": resp.tenant,
+            "releases": [
+                {
+                    "seq": r.seq,
+                    "content_version": r.content_version,
+                    "fingerprint": r.fingerprint,
+                    "reason": r.reason,
+                    "actor": r.actor,
+                    "created_at": r.created_at,
+                    "entries": r.entries,
+                }
+                for r in resp.releases
+            ],
+        }
+
+    async def diff_ontology_releases(
+        self, from_seq: int, to_seq: int = 0, *, tenant: str = ""
+    ) -> Mapping[str, Any]:
+        """Compare two releases of the tenant ontology, or a release with
+        the ontology in force, entry by entry. Writes nothing. Mirrors
+        ``GET /v1/_ontology/releases/diff`` over the ``DiffOntologyReleases``
+        RPC.
+
+        *from_seq* is a release's sequence number; *to_seq* another's, or 0
+        (the default) for the ontology as it stands now (HTTP's
+        ``to=current``).
+
+        Returns ``{tenant, from, to, changes, issues}``: each side ``{seq,
+        current, content_version}``; each change ``{chunk_id, kind, change,
+        changed, before, after}`` with ``change`` ``added``, ``removed`` or
+        ``changed``, ``changed`` listing ``renamed``, ``moved``, ``kind``,
+        ``status``, ``meaning``, ``directives``, and ``before`` / ``after``
+        ``{name, parent, parent_name, status, meaning, directives}`` or
+        ``None`` (absent for an added entry, resp. a removed one).
+        ``directives`` is the decoded JSON, as HTTP returns it. A rename is
+        one changed entry, never an add and a remove.
+
+        For an admin or a tenant operator only; *tenant* is honored only for
+        an admin token. A refusal raises the error class its gRPC code maps
+        to, with the code (``invalid_request``, ``forbidden``,
+        ``release_not_found``, ``unavailable``) on its ``.reason``."""
+        # "from" is a Python keyword, so the field is set through kwargs.
+        req = pb.DiffOntologyReleasesRequest(tenant=tenant, to=to_seq, **{"from": from_seq})
+        try:
+            resp = await self._stub.DiffOntologyReleases(req, metadata=self._auth_metadata())
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+
+        def side(s: Any) -> Mapping[str, Any]:
+            return {"seq": s.seq, "current": s.current, "content_version": s.content_version}
+
+        def state(d: Any, name: str) -> Mapping[str, Any] | None:
+            if not d.HasField(name):
+                return None
+            e = getattr(d, name)
+            return {
+                "name": e.name,
+                "parent": e.parent,
+                "parent_name": e.parent_name,
+                "status": e.status,
+                "meaning": e.meaning,
+                "directives": json.loads(e.directives_json) if e.directives_json else None,
+            }
+
+        return {
+            "tenant": resp.tenant,
+            "from": side(getattr(resp, "from")),
+            "to": side(resp.to),
+            "changes": [
+                {
+                    "chunk_id": d.chunk_id,
+                    "kind": d.kind,
+                    "change": d.change,
+                    "changed": list(d.changed),
+                    "before": state(d, "before"),
+                    "after": state(d, "after"),
+                }
+                for d in resp.changes
+            ],
+            "issues": list(resp.issues),
+        }
+
     async def list_review_queue(
         self,
         *,

@@ -29,6 +29,7 @@ const ontologyToolDescription = "Operator actions on the tenant ontology. " +
 	"op=plan says what changes to the ontology's entries WOULD do before any is made, and writes nothing: pass changes, 1 to 50 of {op, entry, name?, parent?, body?}, " +
 	"where op is retire, rename (needs name), move (needs parent: an entry of the same section, or the section), edit (needs body: the entry's new body) or delete, and entry is the entry's chunk id (from describe_ontology or the ontology document). " +
 	"A change may instead be {op: proposal, id}: an open proposal by its chunk id. A change or retire proposal plans as the direct changes accepting it makes (each carrying proposal: the id), checked again as accepting would; an add proposal plans as op add, risk none. Proposals and direct changes in one call are planned together, under one fingerprint. " +
+	"{op: unretire, entry} plans clearing a retired entry's status (risk none). {op: release, seq}, the call's only change, plans rolling the ontology back to release seq: the direct changes that make it declare what the release declared (rename, edit, move, retire, unretire of entries in both; delete of an entry added since, retire when something rests on it; {op: add, seq, entry} of an entry only in the release), each carrying release: seq. An operator applies it with POST /v1/_ontology/rollback and the plan's fingerprint. " +
 	"Per change it returns the entry, a risk (destroys: stored rows would be lost; stales: rows would need rework; none), counts of each kind of dependent across the tenant scope and every user and agent scope of the tenant ({n, effect, tenant_scope, other_scopes, by_status, sample}: sample ids from the tenant scope only), the subtree that goes with it and notes. " +
 	"An edit stales what rests on the entry when it changes any of the entry's directives; one of the meaning alone is risk none. " +
 	"A rename of a class something rests on carries job: the rows the rename job would rewrite per step, blocked (why it cannot carry the rename: a plan that could not count every scope) and collisions (stored keys that would collide under the new name: the tenant scope's listed, collisions_other_scopes counted). When blocked, the change carries a note starting rename_job_pending: the rename is refused, with or without a fingerprint; with collisions, a note starting rename_identity_collision. Otherwise the rename applies with the fingerprint and the job carries the new name through the ontology's own mentions of the class and the stored rows and classification records of the tenant scope and every user and agent scope (relations and classes nothing rests on rename with the plan, with no job; renaming or moving a concept starts the re-tag job, which carries the tags of what is filed under it to the new path). " +
@@ -61,8 +62,9 @@ const ontologyToolSchema = `{
 			"type": "object",
 			"required": ["op"],
 			"properties": {
-				"op":     {"type": "string", "enum": ["retire", "rename", "move", "edit", "delete", "proposal"]},
-				"entry":  {"type": "string", "description": "Every op but proposal (required): the entry's chunk id."},
+				"op":     {"type": "string", "enum": ["retire", "unretire", "rename", "move", "edit", "delete", "add", "release", "proposal"]},
+				"entry":  {"type": "string", "description": "Every op but proposal and release (required): the entry's chunk id; for add, a chunk id of release seq."},
+				"seq":    {"type": "integer", "minimum": 1, "description": "release (required, nothing else with it, the call's only change) and add (required): a release's sequence number."},
 				"id":     {"type": "string", "description": "proposal (required, nothing else with it): an open proposal's chunk id."},
 				"name":   {"type": "string", "description": "rename: the new name, one line."},
 				"parent": {"type": "string", "description": "move: the new parent's chunk id (an entry of the same section, or the section)."},
