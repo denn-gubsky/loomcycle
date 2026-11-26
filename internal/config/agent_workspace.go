@@ -47,6 +47,10 @@ type AgentWorkspace struct {
 	// exposed, through a share made with connect (RFC GW §5.2, §7), and
 	// hand connect over in a share of its own.
 	Connect bool `json:"connect,omitempty" yaml:"connect,omitempty"`
+	// Durable lets the agent open a durable workspace, kept past its run
+	// under its user and a name (RFC GW §4.2, P12). It needs
+	// workspace.durable on.
+	Durable bool `json:"durable,omitempty" yaml:"durable,omitempty"`
 	// Egress names the routes (workspace.egress.routes, or a tenant's) a
 	// workspace this agent opens may reach the network through (RFC GW
 	// §6.3). A sub-agent holds only the names both it and its parent list.
