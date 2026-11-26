@@ -23,7 +23,7 @@ exp6.8 is the local-models variant (ollama solver population + cloud-sonnet meta
 
 | Example | Primitive(s) | Self-contained? |
 |---|---|---|
-| [`exp1-tools-usage/`](exp1-tools-usage/) | Built-in tools (Read/Write/Edit/Bash/Web): a coding agent writes, runs, and verifies a program in a sandbox dir. | ✅ loomcycle + a provider only |
+| [`exp1-tools-usage/`](exp1-tools-usage/) | Built-in tools (Read/Write/Edit/Web) + a workspace (`workspace.mode: local`): a coding agent writes, runs, and verifies a program. | ✅ loomcycle + a provider only |
 | [`exp2-interruption/`](exp2-interruption/) | Interruption (human-in-the-loop): an agent asks Yes/No, blocks, resolves over REST, branches. | ✅ loomcycle + a provider only |
 | [`exp3-multiagent-loop/`](exp3-multiagent-loop/) | Channel + Memory + Evaluation + Context: a 3-agent, 5-hop refine/evaluate loop. | ✅ loomcycle + a provider only |
 | [`exp4-gitea-telegram/`](exp4-gitea-telegram/) | Inbound webhooks + 3rd-party MCP (gitea-mcp) + Telegram: coder→PR→reviewer-merge→advisor→Telegram. | ⚠️ needs external Gitea + Telegram + the gitea-mcp binary (see its README) |
@@ -32,6 +32,12 @@ exp6.8 is the local-models variant (ollama solver population + cloud-sonnet meta
 | [`exp6.8-local-evolution/`](exp6.8-local-evolution/) | The exp6 GA on **local models**: a `gemma4:max` solver population (the only local model) evolved by **cloud-sonnet** meta-agents, creativity→temperature capped ≤0.7. Completes 5 gens (lineage/promote/v0.37 robustness hold) but the mean doesn't climb — finding: the small local model's per-run reliability (~35% no-usable-result) is the wall, not the substrate. | ⚠️ needs an ollama host + a cloud sonnet provider (loomcycle ≥ v0.37.0) |
 
 (The repo also ships `cluster/`, `observability/`, and `python-cli/` examples.)
+
+The `Bash` tool and Bashbox are deprecated (RFC GW §9; `docs/MIGRATING-FROM-BASH.md`).
+exp1 and exp9 run their commands in a workspace on the local worker
+(`workspace.mode: local`), and exp8 clones with the `Git` tool. exp4 still drives
+`git push` through Bash; it moves to git workspaces once RFC GW P11's git operations
+ship. exp10 benchmarks Bash against Bashbox, both of which RFC GW P15 removes.
 
 ## Quick start (any of exp1–exp3)
 ```bash
