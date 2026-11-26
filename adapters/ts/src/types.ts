@@ -2456,6 +2456,90 @@ export interface PlanOntologyResult {
   complete: boolean;
 }
 
+/** The header of one complete release of the tenant ontology: a copy taken
+ *  when it was confirmed (`confirm`), when an accepted change was applied
+ *  (`apply`) or rolled back (`rollback`), or before either when the ontology
+ *  had moved without one (`catch_up`). */
+export interface OntologyRelease {
+  seq: number;
+  /** What the ontology declared then, as stamped on the rows written under it. */
+  content_version: string;
+  /** The plan fingerprint it had. */
+  fingerprint: string;
+  reason: "confirm" | "apply" | "rollback" | "catch_up";
+  /** The user who took it; absent when none was known. */
+  actor?: string;
+  /** Unix nanoseconds. */
+  created_at: number;
+  /** How many chunks of the ontology document it copied. */
+  entries: number;
+}
+
+/** Result of {@link LoomcycleClient.listOntologyReleases}: every complete
+ *  release kept (the newest 50), newest first. */
+export interface ListOntologyReleasesResult {
+  tenant: string;
+  releases: OntologyRelease[];
+}
+
+/** Result of {@link LoomcycleClient.getOntologyRelease}. */
+export interface GetOntologyReleaseResult {
+  tenant: string;
+  release: OntologyRelease;
+  /** The plan summary of the change an `apply` release applied; absent
+   *  otherwise. */
+  plan_summary?: Record<string, unknown>;
+  /** The ontology the release copied, rendered as Markdown. */
+  export_md: string;
+}
+
+/** One side of a release diff: a release (`seq`), or the ontology in force
+ *  (`current: true`). */
+export interface OntologyDiffSide {
+  seq?: number;
+  current?: boolean;
+  content_version: string;
+}
+
+/** An entry as one side of a diff declares it. `parent` is the chunk of the
+ *  entry it sits under, absent at the top of its section; `parent_name` that
+ *  entry's name. `directives` is the parsed declaration without its name,
+ *  status, meaning and parent. */
+export interface OntologyEntryState {
+  name: string;
+  parent?: string;
+  parent_name?: string;
+  status?: string;
+  meaning?: string;
+  directives: Record<string, unknown> | null;
+}
+
+/** One entry that differs between the two sides, by its chunk id: a rename
+ *  keeps the chunk, so it is one `changed` entry, never an add and a remove. */
+export interface OntologyEntryDiff {
+  chunk_id: string;
+  /** class | relation | scheme | concept | instance | grammar */
+  kind: string;
+  change: "added" | "removed" | "changed";
+  /** On a changed entry: what differs. */
+  changed?: ("renamed" | "moved" | "kind" | "status" | "meaning" | "directives")[];
+  /** Absent for an added entry. */
+  before?: OntologyEntryState;
+  /** Absent for a removed entry. */
+  after?: OntologyEntryState;
+}
+
+/** Result of {@link LoomcycleClient.diffOntologyReleases}. It wrote nothing. */
+export interface DiffOntologyReleasesResult {
+  tenant: string;
+  from: OntologyDiffSide;
+  to: OntologyDiffSide;
+  /** Ordered by kind, then name, then chunk id. */
+  changes: OntologyEntryDiff[];
+  /** What a side could not read. */
+  issues: string[];
+}
+
 /** Narrows the statement review queue and selects what a bulk ruling rules
  *  ({@link LoomcycleClient.listReviewQueue}, {@link LoomcycleClient.ruleStatements}).
  *  Every field is optional; they combine with AND. A filter never shows more
