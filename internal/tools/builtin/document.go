@@ -124,6 +124,13 @@ type Document struct {
 	// ontologyPlanScopeBudget. A test shortens it.
 	planScopeBudget time.Duration
 
+	// renameJobBudget bounds one slice of the class-rename job; zero is renameJobSlice.
+	// renameJobStop, when set, is asked after each step of the job in each scope (by the
+	// scope's kind: tenant, user, agent) and stops the slice when it answers true, as an
+	// interruption would. A test sets both; nil in production.
+	renameJobBudget time.Duration
+	renameJobStop   func(scope, step string) bool
+
 	// beforeMoveWrite, when set, runs in move_chunk after its checks and before its
 	// write. A test moves the chunk there to prove the write is conditional on the
 	// parent the checks read. Nil in production.
@@ -1000,6 +1007,12 @@ var docSchemaDDL = []string{
 	// document_measure.go).
 	measurePointsDDL,
 	measurePointsIndexDDL,
+	// ontology_jobs: the class-rename job's row, and subject_key_aliases: the subject
+	// keys it rewrote, each pointing at the key it became (RFC GQ P5.3,
+	// document_ontology_rename_job.go).
+	ontologyJobsDDL,
+	subjectKeyAliasesDDL,
+	subjectKeyAliasesToDDL,
 }
 
 // maxChunkDepth caps the ancestor walk in move_chunk (cycle detection) so a
@@ -2084,6 +2097,18 @@ func (d *Document) writeBodyAs(ctx context.Context, mscope store.MemoryScope, ke
 // document says it came from. This is the one place every body write goes
 // through, which is why the rule lives here.
 func (d *Document) putBody(ctx context.Context, mscope store.MemoryScope, key sqlmem.ScopeKey, chunkID, chunkType, body string, fields json.RawMessage, origin string, stamped map[string]any) error {
+	return d.storeBody(ctx, mscope, key, chunkID, chunkType, body, fields, origin, stamped, true)
+}
+
+// putFieldsKeepIndex is putBody for a write that changes a chunk's fields and not its
+// body: the index text is built from the body and the chunk's place, never from its
+// fields, so the stored vector stays right and no embedding call is made (the class
+// rename job's classification-record step, RFC GQ plan risk 3).
+func (d *Document) putFieldsKeepIndex(ctx context.Context, mscope store.MemoryScope, key sqlmem.ScopeKey, chunkID, chunkType, body string, fields json.RawMessage) error {
+	return d.storeBody(ctx, mscope, key, chunkID, chunkType, body, fields, "", nil, false)
+}
+
+func (d *Document) storeBody(ctx context.Context, mscope store.MemoryScope, key sqlmem.ScopeKey, chunkID, chunkType, body string, fields json.RawMessage, origin string, stamped map[string]any, embed bool) error {
 	scopeID := docMemScopeID(mscope, key)
 	// RFC BL: key chunk bodies on the same tenant the document's dirent + SQL
 	// structure use (direntTenant = the raw RunIdentity tenant), so bodies and
@@ -2156,7 +2181,9 @@ func (d *Document) putBody(ctx context.Context, mscope store.MemoryScope, key sq
 	// unsearchable, but a chunk whose write was rejected because an embedder was
 	// cold is lost work the author has to redo. Authoring must not become
 	// embedder-dependent.
-	d.embedBody(ctx, tenant, mscope, key, bodyKey, chunkID, chunkType, body)
+	if embed {
+		d.embedBody(ctx, tenant, mscope, key, bodyKey, chunkID, chunkType, body)
+	}
 	return nil
 }
 
@@ -4011,9 +4038,59 @@ func (d *Document) updateChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 	}
 	// RFC GQ P2.4: a rename, retire or re-declaration of an entry something rests on
 	// needs a plan's fingerprint; after the locks, so a locked entry answers entry_locked.
-	if refused := d.ontologyUpdatePlanRefusal(ctx, key, mscope, row, in, present); refused != nil {
+	var rename *renameJobStart
+	if refused := d.ontologyUpdatePlanRefusal(ctx, key, mscope, row, in, present, &rename); refused != nil {
 		return *refused, nil
 	}
+	if rename != nil {
+		// A class rename the rename job carries (document_ontology_rename_job.go): the same
+		// write records the old name, so the rows not yet moved read as the class, and
+		// the job row exists before the write, so an interruption leaves it to resume.
+		defer rename.release(ctx, d, key)
+		body := in.Body
+		if _, has := present["body"]; !has {
+			stored, rerr := d.readBody(ctx, mscope, key, in.ID)
+			if rerr != nil {
+				return errFrom("update_chunk: body: "+rerr.Error(), rerr), nil
+			}
+			body = stored.Body
+		}
+		in.Body = withRenamedFrom(body, rename.oldName)
+		if present == nil {
+			present = map[string]json.RawMessage{}
+		}
+		present["body"] = json.RawMessage(`""`)
+		// The job takes an `apply` release when it finishes; the ontology as it stands
+		// before the rename is released first when no release holds it (owner ruling Q2),
+		// so that release's diff is the rename alone. A record, not a gate.
+		if _, _, err := d.CatchUpOntologyRelease(ctx); err != nil {
+			slog.WarnContext(ctx, "ontology: catch_up release before a class rename failed", "tenant", key.Tenant, "chunk_id", in.ID)
+		}
+		if err := d.createRenameJob(ctx, key, rename); err != nil {
+			return errFrom("update_chunk: could not record the rename job, so nothing was changed: "+err.Error(), err), nil
+		}
+		// A failed write leaves the job pending: the next rename resumes it when the new
+		// name reached the ontology and abandons it otherwise (continueOntologyJob).
+		res, err := d.writeChunkUpdate(ctx, key, mscope, row, in, present, retype, retiring, retireSubtree, effValid, effInvalid, hasValidAt, hasInvalidAt)
+		if err != nil || res.IsError {
+			return res, err
+		}
+		return withRenameJob(res, d.startRenameJob(ctx, key, mscope, rename)), nil
+	}
+	// RFC GQ P5.5: a change that moves a concept's tag re-tags what is filed under it.
+	retag, refused := d.ontologyRetagForUpdate(ctx, key, mscope, row, in, present)
+	if refused != nil {
+		return *refused, nil
+	}
+	defer retag.release(ctx, d, key)
+	res, err := d.writeChunkUpdate(ctx, key, mscope, row, in, present, retype, retiring, retireSubtree, effValid, effInvalid, hasValidAt, hasInvalidAt)
+	return d.finishConceptRetag(ctx, key, mscope, retag, res, err)
+}
+
+// writeChunkUpdate is update_chunk's write, once every check has passed.
+func (d *Document) writeChunkUpdate(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, row chunkRow, in docInput,
+	present map[string]json.RawMessage, retype *subjectRetype, retiring bool, retireSubtree []string,
+	effValid, effInvalid *int64, hasValidAt, hasInvalidAt bool) (tools.Result, error) {
 	// Claim the update ATOMICALLY first: the guarded bump only matches if the
 	// revision is still what we read. If a concurrent writer raced us, it
 	// matches 0 rows → conflict, and we bail BEFORE clobbering the body (the
@@ -4377,6 +4454,11 @@ func (d *Document) moveChunk(ctx context.Context, key sqlmem.ScopeKey, in docInp
 			return *refused, nil
 		}
 	}
+	retag, refused := d.ontologyRetagForMove(ctx, key, row, in.NewParentID)
+	if refused != nil {
+		return *refused, nil
+	}
+	defer retag.release(ctx, d, key)
 	pos := 0
 	if in.Position != nil {
 		pos = *in.Position
@@ -4411,7 +4493,8 @@ func (d *Document) moveChunk(ctx context.Context, key sqlmem.ScopeKey, in docInp
 		d.reindexSubtree(ctx, key, store.MemoryScope(key.Scope), row.DocumentID, in.ID)
 	}
 	d.publishChange(ctx, store.MemoryScope(key.Scope), docMemScopeID(store.MemoryScope(key.Scope), key), row.DocumentID, "move_chunk", in.ID)
-	return jsonResult(map[string]any{"ok": true, "id": in.ID, "new_parent_id": in.NewParentID, "position": pos})
+	res, err := jsonResult(map[string]any{"ok": true, "id": in.ID, "new_parent_id": in.NewParentID, "position": pos})
+	return d.finishConceptRetag(ctx, key, store.MemoryScopeTenant, retag, res, err)
 }
 
 // reorderChunk moves a chunk one step up or down among its same-parent siblings

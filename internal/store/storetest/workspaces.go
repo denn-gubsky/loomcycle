@@ -28,8 +28,13 @@ func RunWorkspaces(t *testing.T, factory Factory) {
 		"ListByOwnerAgentAndSharedWith":         testWorkspaceListByOwnerAgentAndSharedWith,
 		"PrincipalOwnedRowsAreNeverSwept":       testWorkspacePrincipalOwnedRowsAreNeverSwept,
 		"EgressIsKeptOnEveryRead":               testWorkspaceEgressIsKeptOnEveryRead,
+		"RootIsKeptOnEveryRead":                 testWorkspaceRootIsKeptOnEveryRead,
+		"RootNeedsAUserAndIsNotDurable":         testWorkspaceRootNeedsAUserAndIsNotDurable,
 		"ExposuresAreBoundedAndTenantScoped":    testWorkspaceExposuresAreBoundedAndTenantScoped,
 		"ExposuresGoWithTheirWorkspace":         testWorkspaceExposuresGoWithTheirWorkspace,
+		"DurableNameIsUniquePerUser":            testWorkspaceDurableNameIsUniquePerUser,
+		"PinAndUnpinAreCompareAndSet":           testWorkspacePinAndUnpinAreCompareAndSet,
+		"ParkedRowIsReachedByNoRun":             testWorkspaceParkedRowIsReachedByNoRun,
 	} {
 		t.Run(name, func(t *testing.T) {
 			s, cleanup := factory(t)
@@ -563,5 +568,67 @@ func testWorkspacePrincipalOwnedRowsAreNeverSwept(t *testing.T, s store.Store) {
 	bad.OwnerKind = "agent"
 	if _, err := s.WorkspaceCreate(ctx, bad); err == nil {
 		t.Error("an unknown owner kind was written")
+	}
+}
+
+// testWorkspaceRootIsKeptOnEveryRead: the root a workspace was opened on
+// (RFC GW P13) comes back from every read the dispatcher, the tool and the
+// sweeper make, and a row with none reads back empty.
+func testWorkspaceRootIsKeptOnEveryRead(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	row := mkWorkspace("ws_r", "acme", "run-1", "code", "user:acme/0123456789abcdef/laptop")
+	row.Root = "code"
+	if got := createWorkspace(t, s, row); got.Root != "code" {
+		t.Errorf("create returned root %q, want code", got.Root)
+	}
+	if ok, err := s.WorkspaceSetState(ctx, "acme", row.ID, store.WorkspaceOpening, store.WorkspaceReady); err != nil || !ok {
+		t.Fatalf("set ready = %v, %v", ok, err)
+	}
+	reads := map[string]func() ([]store.WorkspaceRow, error){
+		"get": func() ([]store.WorkspaceRow, error) {
+			r, err := s.WorkspaceGet(ctx, "acme", row.ID)
+			return []store.WorkspaceRow{r}, err
+		},
+		"get by name": func() ([]store.WorkspaceRow, error) {
+			r, err := s.WorkspaceGetByName(ctx, "acme", "run-1", "code")
+			return []store.WorkspaceRow{r}, err
+		},
+		"list by owner run": func() ([]store.WorkspaceRow, error) { return s.WorkspaceListByOwnerRun(ctx, "acme", "run-1") },
+		"list by worker (ready)": func() ([]store.WorkspaceRow, error) {
+			return s.WorkspaceListByWorker(ctx, row.WorkerID, store.WorkspaceReady)
+		},
+	}
+	for name, read := range reads {
+		rows, err := read()
+		if err != nil || len(rows) != 1 || rows[0].Root != "code" {
+			t.Errorf("%s: rows %v, %v; want one with root code", name, rows, err)
+		}
+	}
+	if none := createWorkspace(t, s, mkWorkspace("ws_p", "acme", "run-1", "plain", "w1")); none.Root != "" {
+		t.Errorf("a row created with no root reads back root %q", none.Root)
+	}
+}
+
+// testWorkspaceRootNeedsAUserAndIsNotDurable: a root is one user's folder,
+// so a root row with no user is refused (it would match every user-less
+// run), and a root is already kept on the user's disk, so a durable root row
+// is refused too (RFC GW P13 plan §1).
+func testWorkspaceRootNeedsAUserAndIsNotDurable(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	noUser := mkWorkspace("ws_u", "acme", "run-1", "code", "w1")
+	noUser.UserID, noUser.Root = "", "code"
+	if _, err := s.WorkspaceCreate(ctx, noUser); err == nil {
+		t.Error("a root row with no user was created")
+	}
+	// Its own name, so no unique key refuses it in the root's stead.
+	durable := mkWorkspace("ws_d", "acme", "run-1", "code-durable", "w1")
+	durable.Root, durable.Lifetime = "code", store.WorkspaceLifetimeDurable
+	if _, err := s.WorkspaceCreate(ctx, durable); err == nil {
+		t.Error("a durable root row was created")
+	}
+	for _, id := range []string{"ws_u", "ws_d"} {
+		if _, err := s.WorkspaceGet(ctx, "acme", id); err == nil {
+			t.Errorf("refused row %s is in the store", id)
+		}
 	}
 }

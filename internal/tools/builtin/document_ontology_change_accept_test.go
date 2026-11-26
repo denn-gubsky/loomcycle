@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
 )
@@ -297,16 +298,21 @@ func TestAcceptChange_ConcurrentEditOfTargetIsRefused(t *testing.T) {
 	}
 }
 
-// TestAcceptChange_ClassRenameWithDependentsIsRefusedUntilTheRenameJob (RFC GQ Q4): a
-// class something rests on is not renamed, fingerprint or not; a class nothing rests
-// on is.
-func TestAcceptChange_ClassRenameWithDependentsIsRefusedUntilTheRenameJob(t *testing.T) {
+// TestAcceptChange_ClassRenameTheJobCannotCarryIsRefused (RFC GQ Q4, P5.3, plan 4.2): a
+// class something rests on is not renamed, fingerprint or not, while the plan cannot
+// count every user and agent scope (the job could not know their colliding keys); a
+// class nothing rests on is. Once every scope is counted, the same proposal is accepted
+// and the rename job carries the class through the user scope too (P5.4).
+func TestAcceptChange_ClassRenameTheJobCannotCarryIsRefused(t *testing.T) {
 	f := newAcceptFixture(t)
+	f.must(map[string]any{"op": "create_document", "scope": "user", "title": "My memo", "type": "Memo"})
 	memo := f.chunk("Memo")
 	id := f.file(map[string]any{"change": "edit", "entry": memo, "name": "Memorandum"})
+	f.d.planScopeBudget = time.Nanosecond
 	if _, err := f.accept(id, f.fingerprintNow()); !errors.Is(err, ErrChangeRenameJobPending) {
 		t.Errorf("accept = %v, want ErrChangeRenameJobPending", err)
 	}
+	f.d.planScopeBudget = 0
 	if f.chunk("Memo") != memo || !f.exists(id) {
 		t.Error("a refused rename changed something")
 	}
@@ -314,9 +320,41 @@ func TestAcceptChange_ClassRenameWithDependentsIsRefusedUntilTheRenameJob(t *tes
 	if _, err := f.accept(free, f.fingerprintNow()); err != nil {
 		t.Errorf("rename of a class nothing rests on: %v", err)
 	}
+	if _, err := f.accept(id, f.fingerprintNow()); err != nil {
+		t.Fatalf("accept once every scope is counted: %v", err)
+	}
+	if got := rowTitles(f.must(map[string]any{"op": "query_documents", "scope": "user", "type": "Memorandum"}), "documents"); !reflect.DeepEqual(got, []string{"My memo"}) {
+		t.Errorf("user documents of Memorandum = %v, want the user's memo carried by the job", got)
+	}
 }
 
-// TestAcceptChange_MeaningCannotAddOrRemoveFields: a class's field bullets are its own
+// TestAcceptChange_ClassRenameIsCarriedByTheRenameJob (RFC GQ P5.3): accepting the
+// rename of a class whose rows are all in the tenant scope renames it, and the rename job
+// moves its stored type with it.
+func TestAcceptChange_ClassRenameIsCarriedByTheRenameJob(t *testing.T) {
+	f := newAcceptFixture(t)
+	memo := f.chunk("Memo")
+	id := f.file(map[string]any{"change": "edit", "entry": memo, "name": "Memorandum"})
+	rep, err := f.accept(id, f.fingerprintNow())
+	if err != nil {
+		t.Fatalf("accept: %v", err)
+	}
+	if !containsString(rep.Applied, "rename") {
+		t.Errorf("applied = %v, want rename", rep.Applied)
+	}
+	count := func(typ string) string {
+		res, err := f.d.query(f.ctx, mustTenantKey(t, f.d, f.ctx), `SELECT count(*) FROM documents WHERE type = ?`, typ)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return asStr(res.Rows[0][0])
+	}
+	if old, now := count("Memo"), count("Memorandum"); old != "0" || now != "1" {
+		t.Errorf("documents typed Memo %s, Memorandum %s; want 0 and 1", old, now)
+	}
+}
+
+// TestAcceptChange_MeaningCannotAddOrRemoveFields:a class's field bullets are its own
 // whatever the proposal's meaning says — a field-shaped line in the meaning is quoted
 // text, and a meaning without the entry's bullets does not drop them.
 func TestAcceptChange_MeaningCannotAddOrRemoveFields(t *testing.T) {

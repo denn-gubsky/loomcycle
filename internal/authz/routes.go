@@ -416,13 +416,17 @@ var httpRoutes = []Route{
 	rowOpen("POST /v1/_oauth/revoke", ScopeAdmin, false),
 	rowOpen("OPTIONS /v1/_oauth/token", ScopeAdmin, false),
 	rowOpen("POST /v1/_oauth/token", ScopeAdmin, false),
-	// The tenant ontology. Its writes and the plan are carved out of the
-	// member path.
+	// The tenant ontology. Its writes, the plan and its releases are carved
+	// out of the member path.
 	row("GET /v1/_ontology", ScopeTenant, false, q("read", "document", "*")),
 	row("POST /v1/_ontology", ScopeTenant, false, q("read", "document", "*")),
 	row("POST /v1/_ontology/adopt", ScopeTenant, false, q("write", "document", "*")),
 	row("POST /v1/_ontology/plan", ScopeTenant, false, q("read", "document", "*")),
 	row("POST /v1/_ontology/proposals", ScopeTenant, false, q("write", "document", "*")),
+	row("GET /v1/_ontology/releases", ScopeTenant, false, q("read", "document", "*")),
+	row("GET /v1/_ontology/releases/diff", ScopeTenant, false, q("read", "document", "*")),
+	row("GET /v1/_ontology/releases/{seq}", ScopeTenant, false, q("read", "document", "*")),
+	row("POST /v1/_ontology/rollback", ScopeTenant, false, q("write", "document", "*")),
 	row("POST /v1/_ontology/subjects/merge", ScopeTenant, false, q("write", "document", "*")),
 	row("POST /v1/_ontology/subjects/principal", ScopeTenant, false, q("write", "document", "*")),
 	// Token minting: a tenant operator only for its own tenant's scrape

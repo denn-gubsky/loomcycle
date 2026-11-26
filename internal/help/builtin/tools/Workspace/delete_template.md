@@ -12,10 +12,14 @@ already opened from it are not touched.
 
 - `template` (required) — the template's name.
 - `scope` (required) — `user` or `tenant`: which template of that name.
+- `owner` — with `scope: user`, the user whose template to delete. Only a
+  tenant operator's session of the MCP server (`substrate:tenant` or
+  `substrate:admin`) may name another user, in its own tenant; never from
+  inside a run. The audit line names both the operator and the owner.
 
 ## Returns
 
-`{template, scope, deleted: true}`.
+`{template, scope, owner?, deleted: true}`.
 
 ## Errors
 

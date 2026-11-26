@@ -20,6 +20,7 @@ import (
 // through it, so none can open a run span and skip the decision.
 func (s *Server) startRunSpan(ctx context.Context, def config.AgentDef, a lcotel.RunStartAttrs) (context.Context, trace.Span) {
 	ctx, span := lcotel.RecordRunStart(ctx, a)
+	s.noteDeprecatedUse(ctx, def, a)
 	return s.withContentCapture(ctx, lcotel.TenantFromContext(ctx), def, lcotel.NoTraceFromContext(ctx)), span
 }
 
@@ -194,4 +195,19 @@ func redactToolArgs(r *redact.Redactor, tool string, args []byte) []byte {
 		return r.Bytes(masked)
 	}
 	return []byte(r.String(string(masked)))
+}
+
+// noteDeprecatedUse counts a run given what a future release removes (RFC GW
+// §9, P14). The operator's own yaml agent was warned about at boot, so its
+// runs are counted and not logged again; a stored or registered definition is
+// logged once per tenant and agent.
+func (s *Server) noteDeprecatedUse(ctx context.Context, def config.AgentDef, a lcotel.RunStartAttrs) {
+	if s.deprecatedUse == nil {
+		return
+	}
+	static := false
+	if cfg := s.cfg(); cfg != nil && def.DefID == "" {
+		_, static = cfg.Agents[a.AgentName]
+	}
+	s.deprecatedUse.note(ctx, a.Tenant, a.AgentName, def, !static)
 }

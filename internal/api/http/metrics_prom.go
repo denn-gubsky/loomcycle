@@ -289,6 +289,12 @@ func (s *Server) renderMetricsProm(w http.ResponseWriter, view promView) {
 	}
 	fmt.Fprintln(w)
 
+	// Runs given what a future release removes (RFC GW §9, P14), by the
+	// deprecation table's kind and name.
+	if s.deprecatedUse != nil {
+		writeDeprecatedUse(w, replicaLabels, s.deprecatedUse.snapshot())
+	}
+
 	// Background goroutines recovered from a panic, by goroutine name: each is
 	// a bug that stopped that goroutine's work instead of the process. Names are
 	// static strings at the call sites, so the series stay bounded.

@@ -221,8 +221,9 @@ func TestOpenAPISpec_PublishesTheOntologyPlanRoute(t *testing.T) {
 		t.Fatal("api/openapi.yaml has no POST /v1/_ontology/plan")
 	}
 	ops := dig(post, "requestBody", "content", "application/json", "schema", "properties", "changes", "items", "properties", "op", "enum")
-	want := []any{connector.OntologyPlanRetire, connector.OntologyPlanRename, connector.OntologyPlanMove, connector.OntologyPlanEdit,
-		connector.OntologyPlanDelete, connector.OntologyPlanProposal}
+	want := []any{connector.OntologyPlanRetire, connector.OntologyPlanUnretire, connector.OntologyPlanRename, connector.OntologyPlanMove,
+		connector.OntologyPlanEdit, connector.OntologyPlanDelete, connector.OntologyPlanAdd, connector.OntologyPlanRelease,
+		connector.OntologyPlanProposal}
 	if fmt.Sprint(ops) != fmt.Sprint(want) {
 		t.Errorf("op enum = %v, want %v", ops, want)
 	}

@@ -59,6 +59,21 @@ The worker reads:
 
 A worker is known by its token's grant and its name (`--id`, by default the host name): `tenant:<tenant>/<name>` or `shared/<name>`. Keep the name the same across restarts, or the runtime will read every workspace on its disk as unknown and remove it. On `host` the worker reports `python` and `node` when it finds them on its `PATH`, on `container` when its session image has them; a workspace opened without a `toolchain` goes only to a worker with both. [WORKERS.md](WORKERS.md#workspace-workers) and [CONFIGURATION.md](CONFIGURATION.md#workspace-workers-workspace) have the full settings.
 
+### A personal worker's roots
+
+A personal worker (RFC GW §4.5) runs on a user's own machine and offers folders of it, its roots, by name:
+
+```sh
+loomcycle worker --role workspace --personal \
+  --root code=~/code/myproject --root notes=~/notes
+```
+
+`--root name=path` may be repeated; `~` is the home folder and a relative path is taken from the current folder. The worker refuses to start when a root does not exist or is not a folder, when one root lies inside another, when a root is, holds or lies inside its own `LOOMCYCLE_WORKSPACE_ROOT`, when a name is used twice, and when `--personal` is given without a root, with the `container` engine, or `--root` without `--personal`. It reports each root to the runtime as a label carrying its name only; a root's path never leaves the machine, and no answer names it.
+
+A workspace opened on a root is that folder, not a copy. One workspace is open on a root at a time; a second is refused as busy. Releasing the workspace, or the runtime removing it, only unbinds the folder: the worker never deletes a root or anything in it. Checkpoints, restores, forks and templates are refused on a root, and the disk quota does not apply to it. The worker stages uploads in a `.loomcycle-work` folder inside the root, as in any workspace, and never clears it: what a worker killed mid-upload left there stays for the user to remove. A personal worker runs the `host` engine, so a command runs with the user's own rights and can reach the rest of that user's files by absolute path; the worker logs this at start.
+
+The runtime side, a personal worker token and opening a workspace on a root, comes with later parts of RFC GW P13; until then a personal worker's roots are not reachable from a run.
+
 ## The container engine
 
 With `LOOMCYCLE_WORKSPACE_ENGINE=container` a worker runs each workspace's commands in a container of its own, the workspace's **session** (phase 3). The worker drives a container daemon through its command line (`docker`, or `podman`); its session image is `LOOMCYCLE_WORKSPACE_CONTAINER_IMAGE` (required). The published one, `denngubsky/loomcycle-workspace:<version>` (each minor release after v1.165.0), carries Python 3 with pip and venv, Node.js with npm, git, the document and media helpers, and a fixed set of data, document and chart libraries ([WORKERS.md](WORKERS.md#the-workspace-session-image) lists them); use the tag of the runtime's own version.
@@ -336,16 +351,16 @@ A template is a named starting state: a checkpoint's files, installed packages i
 | op | What it does | Grant | Arguments |
 |---|---|---|---|
 | `save_template` | keep a checkpoint of the run's own workspace as a template | `templates` | `name`, `checkpoint`, `as`, `scope` |
-| `templates` | the templates the run may open | `open` or `templates` | — |
-| `delete_template` | delete a template | `templates` | `template`, `scope` |
+| `templates` | the templates the run may open | `open` or `templates` | `all_users` (a tenant operator's session) |
+| `delete_template` | delete a template | `templates` | `template`, `scope`, `owner` (a tenant operator's session) |
 | `open` with `template` | a new workspace as a copy of a template | `open` | `name`, `template` (not with `toolchain`) |
 
-- **Who sees one.** A `user` template is open to its author's runs only (runs of the same user); a `tenant` one to every run of the tenant. Saving or deleting a `tenant` template also needs the tenant value in the agent's `memory_scopes`. A template never leaves its tenant; a run with no user id sees tenant templates only and cannot save a user one. An isolated member (`substrate:user`) lists and opens its tenant's templates, but cannot save or delete one. `open` takes the user's own template of a name first, then the tenant's. Over the MCP server a session uses templates as its token's tenant and subject (the subject in the user's place, so a run of that user and the session share user templates); saving or deleting a tenant template there needs a tenant-operator token (`substrate:tenant` or `substrate:admin`).
+- **Who sees one.** A `user` template is open to its author's runs only (runs of the same user); a `tenant` one to every run of the tenant. Saving or deleting a `tenant` template also needs the tenant value in the agent's `memory_scopes`. A template never leaves its tenant; a run with no user id sees tenant templates only and cannot save a user one. An isolated member (`substrate:user`) lists and opens its tenant's templates, but cannot save or delete one. `open` takes the user's own template of a name first, then the tenant's. Over the MCP server a session uses templates as its token's tenant and subject (the subject in the user's place, so a run of that user and the session share user templates); saving or deleting a tenant template there needs a tenant-operator token (`substrate:tenant` or `substrate:admin`). Such a session may also clean up its tenant's user templates: `templates` with `all_users: true` lists every user's (each with its `owner`), and `delete_template` with `scope: user` and `owner` deletes one; the audit line names both the operator and the owner. Never another tenant's, never a member token, and never from inside a run, whatever bearer started it.
 - **Never overwritten.** A name already in that scope is refused with `exists`: delete it first, or save as another name.
 - **Where it is kept.** As one archive (tar, gzip) under the core's data directory (`<LOOMCYCLE_DATA_DIR>/workspace-templates/`), with its tenant, scope, toolchains and SHA-256 on a row (`workspace_templates`). The core copies the bytes and never opens them. A worker that opens a template it does not hold is sent the archive once, checks its digest, unpacks it into a cache beside its workspaces (`.loomcycle-templates/<digest>/`, at most 8 kept, the least recently used removed) and copies each new workspace from there by its checkpoint mechanism. Unpacking refuses a name that leaves the template and never follows a link.
 - **Bounds.** `workspace.template.max_mb` (default 1024) bounds one archive; a save past it keeps nothing (`template_too_large`). `workspace.template.max_per_tenant` (default 20) bounds a tenant's templates, user and tenant ones together, and `workspace.template.max_per_user` (default 5) one user's user templates, a run's and an MCP session's of that subject together, so one member cannot fill the tenant's bound (`template_limit` for either). A workspace opened from a template is held to its own `disk_quota_mb`.
 - **Python environments.** On the `host` engine an environment's paths are moved to the new workspace's folder, and on the `container` engine to `/workspace`, as for a fork; the answer's `rewritten` is not shown for an open.
-- **Audit.** A save and a delete each write an audit line (`workspace_template_save`, `workspace_template_delete`) naming the template, its scope, digest and size, and the run. Never a file's content.
+- **Audit.** A save and a delete each write an audit line (`workspace_template_save`, `workspace_template_delete`) naming the template, its scope, digest and size, the run, and for a user template its owner. Never a file's content.
 - **Erasure.** A subject's erasure (`POST /v1/_erasure` and its twins) reports the subject's user templates in tier 1 (`workspace_templates`) and deletes each row and its archive; a dry run only counts them. A tenant template the subject saved is the tenant's and stays: the report's notes and the result's `retained` (`workspace_templates_tenant`) count it, and a tenant operator removes it with `delete_template`.
 - **Not yet.** The worker image ships no templates of its own yet.
 
@@ -596,6 +611,7 @@ A session of loomcycle's MCP server (`loomcycle mcp`, `/v1/_mcp`) has no run, so
 | `workspace.checkout.max_documents` | 500 | The documents one `File op=checkout` writes. |
 | `workspace.checkout.max_bytes` | 256 MiB | The bytes one checkout writes. |
 | `workspace.checkpoint.max_per_workspace` | 8 | The checkpoints one workspace holds (1 to 100); each also counts against its disk quota. |
+| `workspace.personal_workers` | false | Let a user's own machine attach as a worker of that user's runs (RFC GW §4.5). Refused unless the mode is `remote` or `local+remote` and `worker_endpoint.listen` is on loopback. |
 | `workspace.template.max_mb` | 1024 | One template's archive, in MiB (1 to 65536). |
 | `workspace.template.max_per_tenant` | 20 | The templates a tenant holds, user and tenant ones together (1 to 1000). |
 | `workspace.template.max_per_user` | 5 | One user's user templates, runs and MCP sessions of the subject together (1 to `max_per_tenant`). |

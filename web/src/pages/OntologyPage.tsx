@@ -13,19 +13,38 @@ import {
   pickOntologyTab,
   relationSummary,
   typedFieldLabel,
+  type OntologyTab,
   type RelationNode,
 } from "../lib/ontologySections";
+import {
+  diffRows,
+  diffSideLabel,
+  diffSummary,
+  previousRelease,
+  refusalText,
+  releaseReasonLabel,
+  releaseTime,
+  releasesRefused,
+} from "../lib/ontologyReleaseDiff";
+import ErrorNotice from "../components/ErrorNotice";
+import { forbiddenKind } from "../lib/apiError";
 import { proposedOutlineText } from "../lib/ontologyProposedScheme";
 import { changeConfirmText, proposedChangeText } from "../lib/ontologyProposedChange";
 import {
+  DiffOntologyReleasesResult,
+  GetOntologyReleaseResult,
   OntologyProposal,
+  OntologyRelease,
   ProposedChange,
   ProposedSchemeView,
   OntologyResponse,
   OntologyTerm,
   adoptOntologyType,
   deleteOntologyEntry,
+  diffOntologyReleases,
   getOntology,
+  getOntologyRelease,
+  listOntologyReleases,
   planOntologyChanges,
   planOntologyRetire,
   retireOntologyEntry,
@@ -686,6 +705,273 @@ function OntologyHealthTab({ state }: { state: OntologyResponse }) {
   );
 }
 
+// ─── Releases (RFC GQ P3.7) ──────────────────────────────────────────────────
+
+const RELEASES_TAB: OntologyTab = { id: "releases", label: "releases", warn: false };
+
+// ReleasesError reads a refusal as one: a scope or access-control refusal the way
+// every page shows it (ErrorNotice), and the releases routes' own 403 (`forbidden`,
+// which ErrorNotice does not know) in the same "Not permitted" form, saying why.
+function ReleasesError({ error }: { error: unknown }) {
+  if (!forbiddenKind(error) && releasesRefused(error)) {
+    const message = refusalText(error);
+    return (
+      <div className="acl-denied" role="alert">
+        <div className="acl-denied-head">Not permitted</div>
+        <div>
+          Releases are read by an admin or a tenant operator. A release keeps the
+          ontology&rsquo;s text after an edit or an erasure removed it, so it is not offered to
+          a member.
+        </div>
+        {message && <div className="settings-muted">{message}</div>}
+      </div>
+    );
+  }
+  return <ErrorNotice error={error} />;
+}
+
+// OntologyReleasesTab lists the copies of the ontology the runtime took on each
+// confirm and each applied change, shows one as Markdown, and compares any two (or
+// one with the ontology in force). It reads only: rolling back is not offered here.
+function OntologyReleasesTab({ currentVersion }: { currentVersion?: string }) {
+  const [releases, setReleases] = useState<OntologyRelease[] | null>(null);
+  const [listErr, setListErr] = useState<unknown>(null);
+  const [viewed, setViewed] = useState<GetOntologyReleaseResult | null>(null);
+  const [from, setFrom] = useState<number | null>(null);
+  const [to, setTo] = useState<number | "current">("current");
+  const [diff, setDiff] = useState<DiffOntologyReleasesResult | null>(null);
+  const [actErr, setActErr] = useState<unknown>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    let live = true;
+    listOntologyReleases().then(
+      (r) => {
+        if (!live) return;
+        const rs = r.releases ?? [];
+        setReleases(rs);
+        if (rs.length > 0) setFrom(rs[0].seq);
+      },
+      (e) => {
+        if (live) setListErr(e);
+      },
+    );
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  const run = async (call: () => Promise<void>) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await call();
+      setActErr(null);
+    } catch (e) {
+      setActErr(e);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const view = (seq: number) =>
+    void run(async () => {
+      setViewed(await getOntologyRelease(seq));
+    });
+  const compare = (f: number, t: number | "current") =>
+    void run(async () => {
+      setFrom(f);
+      setTo(t);
+      setDiff(await diffOntologyReleases(f, t));
+    });
+
+  if (listErr) return <ReleasesError error={listErr} />;
+  if (releases === null) return <p className="settings-muted">Reading releases…</p>;
+
+  const rows = diff ? diffRows(diff) : [];
+  return (
+    <>
+      <p className="settings-help">
+        A <strong>release</strong> is a copy of the ontology the runtime takes each time it is
+        confirmed and each time an accepted change is applied; before either, a{" "}
+        <em>catch-up</em> release records an edit made since the last one. Every fact, statement
+        and annotation written under the ontology carries the <strong>content version</strong> it
+        was written under, so a release says what that version declared. The newest 50 are kept.
+        Compare two to see each entry that was added, removed or changed — a rename is one changed
+        entry, matched by its chunk.
+      </p>
+
+      {releases.length === 0 ? (
+        <p className="settings-muted">
+          No release yet. The first is taken when the ontology is confirmed.
+        </p>
+      ) : (
+        <>
+          <table className="settings-table ontology-releases">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>taken</th>
+                <th>reason</th>
+                <th>content version</th>
+                <th>by</th>
+                <th>entries</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {releases.map((r) => {
+                const prev = previousRelease(releases, r.seq);
+                return (
+                  <tr key={r.seq}>
+                    <td>{r.seq}</td>
+                    <td>{releaseTime(r.created_at)}</td>
+                    <td>{releaseReasonLabel(r.reason)}</td>
+                    <td>
+                      <code>{r.content_version || "—"}</code>
+                      {currentVersion && r.content_version === currentVersion && (
+                        <span className="settings-flash"> in force</span>
+                      )}
+                    </td>
+                    <td>{r.actor || <span className="settings-muted">—</span>}</td>
+                    <td>{r.entries}</td>
+                    <td className="settings-row-actions">
+                      <button type="button" className="ghost-btn" disabled={busy} onClick={() => view(r.seq)}>
+                        view
+                      </button>
+                      {prev && (
+                        <button
+                          type="button"
+                          className="ghost-btn"
+                          disabled={busy}
+                          onClick={() => compare(prev.seq, r.seq)}
+                        >
+                          diff from {prev.seq}
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        className="ghost-btn"
+                        disabled={busy}
+                        onClick={() => compare(r.seq, "current")}
+                      >
+                        diff to current
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+
+          <div className="settings-row">
+            <label>
+              from{" "}
+              <select
+                aria-label="from release"
+                value={from ?? ""}
+                onChange={(e) => setFrom(Number(e.target.value))}
+              >
+                {releases.map((r) => (
+                  <option key={r.seq} value={r.seq}>
+                    release {r.seq}
+                  </option>
+                ))}
+              </select>
+            </label>{" "}
+            <label>
+              to{" "}
+              <select
+                aria-label="to release"
+                value={String(to)}
+                onChange={(e) => setTo(e.target.value === "current" ? "current" : Number(e.target.value))}
+              >
+                <option value="current">the ontology in force</option>
+                {releases.map((r) => (
+                  <option key={r.seq} value={r.seq}>
+                    release {r.seq}
+                  </option>
+                ))}
+              </select>
+            </label>{" "}
+            <button type="button" disabled={busy || from === null} onClick={() => from !== null && compare(from, to)}>
+              Compare
+            </button>
+          </div>
+        </>
+      )}
+
+      {actErr !== null && <ReleasesError error={actErr} />}
+
+      {diff && (
+        <div className="ontology-release-diff">
+          <h4>
+            From {diffSideLabel(diff.from)} to {diffSideLabel(diff.to)}: {diffSummary(diff)}
+          </h4>
+          <p className="settings-muted">
+            content version <code>{diff.from.content_version || "—"}</code> →{" "}
+            <code>{diff.to.content_version || "—"}</code>
+          </p>
+          {(diff.issues ?? []).map((i) => (
+            <p className="ontology-warn" key={i}>
+              {i}
+            </p>
+          ))}
+          {rows.length > 0 && (
+            <table className="settings-table ontology-compare">
+              <thead>
+                <tr>
+                  <th>entry</th>
+                  <th>field</th>
+                  <th>before</th>
+                  <th>after</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((row) =>
+                  (row.lines.length > 0 ? row.lines : [{ field: "", before: "", after: "" }]).map((l, i) => (
+                    <tr key={`${row.chunkId}-${i}`} data-chunk={row.chunkId}>
+                      {i === 0 && (
+                        <td rowSpan={Math.max(row.lines.length, 1)}>
+                          <code>{row.name}</code>{" "}
+                          <span className="settings-muted">
+                            {row.kind} · {row.change}
+                          </span>
+                        </td>
+                      )}
+                      <td>{l.field}</td>
+                      <td className="ontology-diff-before">{l.before}</td>
+                      <td className="ontology-diff-after">{l.after}</td>
+                    </tr>
+                  )),
+                )}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+
+      {viewed && (
+        <div className="ontology-release-view">
+          <h4>
+            Release {viewed.release.seq} — {releaseReasonLabel(viewed.release.reason)},{" "}
+            {releaseTime(viewed.release.created_at)}{" "}
+            <button type="button" className="ghost-btn" onClick={() => setViewed(null)}>
+              close
+            </button>
+          </h4>
+          {viewed.plan_summary && (
+            <details className="settings-help">
+              <summary>The plan of the change it applied</summary>
+              <pre className="ontology-evidence">{JSON.stringify(viewed.plan_summary, null, 2)}</pre>
+            </details>
+          )}
+          <pre className="ontology-evidence ontology-release-md">{viewed.export_md}</pre>
+        </div>
+      )}
+    </>
+  );
+}
+
 // OntologySection is the tenant ontology's page.
 //
 // The failure it exists to prevent is not an error message: it is an operator who edits
@@ -787,7 +1073,9 @@ export default function OntologySection() {
   // the document's status field by hand. Called out explicitly, because this is
   // precisely the state that looks confirmed and behaves as draft.
   const oddStatus = !!state?.status && state.status !== "confirmed" && state.status !== "draft";
-  const tabs = state?.provisioned ? ontologyTabs(state) : [];
+  // Releases (RFC GQ P3.7) is offered to everyone the page is: the server decides who
+  // may read them, and a refusal reads as one when the tab is opened.
+  const tabs = state?.provisioned ? [...ontologyTabs(state), RELEASES_TAB] : [];
   const tab = pickOntologyTab(params.get("section"), tabs);
   const path = state?.path ?? "/memory/ontology";
 
@@ -976,7 +1264,8 @@ export default function OntologySection() {
                 aria-selected={t.id === tab}
                 className={"library-subtab" + (t.id === tab ? " library-subtab-active" : "")}
               >
-                {t.label} <span className="library-subtab-count">{t.count}</span>
+                {t.label}
+                {t.count !== undefined && <> <span className="library-subtab-count">{t.count}</span></>}
                 {t.warn && <span className="ontology-warn"> !</span>}
               </Link>
             ))}
@@ -1013,6 +1302,7 @@ export default function OntologySection() {
             {tab === "instances" && <OntologyInstancesDetail state={state} actions={entryActions} />}
             {tab === "grammars" && <OntologyGrammarsTab state={state} />}
             {tab === "health" && <OntologyHealthTab state={state} />}
+            {tab === "releases" && <OntologyReleasesTab currentVersion={state.content_version} />}
           </div>
 
           <OntologyFormatHelp />
@@ -1102,7 +1392,9 @@ function OntologyFormatHelp() {
       </p>
       <p>
         Changes take effect on the next run once the document is confirmed. Revise the document
-        in place: a replacement document gives every concept a new id.
+        in place: a replacement document gives every concept a new id. Each confirm and each
+        applied change keeps a copy of the ontology as a release, listed and compared under{" "}
+        <em>releases</em>.
       </p>
     </details>
   );

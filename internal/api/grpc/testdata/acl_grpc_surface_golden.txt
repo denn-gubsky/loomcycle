@@ -24,6 +24,7 @@ Decide	runs:create	false	use gateway:decide
 DeleteConfiguredRun	runs:create	true	run agent:*
 DeleteRunTree	runs:delete	false	delete run:*
 DeleteSnapshot	substrate:admin	false	manage runtime:snapshot
+DiffOntologyReleases	substrate:tenant	false	read document:*
 DirectoryInspect	substrate:tenant	false	read principal:user:*
 DirectoryTenants	substrate:admin	false	read runtime:tenants
 DirectoryUsers	substrate:tenant	false	read principal:user:*
@@ -49,6 +50,7 @@ ListChannels	channel:read	false	subscribe channel:*
 ListChildRuns	runs:read	true	read run:*
 ListDecisionModels	runs:create	false	use gateway:decide
 ListMyAppSignIns	any	false	-
+ListOntologyReleases	substrate:tenant	false	read document:*
 ListReviewQueue	substrate:tenant	false	read document:*
 ListRulings	substrate:tenant	false	read document:*
 ListSnapshots	substrate:admin	false	read runtime:snapshot

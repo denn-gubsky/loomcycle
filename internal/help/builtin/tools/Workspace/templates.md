@@ -7,11 +7,12 @@ user's, then your tenant's. Open one with `open` and `template`.
 
 ## Arguments
 
-None.
+- `all_users` — every user's templates of your tenant too, each with its
+  `owner`: a tenant operator's session of the MCP server only.
 
 ## Returns
 
-`{templates: [{template, scope, bytes, toolchains, created_at}]}`.
+`{templates: [{template, scope, owner?, bytes, toolchains, created_at}]}`.
 
 ## Errors
 

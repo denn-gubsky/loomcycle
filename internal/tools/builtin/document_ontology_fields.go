@@ -312,6 +312,13 @@ func (d *Document) identityCollision(ctx context.Context, key sqlmem.ScopeKey, a
 		if in.Op == "upsert_chunk" && holderKey != "" && holderKey == strings.TrimSpace(in.NaturalKey) {
 			continue
 		}
+		if in.Op == "upsert_chunk" && holderKey != "" {
+			// The upsert's key may be one a class rename rewrote: it reaches the holder
+			// through its alias, so the upsert updates the holder rather than colliding.
+			if id, _, aerr := d.chunkByNaturalKey(ctx, key, strings.TrimSpace(in.NaturalKey)); aerr == nil && id == holder {
+				continue
+			}
+		}
 		if acl != nil {
 			if ok, rerr := acl.readable(ctx, holderDoc); rerr != nil || !ok {
 				r := errBusiness("identity_collision: another chunk in this scope already holds the identity "+idKey+

@@ -131,7 +131,24 @@ type OpenArgs struct {
 	// DiskQuotaBytes bounds what the workspace may hold; zero is
 	// DefaultDiskQuotaBytes.
 	DiskQuotaBytes int64 `json:"disk_quota_bytes,omitempty"`
+	// Root, on a personal worker, binds the workspace to the user's
+	// directory of that name (RFC GW §4.5) instead of making one: the
+	// workspace is that directory, never a copy.
+	Root string `json:"root,omitempty"`
 }
+
+// Roots on a personal worker (RFC GW §4.5, P13). A root is a directory of the
+// user's own machine the user named at the worker's start; the worker reports
+// each by name as a label, never by path.
+const (
+	// RootLabelPrefix names a root among a worker's labels: "root:<name>".
+	RootLabelPrefix = "root:"
+	// ClassNotOnRoot: the op is refused on a root workspace (checkpoints,
+	// restore, fork, templates): the directory is the user's own.
+	ClassNotOnRoot = "not_on_root"
+	// ClassRootBusy: another workspace is bound to the root.
+	ClassRootBusy = "root_busy"
+)
 
 // The kinds of entry fstat and fls report.
 const (

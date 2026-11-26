@@ -363,6 +363,34 @@ func (m *Manager) Templates(ctx context.Context, o Owner) ([]store.WorkspaceTemp
 	return append(out, theirs...), nil
 }
 
+// TenantTemplates lists every template of the caller's tenant, every
+// user's included: a tenant operator's listing (D-P6-48). The caller's
+// authority is the tool's to check.
+func (m *Manager) TenantTemplates(ctx context.Context, o Owner) ([]store.WorkspaceTemplateRow, error) {
+	if o.RunID == "" || o.TenantID == "" {
+		return []store.WorkspaceTemplateRow{}, nil
+	}
+	out, err := m.store.WorkspaceTemplateListTenant(ctx, o.TenantID)
+	if out == nil {
+		out = []store.WorkspaceTemplateRow{}
+	}
+	return out, err
+}
+
+// UserTemplateOf is user owner's template name in the caller's tenant: what
+// a tenant operator deletes for another user (D-P6-48). Never another
+// tenant's: the tenant is the caller's.
+func (m *Manager) UserTemplateOf(ctx context.Context, o Owner, owner, name string) (store.WorkspaceTemplateRow, error) {
+	if o.RunID == "" || owner == "" {
+		return store.WorkspaceTemplateRow{}, ErrTemplateNotFound
+	}
+	r, err := m.store.WorkspaceTemplateGet(ctx, o.TenantID, store.WorkspaceTemplateUser, owner, name)
+	if isNotFound(err) {
+		return store.WorkspaceTemplateRow{}, fmt.Errorf("%w: %q of %q", ErrTemplateNotFound, name, owner)
+	}
+	return r, err
+}
+
 // DeleteTemplate removes a template the caller found with GetTemplate: its
 // row, then its archive. A worker that cached it keeps the tree until it is
 // evicted; nothing can name it any more (D-P6-30).
@@ -450,6 +478,16 @@ func (m *Manager) sendTemplate(ctx context.Context, o Owner, t store.WorkspaceTe
 	return err
 }
 
+// templateOwner is the user a template belongs to, for its audit line: a
+// user template's user, none for a tenant one. With an operator's delete
+// the line so names both the operator (the actor) and the owner.
+func templateOwner(t store.WorkspaceTemplateRow) string {
+	if t.Scope == store.WorkspaceTemplateUser {
+		return t.ScopeID
+	}
+	return ""
+}
+
 // recordTemplate writes the audit line of a template saved or deleted
 // (D-P6-35): the tenant, scope, name, digest and size, the run, and for a
 // save the workspace it was made from. Never a file's content.
@@ -459,7 +497,7 @@ func (m *Manager) recordTemplate(o Owner, t store.WorkspaceTemplateRow, action, 
 	}
 	_ = m.audit.Record(audit.Event{
 		Action: action, ActorTenant: o.TenantID, ActorSubject: o.UserID,
-		TargetTenant: t.TenantID, TargetName: "workspace_template:" + t.Name,
+		TargetTenant: t.TenantID, TargetName: "workspace_template:" + t.Name, TargetSubject: templateOwner(t),
 		WorkspaceID: fromWorkspace, WorkspaceOwnerRunID: o.RunID, WorkspaceOwnerAgentID: o.AgentID,
 		WorkspaceTemplateID: t.ID, WorkspaceTemplateScope: t.Scope, WorkspaceTemplateDigest: t.Digest, WorkspaceTemplateBytes: t.Bytes,
 	}) // best effort, as for shares

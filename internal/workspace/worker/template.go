@@ -110,6 +110,11 @@ func (w *worker) sessionRoot(id string) (string, error) {
 // the lock is let go; its Python environments name templateRootToken
 // instead of this workspace's folder.
 func (w *worker) templatePackOp(ctx context.Context, id, dir, real string, raw []byte, stream workspacepb.WorkspaceService_OpClient) answer {
+	// A root is the user's own folder, never packed into a template (RFC
+	// GW §4.5); it has no checkpoint to pack either.
+	if bad := w.onRoot(id, workspace.OpTemplatePack); bad != nil {
+		return *bad
+	}
 	var in workspace.TemplatePackArgs
 	if a := decodeArgs(raw, &in); a.class != "" {
 		return a

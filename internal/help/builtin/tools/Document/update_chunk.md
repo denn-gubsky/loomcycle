@@ -55,14 +55,46 @@ counts, and resend. An edit of the meaning alone, and any change to an entry
 nothing rests on, needs no fingerprint. A locked entry answers `entry_locked`
 first: no fingerprint lifts a lock.
 
-**A class something rests on is not renamed**, by its title or by its body's
-heading, with or without a fingerprint: the update is refused
-`rename_job_pending` until the runtime can carry the new name through the
-stored types, identity keys and subject keys that hold the old one. Keep the
-name, or retire the class and declare the new name as a new class. A class
-nothing rests on, a relation kind and a concept still rename (with the plan's
-fingerprint when something rests on them). The plan of such a rename carries a
-note starting `rename_job_pending:`.
+**Renaming a class something rests on** (by its title or by its body's
+heading) needs the plan's fingerprint, and starts the rename job: the same
+write records the old name as `@renamed_from <old>`, so the rows still under it
+read as the class, and the job then rewrites, first, where the ontology itself
+names the class (an instance's `@a` and its recorded key, a scheme's
+`@projects`, a relation's `@domain` or `@range`, a `ref(...)` field), then the
+stored types, the define_type registry, identity keys, subject keys (keeping an
+alias, so a writer still using the old key reaches the same subject),
+annotation classes, the class's node statistics and series, and last the
+classification record on documents (`fields.classification` `applied_type` and
+`proposed_type`). It does this in the tenant scope, then in every user and
+agent scope of the tenant (a scope from before the document plane split is
+rewritten where its documents are, and moved by its next use). The answer
+carries `rename_job` — `{id, state, step, scope, scopes_done, done, ...}`;
+`state` is `done` when no scope holds the old name, `running` when the slice
+ran out of time (the next class rename carries it on first, from the scope it
+was in), `blocked` when a key could not move. A finished job takes an `apply`
+release of the ontology. The plan of the rename shows the same as `job`: the
+rows per step, what keeps it from running (`blocked`) and the keys that would
+collide.
+
+It is refused `rename_job_pending`, with or without a fingerprint, when the
+plan could not count every user and agent scope (keys there that would collide
+are then not known). The plan's note starts `rename_job_pending:`. It is
+refused `rename_identity_collision` when a stored identity or subject key, in
+any scope, would become one another row already holds (the plan lists the
+tenant scope's under `job.collisions` and counts the others'), and
+`rename_job_running` while another rename job is unfinished. A class nothing
+rests on and a relation kind rename with the plan as before, with no job.
+
+**Renaming a concept or a scheme** changes its tag (`<scheme>/<path>`) and the
+tags of every concept under it. The documents filed under them by a tag follow:
+a re-tag job carries every document tag, chunk tag and classification record
+`proposed_tags` at or under the old tag to the new one, in the tenant scope and
+every user and agent scope (a target that already carries the new tag keeps it
+once). It leaves the ontology document's own concept chunks to the mirror,
+which gives them their new tags at confirm. The answer carries `retag_job` —
+`{id, kind: "concept_retag", from, to_tags, state, ...}`, with the same states
+as `rename_job`. While any ontology job is unfinished such a rename is refused
+`rename_job_running`, after the job is given a slice.
 
 **To rename a document**, `update_chunk` its root chunk's `title` (the root
 chunk id is `root_chunk_id` from `get_document`). `get_document`,
@@ -123,8 +155,14 @@ subject re-type that was not announced).
   fingerprint of a current plan; plan the change and resend with
   `plan_fingerprint`.
 - `update_chunk: rename_job_pending: renaming the class "<name>" needs the
-  rename job ...` — the class is in use; no fingerprint lets the rename
-  through yet. Keep its name, or retire it and declare a new class.
+  rename job ..., which cannot carry it yet (...)` — the plan could not
+  count every user and agent scope; no fingerprint lets the rename through.
+  Plan again later, or retire the class and declare a new one.
+- `update_chunk: rename_identity_collision: ...` — renaming would give a
+  stored key to a row while another holds it; merge or re-key those rows
+  first (the plan names them).
+- `update_chunk: rename_job_running: ...` — another class rename is still
+  being carried through stored rows; rename again once it has finished.
 - `principal_binding_operator_only: update_chunk: the principal field is
   reserved ...` — resend `fields` without `principal` (or with exactly the
   stored value).

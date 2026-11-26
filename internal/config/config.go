@@ -357,6 +357,10 @@ type Config struct {
 	// but its capability gate is unset, so every call default-denies" footgun
 	// (e.g. Memory without memory_scopes — F21). Not in YAML.
 	Warnings []string `yaml:"-"`
+	// Deprecations are the warnings among Warnings about what a future
+	// release removes (RFC GW §9, deprecated.go), kept apart so `doctor` can
+	// report them under their own check rather than as advisories.
+	Deprecations []string `yaml:"-"`
 
 	// UndrainedMemory lists the memory scopes agents can enqueue into with
 	// Memory op=add (or by banking evicted context) while no enabled schedule
@@ -5177,6 +5181,9 @@ func LoadLayersWith(opts LoadOptions, layers ...Layer) (*Config, error) {
 		return nil, fmt.Errorf("retired environment variables are set to something this version does not apply (a tighter bound, a feature kept off, another store, data kept or deleted differently, or a setting that moved to the yaml and is not there), and ignoring them would change this deployment; act on each, then remove its line: %s", strings.Join(refused, " | "))
 	}
 	cfg.Warnings = append(cfg.Warnings, retiredEnvWarnings(os.Environ())...)
+	// What a later release removes, while it still works (RFC GW §9).
+	cfg.Deprecations = append(deprecatedEnvWarnings(os.Environ()), deprecationWarnings(cfg, layers)...)
+	cfg.Warnings = append(cfg.Warnings, cfg.Deprecations...)
 
 	if err := applyEnvStorage(cfg, opts.OfflineTool); err != nil {
 		return nil, err

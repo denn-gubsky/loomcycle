@@ -61,6 +61,7 @@ const classGitFailed = "git_failed"
 var ownClasses = []error{
 	ErrNotARepository, ErrAlreadyExists, ErrInvalidArgument, ErrInvalidRevision,
 	ErrNotFastForward, ErrNothingToCommit, ErrWorktreeDirty, ErrPushRejected, ErrUpToDate,
+	ErrUnsupportedFeature,
 }
 
 // gitsource's classes, which a network failure carries. ErrFetchFailed is
@@ -117,6 +118,10 @@ type Repo struct {
 	wt     billy.Filesystem
 	repo   *git.Repository
 	limits Limits
+	// workspace marks a workspace's repository (OpenWorkspace): its
+	// objects come from a mirror, which only the mirror's own Fetch fills,
+	// so Fetch, Pull and the submodule ops are refused on it.
+	workspace bool
 }
 
 func newRepo(base billy.Filesystem, repo *git.Repository) *Repo {

@@ -29,7 +29,11 @@ under the document's title.**
 
 ## Returns
 
-`{ok: true, id, new_parent_id, position}`.
+`{ok: true, id, new_parent_id, position}`. Moving a concept of the tenant
+ontology changes its tag and its narrower concepts' tags; the answer then also
+carries `retag_job`, the job that carries the documents filed under the old tags
+to the new ones (`update_chunk` describes it). While any ontology job is
+unfinished such a move is refused `rename_job_running`.
 
 ## Errors
 

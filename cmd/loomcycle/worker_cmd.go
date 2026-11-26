@@ -20,6 +20,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/convert"
 	"github.com/denn-gubsky/loomcycle/internal/transcribe/vision"
 	"github.com/denn-gubsky/loomcycle/internal/workerlink"
+	wsworker "github.com/denn-gubsky/loomcycle/internal/workspace/worker"
 )
 
 // runWorker is `loomcycle worker` (RFC GO): by default a conversion worker that dials
@@ -37,7 +38,20 @@ func runWorker(args []string, stderr io.Writer) int {
 	parentPID := fs.Int("parent-pid", 0, "exit when this process is no longer the parent (set by the core for its children)")
 	oomAdj := fs.Int("oom-score-adj", 0, "on Linux, raise this process's OOM score to this value (the core sets 1000 for its children)")
 	role := fs.String("role", "conversion", "what this worker does: conversion (convert files) or workspace (hold workspaces and run their ops, RFC GW)")
+	personal := fs.Bool("personal", false, "with --role workspace: a personal worker, on a user's own machine, offering its --root folders (RFC GW P13)")
+	var roots []wsworker.Root
+	fs.Func("root", "with --personal: a folder offered as a workspace, as name=path (repeatable); the path never leaves this machine", func(v string) error {
+		r, err := parseWorkerRoot(v)
+		if err == nil {
+			roots = append(roots, r)
+		}
+		return err
+	})
 	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if (*personal || len(roots) > 0) && *role != "workspace" {
+		fmt.Fprintln(stderr, "loomcycle worker: --personal and --root need --role workspace")
 		return 2
 	}
 	if *oomAdj != 0 && runtime.GOOS == "linux" {
@@ -50,7 +64,7 @@ func runWorker(args []string, stderr io.Writer) int {
 	switch *role {
 	case "conversion":
 	case "workspace":
-		return runWorkspaceWorker(*dispatcher, *id, *parentPID, stderr)
+		return runWorkspaceWorker(*dispatcher, *id, *parentPID, *personal, roots, stderr)
 	default:
 		fmt.Fprintf(stderr, "loomcycle worker: --role %q: want conversion or workspace\n", *role)
 		return 2
