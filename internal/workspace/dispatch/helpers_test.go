@@ -29,25 +29,28 @@ import (
 const (
 	tokAcme = "tok-acme-worker"
 	// tokAcme2 is a second token of acme's grant: a rotation of tokAcme.
-	tokAcme2   = "tok-acme-worker-rotated"
-	tokOther   = "tok-other-worker"
-	tokShared  = "tok-shared-worker"
-	tokAdmin   = "tok-admin"
-	tokNoScope = "tok-runs-only"
-	tokMixed   = "tok-attach-and-runs"
+	tokAcme2  = "tok-acme-worker-rotated"
+	tokOther  = "tok-other-worker"
+	tokShared = "tok-shared-worker"
+	// tokPersonal is a personal worker token of acme's alice (RFC GW P13).
+	tokPersonal = "tok-personal-worker"
+	tokAdmin    = "tok-admin"
+	tokNoScope  = "tok-runs-only"
+	tokMixed    = "tok-attach-and-runs"
 	// tokConversion stands for a LOOMCYCLE_WORKER_TOKEN: a shared secret the
 	// conversion service compares, never an operator token.
 	tokConversion = "0123456789abcdef0123456789abcdef-conversion"
 )
 
 var principals = map[string]auth.Principal{
-	tokAcme:    {TenantID: "acme", Subject: "w-acme", Scopes: []string{auth.ScopeWorkersAttach}, TokenDefID: "def-acme"},
-	tokAcme2:   {TenantID: "acme", Subject: "w-acme", Scopes: []string{auth.ScopeWorkersAttach}, TokenDefID: "def-acme-2"},
-	tokOther:   {TenantID: "other", Subject: "w-other", Scopes: []string{auth.ScopeWorkersAttach}, TokenDefID: "def-other"},
-	tokShared:  {TenantID: "ops", Subject: "w-shared", Scopes: []string{auth.ScopeWorkersAttach}, TokenDefID: "def-shared", Restrictions: auth.Restrictions{WorkerShared: true}},
-	tokAdmin:   {TenantID: "ops", Subject: "admin", Scopes: []string{auth.ScopeAdmin}, TokenDefID: "def-admin"},
-	tokNoScope: {TenantID: "acme", Subject: "u", Scopes: []string{auth.ScopeRunsCreate}, TokenDefID: "def-runs"},
-	tokMixed:   {TenantID: "acme", Subject: "u", Scopes: []string{auth.ScopeWorkersAttach, auth.ScopeRunsCreate}, TokenDefID: "def-mixed"},
+	tokAcme:     {TenantID: "acme", Subject: "w-acme", Scopes: []string{auth.ScopeWorkersAttach}, TokenDefID: "def-acme"},
+	tokAcme2:    {TenantID: "acme", Subject: "w-acme", Scopes: []string{auth.ScopeWorkersAttach}, TokenDefID: "def-acme-2"},
+	tokOther:    {TenantID: "other", Subject: "w-other", Scopes: []string{auth.ScopeWorkersAttach}, TokenDefID: "def-other"},
+	tokShared:   {TenantID: "ops", Subject: "w-shared", Scopes: []string{auth.ScopeWorkersAttach}, TokenDefID: "def-shared", Restrictions: auth.Restrictions{WorkerShared: true}},
+	tokPersonal: {TenantID: "acme", Subject: "alice", Scopes: []string{auth.ScopeWorkersAttach}, TokenDefID: "def-personal", Restrictions: auth.Restrictions{WorkerPersonal: true}},
+	tokAdmin:    {TenantID: "ops", Subject: "admin", Scopes: []string{auth.ScopeAdmin}, TokenDefID: "def-admin"},
+	tokNoScope:  {TenantID: "acme", Subject: "u", Scopes: []string{auth.ScopeRunsCreate}, TokenDefID: "def-runs"},
+	tokMixed:    {TenantID: "acme", Subject: "u", Scopes: []string{auth.ScopeWorkersAttach, auth.ScopeRunsCreate}, TokenDefID: "def-mixed"},
 }
 
 // principalsMu guards principals: a test revokes or re-binds a token while

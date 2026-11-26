@@ -616,3 +616,20 @@ func TestAttach_MarksTheWorkersWorkspacesAsSeen(t *testing.T) {
 	waitAttached(t, d, acmeID("w1"))
 	waitFor(t, "two touches", func() bool { return st.touched() >= 2 })
 }
+
+// RFC GW P13: until the dispatcher serves a personal worker by its user
+// (the user worker id, placement and ops held to (tenant, user)), a personal
+// worker token attaches nothing. Read as a tenant worker it would take a
+// "tenant:<T>/..." id, and with it another worker's id and rows, and serve
+// every user of the tenant.
+func TestAttach_APersonalWorkerTokenIsRefusedUntilServedByItsUser(t *testing.T) {
+	d, target := core(t, newMemStore(), dispatch.Options{})
+	f := dialFake(t, target, tokPersonal)
+	_, err := f.hello(&workspacepb.Hello{WorkerId: "w1", ProtocolVersion: workspace.ProtocolVersion, Engine: workspace.EngineHost, Capacity: 4})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("personal: err = %v, want PermissionDenied", err)
+	}
+	if n := len(d.Workers()); n != 0 {
+		t.Fatalf("%d workers attached", n)
+	}
+}

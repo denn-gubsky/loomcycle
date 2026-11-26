@@ -65,6 +65,14 @@ type Restrictions struct {
 	// reading it as tenant-bound. Only a token whose scopes are exactly
 	// [workers:attach] may hold it (CheckScopes).
 	WorkerShared bool `json:"worker_shared,omitempty"`
+	// WorkerPersonal, on a workers:attach token, makes the worker a personal
+	// worker of the token's own subject (RFC GW §4.5, P13): it serves that
+	// user's runs and nobody else's. Like WorkerShared a mint-time attribute
+	// of the token, kept here so a build that does not know it refuses the
+	// token. Only a token whose scopes are exactly [workers:attach] may hold
+	// it, and never with WorkerShared (CheckScopes); never taken from a
+	// minter (Within).
+	WorkerPersonal bool `json:"worker_personal,omitempty"`
 }
 
 // ParseRetention reads a retention setting as written on a mint surface:
@@ -236,7 +244,7 @@ var restrictedAgentNameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.:/-]{0,1
 
 // IsZero reports whether nothing is restricted.
 func (r Restrictions) IsZero() bool {
-	return len(r.Agents) == 0 && len(r.Surfaces) == 0 && r.Overrides == nil && r.Rate == nil && r.Retention == "" && !r.TenantMetrics && !r.WorkerShared
+	return len(r.Agents) == 0 && len(r.Surfaces) == 0 && r.Overrides == nil && r.Rate == nil && r.Retention == "" && !r.TenantMetrics && !r.WorkerShared && !r.WorkerPersonal
 }
 
 // CheckScopes refuses a record that does not fit the scopes of the token it
@@ -249,6 +257,12 @@ func (r Restrictions) CheckScopes(scopes []string) error {
 	}
 	if r.WorkerShared && !(len(scopes) == 1 && scopes[0] == ScopeWorkersAttach) {
 		return fmt.Errorf("worker_shared applies only to a token whose scopes are exactly [%s]", ScopeWorkersAttach)
+	}
+	if r.WorkerPersonal && !(len(scopes) == 1 && scopes[0] == ScopeWorkersAttach) {
+		return fmt.Errorf("worker_personal applies only to a token whose scopes are exactly [%s]", ScopeWorkersAttach)
+	}
+	if r.WorkerPersonal && r.WorkerShared {
+		return fmt.Errorf("a worker token is worker_shared or worker_personal, never both")
 	}
 	return nil
 }
@@ -381,8 +395,9 @@ func knownSurface(s string) bool {
 // Agents is the intersection; an empty one is an error, because an empty list
 // in this record means "unrestricted", the opposite of what it would be.
 //
-// WorkerShared is r's own and is never taken from the minter: it is not a
-// restriction to inherit, and a worker token mints nothing.
+// WorkerShared and WorkerPersonal are r's own and never taken from the
+// minter: neither is a restriction to inherit, and a worker token mints
+// nothing.
 func (r Restrictions) Within(minter Restrictions) (Restrictions, error) {
 	out := r
 	// A minter confined to its tenant's metrics mints nothing that reads more.
@@ -472,6 +487,9 @@ func (r Restrictions) Describe() string {
 	}
 	if r.WorkerShared {
 		parts = append(parts, "worker_shared")
+	}
+	if r.WorkerPersonal {
+		parts = append(parts, "worker_personal")
 	}
 	return strings.Join(parts, " ")
 }

@@ -248,6 +248,7 @@ func (b *boot) wireAuth() {
 		LegacyTokenSet:         srv.LegacyTokenSet,
 		AdminPrincipalDeclared: srv.AdminPrincipalResolved,
 		ConfigTenants:          cfg.PrincipalTenants(),
+		PersonalWorkers:        srv.PersonalWorkersOn,
 	})
 	// RFC L Decision 11: per-replica auth-token resolution cache. Default
 	// 30s TTL; LOOMCYCLE_AUTH_CACHE_TTL_SECONDS=0 disables it (direct
