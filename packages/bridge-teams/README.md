@@ -80,6 +80,7 @@ Configuration is by environment:
 | `BRIDGE_VOICE` | `1` transcribes audio files attached in a 1:1 chat ([Recordings](#recordings)) | unset (off) |
 | `TEAMS_BRIDGE_FILE_HOSTS` | Comma list of host suffixes an attached file may be downloaded from | `.sharepoint.com` |
 | `TEAMS_BRIDGE_DUMP_ACTIVITIES` | `1` logs every inbound activity, redacted ([What Teams sent](#what-teams-sent)) | unset (off) |
+| `TEAMS_BRIDGE_FILES_GRAPH`, `TEAMS_BRIDGE_APP_ID`, `TEAMS_BRIDGE_NO_FILE_HINT` | Files Teams sends no link for, read through Graph, and the reply when none came ([the Graph fallback](#when-teams-sends-no-file-the-graph-fallback)) | `off` |
 
 With `BRIDGE_STORE=memory`, a restart forgets which loomcycle session each Teams conversation was in, and the next message starts a fresh one. Use `file:<path>` (one instance) or your own `ConversationStore` (several).
 
@@ -220,12 +221,50 @@ When a person attaches a file and the agent never gets it, look at what Teams de
 
 Use the dump rather than `LOG_LEVEL=debug`: at debug level the Teams SDK logs whole activity bodies unredacted, and for a working file that includes the `downloadUrl` with its credential.
 
+### When Teams sends no file: the Graph fallback
+
+On some tenants Teams delivers a file attached in a 1:1 chat as a message with an empty `text/html` attachment (or only the caption) and no `file.download.info` at all, so the bot has no link to fetch (RFC HF). The file is still in the sender's OneDrive, and the bridge can read the message through Microsoft Graph to find it. It is off by default; `BRIDGE_FILES=1` is needed for any of it.
+
+| Variable | Meaning | Default |
+|---|---|---|
+| `TEAMS_BRIDGE_FILES_GRAPH` | `off`, or `app` (app-only Graph, below). `delegated` (each person signs in once) is planned and refused for now | `off` |
+| `TEAMS_BRIDGE_APP_ID` | The Teams app's manifest `id`, a GUID: how the bridge finds the person's chat with the bot in Graph | `CLIENT_ID` (the shipped manifest's `id` is `BOT_ID`) |
+| `TEAMS_BRIDGE_NO_FILE_HINT` | Added to the reply when a message looked like a file and none came, e.g. where else to send it | unset |
+
+**With Graph off**, a message with no text and only an empty `text/html` attachment gets one reply: "I didn't receive a file. Teams didn't pass it to me." followed by `TEAMS_BRIDGE_NO_FILE_HINT` when set. The `teams message carried no file` log line stays.
+
+**With `TEAMS_BRIDGE_FILES_GRAPH=app`**, every 1:1 message that came without `file.download.info` is looked up in Graph before it reaches the agent, with or without text, since a caption leaves no trace of the file. The lookup waits at most 5 seconds; a failure or a timeout logs `teams graph lookup failed` with a reason (`token`, `chat`, `sender`, `status` with the HTTP status, `timeout`) and the text goes on alone. For each message the bridge:
+
+1. finds the person's chat with the bot once per conversation (kept in memory): the app installed for the person, filtered by `TEAMS_BRIDGE_APP_ID`, then its `chat`, which must be a one-on-one chat;
+2. reads the message by the activity's id, re-reading briefly while Graph does not have it yet;
+3. refuses a message whose Graph sender is not the activity's sender;
+4. takes its `reference` attachments (name and OneDrive link) as files, which then go through `BRIDGE_FILES_TYPES`, the byte check and the size cap exactly as attached files do, with the text in the same message;
+5. before downloading anything, reads the file's metadata through Graph's `shares` endpoint and the sender's own OneDrive (`/users/{id}/drive`, once per sender), and takes the file **only when it is in the sender's own OneDrive**, where Teams keeps a file attached from a device ("Microsoft Teams Chat Files");
+6. downloads it by item (`/drives/{drive}/items/{item}/content`) with the app's Graph token, and follows Graph's redirect to SharePoint with **no** credential, only to a host in `TEAMS_BRIDGE_FILE_HOSTS` (the file's OneDrive link must be on one too). The Graph token goes to the Graph host only (`graph.microsoft.com`, or a sovereign cloud's, from the Teams SDK's cloud setting).
+
+A message that still yields no file and looked like one gets the reply above.
+
+**Why the OneDrive check.** The app token can read every file in the tenant, and a person can post a chat message through Graph themselves with a link to any file, one they cannot open included. Without the check the bot would fetch that file for them. So in app mode a file attached from SharePoint or a team site (anything outside the sender's own OneDrive) is refused: the person hears "I couldn't download that file. Please send it again." and the bridge logs `teams file download refused` with reason `not_sender_drive`, no name or link. Delegated mode (planned) will rely on Graph enforcing the person's own access instead.
+
+**What app-only mode needs.** Application permissions on the bot's Entra app, with admin consent. They are **tenant-wide**: the bot's app can then read every chat message and every file in the tenant, not only those sent to the bot. Grant them only where your tenant's policy accepts that; delegated mode (planned), where each person signs in once and the bot reaches only their own chat and files, is the narrower choice.
+
+| For | Application permission |
+|---|---|
+| Reading the message | `Chat.Read.All` |
+| Finding the person's chat with the bot | `TeamsAppInstallation.ReadForUser.All` |
+| The file's metadata, the sender's OneDrive id, and the download | `Files.ReadWrite.All` (the `shares` endpoint lists no read-only permission; `/users/{id}/drive` takes `Files.Read.All` or above, so it is covered) |
+
+The token is the Teams SDK's app Graph token (client credentials of `CLIENT_ID`), asked for the activity's tenant.
+
+**Not yet verified on a live tenant (RFC HF P0):** the chat lookup through the installed app (and that the filter on the manifest id matches it), that a Teams activity id is the Graph message id, the shape of a file in a Graph chat message (`contentType: "reference"` with `contentUrl` and `name`), that a file attached from a device sits in the sender's own OneDrive drive, the content redirect, and whether narrower permissions (`Chat.Read.WhereInstalled`, `Files.Read.All`) suffice. Until then treat app mode as a preview, and use the dump and the log lines above to see what happens.
+
 ## Security
 
 - **Inbound:** the Teams SDK validates the Bot Connector's signature on every request. The bridge always sets the SDK's unauthenticated mode explicitly from `BRIDGE_DEV`, so a stray `DANGEROUSLY_ALLOW_UNAUTHENTICATED_REQUESTS` cannot turn validation off.
 - **Tenant fence:** activities from Entra tenants not in `TEAMS_BRIDGE_ALLOWED_TENANTS` get one refusal and never reach loomcycle.
 - **Least privilege:** the bridge's own token never runs agents. A user's token is limited to one agent, every per-run override except `interactive` is locked, it is rate-limited, and it expires.
 - **Attached files** (files or voice on): fetched with no credential, from `TEAMS_BRIDGE_FILE_HOSTS` only, redirects included, and held in memory for one request. A document is put into the person's own run with the person's own token; the agent gets its inbox ref, never its bytes or link.
+- **Graph fallback** (`TEAMS_BRIDGE_FILES_GRAPH=app`): tenant-wide application permissions, so grant them knowingly. The Graph token is sent to the Graph host only and never logged or passed to a run; a lookup runs only for a 1:1 message that passed the Bot Connector check and the tenant fence, only a message from that same sender is read further, and only a file in that sender's own OneDrive is downloaded. Graph responses are never logged or dumped.
 - **Nothing at rest:** tokens are kept in memory. Logs carry conversation and run ids, never tokens, message text or agent output.
 - **Output:** tool inputs and outputs are never sent to Teams; while the agent works, Teams sees the tool's name only.
 

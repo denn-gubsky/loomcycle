@@ -151,7 +151,8 @@ export class GraphFiles {
    *  *.sharepoint.com, so the host check does not stop it). So a file is
    *  taken only from the sender's own OneDrive, where Teams keeps a file
    *  attached from a device ("Microsoft Teams Chat Files"). A file attached
-   *  from SharePoint or a team site is refused in app mode. */
+   *  from SharePoint or a team site is refused in app mode. ASSUMPTION (RFC
+   *  HF P0): a file attached from a device is in the sender's own drive. */
   async download(ref: GraphFileRef, maxBytes: number, signal: AbortSignal): Promise<Uint8Array> {
     let content: URL;
     try {
