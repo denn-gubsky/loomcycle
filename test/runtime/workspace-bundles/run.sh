@@ -17,7 +17,8 @@
 #   - agent-teams team/orchestrator, on the team/sqldata path: writes rows
 #     into a workspace, totals them with a script and reads the report;
 #   - dev-workspace dev/exec (already code-js, run as shipped): runs a command
-#     envelope in a workspace, a failing command stopping the rest.
+#     envelope in a workspace, a failing command stopping the rest;
+#   - chat chat/medium: writes a script into a workspace and runs it.
 #
 # Needs python3 and git on PATH; the suite skips cleanly without them.
 set -euo pipefail
@@ -74,16 +75,24 @@ agents:
     provider: code-js
     tools: [Read, Grep, Glob, Git, Workspace, File, Context]
     volumes: [work]
+  chat/medium:
+    tier: ""
+    provider: code-js
+    tools: [Read, Write, Edit, Grep, Glob, WebSearch, WebFetch, HTTP, Workspace, File, Document, Memory, Path, Skill, SkillDef, Agent, Interruption, History]
+    # The bundle's `context: {mode: auto}` resolves a non-interactive run on a
+    # non-local provider to the stateful loop, which binds no tools in code-js;
+    # recap is what the chat agents get in the interactive terminal.
+    context: {mode: recap}
   team/orchestrator:
     tier: ""
     provider: code-js
     tools: [Agent, Document, TeamDef, Channel, Interruption, Context, Memory, VolumeDef, Workspace, File]
 YAML
 
-echo "[1/5] build + boot (agent-teams + team-examples + dev-workspace, workspace.mode local)"
+echo "[1/6] build + boot (agent-teams + team-examples + dev-workspace + chat, workspace.mode local)"
 go build -o bin/loomcycle ./cmd/loomcycle
 env -i PATH="$PATH" HOME="$TEST_DIR/home" \
-LOOMCYCLE_PRESETS=agent-teams,team-examples,dev-workspace \
+LOOMCYCLE_PRESETS=agent-teams,team-examples,dev-workspace,chat \
 LOOMCYCLE_MOCK_ENABLED=1 \
 LOOMCYCLE_CODE_AGENTS_ROOT="$SCRIPT_DIR/agent_code" \
 LOOMCYCLE_DATA_DIR="$DATA" \
@@ -100,7 +109,7 @@ done
 [[ "$READY" == "1" ]] || { echo "not ready:"; cat "$TEST_DIR/boot.log"; exit 1; }
 wait_until 15 grep -q "workspace worker attached" "$TEST_DIR/boot.log" || fail "the local worker did not attach"
 
-echo "[2/5] sdlc/coder: fix in the volume, test in a workspace"
+echo "[2/6] sdlc/coder: fix in the volume, test in a workspace"
 post_run "$TEST_DIR/coder.sse" sdlc/coder
 R=$(sse_text "$TEST_DIR/coder.sse")
 echo "      $R"
@@ -108,19 +117,19 @@ for want in "state=ready" "copied=yes" "tests=pass"; do
   echo "$R" | grep -q -- "$want" || fail "sdlc/coder: want '$want' in: $R"
 done
 
-echo "[3/5] sdlc/reviewer: Git diff, tests in its own workspace"
+echo "[3/6] sdlc/reviewer: Git diff, tests in its own workspace"
 post_run "$TEST_DIR/reviewer.sse" sdlc/reviewer
 R=$(sse_text "$TEST_DIR/reviewer.sse")
 echo "      $R"
 for want in "diff=seen" "tests=pass" "verdict=approve"; do
   echo "$R" | grep -q -- "$want" || fail "sdlc/reviewer: want '$want' in: $R"
 done
-echo "[4/5] team/orchestrator (team/sqldata): rows totalled in a workspace"
+echo "[4/6] team/orchestrator (team/sqldata): rows totalled in a workspace"
 post_run "$TEST_DIR/orch.sse" team/orchestrator
 R=$(sse_text "$TEST_DIR/orch.sse")
 echo "      $R"
 echo "$R" | grep -q -- "report=total=1545" || fail "team/orchestrator: want 'report=total=1545' in: $R"
-echo "[5/5] dev/exec (dev-workspace): a command envelope in a workspace"
+echo "[5/6] dev/exec (dev-workspace): a command envelope in a workspace"
 # post_run takes plain text; the envelope is JSON, so the request body is built
 # with python to escape it.
 envelope_run() {
@@ -135,6 +144,11 @@ echo "$R" | grep -q "hint" && fail "dev/exec: a failed command's report carries 
 for want in "1 ok, 1 failed, 1 skipped" "144" "[exit: 1]" "SKIPPED" "# read sq.py" "ignored (a workspace has no such setting): keep_open"; do
   echo "$R" | grep -qF -- "$want" || fail "dev/exec: want '$want' in: $R"
 done
-grep -q '^event: error$' "$TEST_DIR/coder.sse" "$TEST_DIR/reviewer.sse" "$TEST_DIR/orch.sse" "$TEST_DIR/exec.sse" && fail "an EventError appeared on a run stream"
+echo "[6/6] chat/medium: a script run in a workspace"
+post_run "$TEST_DIR/chat.sse" chat/medium
+R=$(sse_text "$TEST_DIR/chat.sse")
+echo "      $R"
+echo "$R" | grep -q -- "state=ready fib20=6765" || fail "chat/medium: want 'state=ready fib20=6765' in: $R"
+grep -q '^event: error$' "$TEST_DIR/coder.sse" "$TEST_DIR/reviewer.sse" "$TEST_DIR/orch.sse" "$TEST_DIR/exec.sse" "$TEST_DIR/chat.sse" && fail "an EventError appeared on a run stream"
 wait_until 10 no_workspaces || fail "workspace directories left after the runs ended: $(workspaces)"
 echo "=== workspace-bundles runtime suite PASSED ==="
