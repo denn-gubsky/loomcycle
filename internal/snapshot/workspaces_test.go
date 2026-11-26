@@ -2,6 +2,8 @@ package snapshot
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"slices"
@@ -281,4 +283,38 @@ func TestSnapshotWorkspaces_AGitCredentialTravelsAsAReferenceOnly(t *testing.T) 
 	if _, ok := wsRow(t, other, "ws_repo"); ok {
 		t.Errorf("a row whose git credential is not a reference was restored (warnings %v)", res.Warnings)
 	}
+}
+
+// A personal worker's id (RFC GW P13) is user:<tenant>/<first 16 hex of
+// sha256(user)>/<declared>: a row restores onto one only when the tenant is
+// its own and the hash is its own user's. A row of another user, another
+// tenant, or with no user, never points at it (P13 D-P13-24).
+func TestSnapshotWorkspaces_APersonalWorkerIsOnlyItsOwnUsers(t *testing.T) {
+	w, closeSrc := newWSSource(t)
+	defer closeSrc()
+	mine := "user:acme/" + personalHash("alice") + "/laptop"
+	w.add(t, store.WorkspaceRow{ID: "ws_own", Name: "own", OwnerRunID: w.alice, WorkerID: mine}, store.WorkspaceReady)
+	w.add(t, store.WorkspaceRow{ID: "ws_bobs", Name: "bobs", OwnerRunID: w.alice, WorkerID: "user:acme/" + personalHash("bob") + "/laptop"}, store.WorkspaceReady)
+	w.add(t, store.WorkspaceRow{ID: "ws_beta", Name: "beta", OwnerRunID: w.alice, WorkerID: "user:beta/" + personalHash("alice") + "/laptop"}, store.WorkspaceReady)
+	w.add(t, store.WorkspaceRow{ID: "ws_short", Name: "short", OwnerRunID: w.alice, WorkerID: "user:acme/" + personalHash("alice")[:8] + "/laptop"}, store.WorkspaceReady)
+	dst, closeDst := newTestStore(t)
+	defer closeDst()
+	restoreInto(t, w.st, dst, workspaceRestoreOptions())
+	if _, ok := wsRow(t, dst, "ws_own"); !ok {
+		t.Error("a row on its own user's personal worker was not restored")
+	}
+	for _, id := range []string{"ws_bobs", "ws_beta", "ws_short"} {
+		if _, ok := wsRow(t, dst, id); ok {
+			t.Errorf("%s was restored onto another user's or tenant's personal worker", id)
+		}
+	}
+	// Not even one whose hash is the empty user's.
+	if workerOfOwner("user:acme/"+personalHash("")+"/laptop", "acme", "") {
+		t.Error("a row with no user points at a personal worker")
+	}
+}
+
+func personalHash(user string) string {
+	sum := sha256.Sum256([]byte(user))
+	return hex.EncodeToString(sum[:])[:16]
 }

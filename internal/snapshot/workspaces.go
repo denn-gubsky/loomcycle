@@ -2,6 +2,9 @@ package snapshot
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -192,7 +195,7 @@ func restorableWorkspace(ctx context.Context, s store.Store, e WorkspaceEntry, o
 		return store.WorkspaceRow{}, fmt.Sprintf("state %q is not one a snapshot carries", e.State)
 	case e.Lifetime != store.WorkspaceLifetimeEphemeral && e.Lifetime != store.WorkspaceLifetimeDurable:
 		return store.WorkspaceRow{}, fmt.Sprintf("unknown lifetime %q", e.Lifetime)
-	case !workerOfTenant(e.WorkerID, e.TenantID):
+	case !workerOfOwner(e.WorkerID, e.TenantID, e.UserID):
 		return store.WorkspaceRow{}, "its worker is not one its tenant's workspaces may be on"
 	case e.Git != nil && e.Git.Credential != "" && !strings.HasPrefix(e.Git.Credential, "$cred:") && !strings.HasPrefix(e.Git.Credential, "$ghapp:"):
 		return store.WorkspaceRow{}, "its git credential is not a reference"
@@ -227,6 +230,31 @@ func restorableWorkspace(ctx context.Context, s store.Store, e WorkspaceEntry, o
 		return store.WorkspaceRow{}, fmt.Sprintf("owner kind %q is not one a snapshot carries", e.OwnerKind)
 	}
 	return row, ""
+}
+
+// workerOfOwner reports whether a row of tenant and user may point at
+// workerID: a worker of its tenant's grant or a shared one, or a personal
+// worker (RFC GW P13, user:<tenant>/<first 16 hex of sha256(user)>/<id>) of
+// that very tenant and user. A row with no user points at no personal
+// worker (P13 D-P13-24, the restore rule of its plan §5.2).
+func workerOfOwner(workerID, tenant, user string) bool {
+	rest, personal := strings.CutPrefix(workerID, "user:")
+	if !personal {
+		return workerOfTenant(workerID, tenant)
+	}
+	if user == "" {
+		return false
+	}
+	t, after, ok := strings.Cut(rest, "/")
+	if !ok || t != tenant {
+		return false
+	}
+	hash, declared, ok := strings.Cut(after, "/")
+	if !ok || declared == "" {
+		return false
+	}
+	sum := sha256.Sum256([]byte(user))
+	return subtle.ConstantTimeCompare([]byte(hash), []byte(hex.EncodeToString(sum[:])[:16])) == 1
 }
 
 // workerOfTenant reports whether a worker id carries tenant's own grant, or
