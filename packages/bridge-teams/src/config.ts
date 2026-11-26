@@ -20,6 +20,23 @@ export interface TeamsConfig {
    *  (dump.ts), to see what Teams sent. Off by default: the dump holds what
    *  people write. */
   dumpActivities: boolean;
+  /** The Graph fallback for files Teams does not send (RFC HF). */
+  graphFiles: GraphFilesConfig;
+}
+
+/** How the bridge reaches a file Teams sent no file.download.info for
+ *  (RFC HF §3.1). Read only with BRIDGE_FILES=1; off otherwise. */
+export interface GraphFilesConfig {
+  /** TEAMS_BRIDGE_FILES_GRAPH: off (the default) or app. delegated is
+   *  refused at load until RFC HF P2 builds it. */
+  mode: "off" | "app";
+  /** The Teams app's manifest id (TEAMS_BRIDGE_APP_ID, default CLIENT_ID,
+   *  which the shipped manifest uses as its id), lower-cased: how the bridge
+   *  finds the person's chat with the bot in Graph. Set in app mode. */
+  appId?: string;
+  /** TEAMS_BRIDGE_NO_FILE_HINT: what the bridge adds to its reply when a
+   *  message looked like a file and none came (RFC HF §3.8). */
+  noFileHint?: string;
 }
 
 export const DEFAULT_PORT = 3978;
@@ -39,8 +56,9 @@ export function loadConfig(env: Env = process.env): TeamsConfig {
   }
   const fileHosts = loadFileHosts(r);
   const dumpActivities = r.flag("TEAMS_BRIDGE_DUMP_ACTIVITIES");
+  const graphFiles = loadGraphFiles(r, shared.files?.enabled === true);
   r.check("teams-bridge");
-  return { shared, allowedTenants, fileHosts, dumpActivities };
+  return { shared, allowedTenants, fileHosts, dumpActivities, graphFiles };
 }
 
 /** loadFileHosts reads TEAMS_BRIDGE_FILE_HOSTS: domain suffixes such as
@@ -54,4 +72,30 @@ function loadFileHosts(r: EnvReader): string[] {
   if (hosts.length === 0) r.problems.push("TEAMS_BRIDGE_FILE_HOSTS lists no host");
   for (const h of bad) r.problems.push(`TEAMS_BRIDGE_FILE_HOSTS: "${h}" is not a domain suffix of at least two labels`);
   return hosts;
+}
+
+const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/** loadGraphFiles reads the RFC HF settings. With files off they are not
+ *  read at all, so a stray value cannot turn Graph on. The app id goes into
+ *  a Graph filter, so only a GUID (what Teams requires of a manifest id) is
+ *  taken. */
+function loadGraphFiles(r: EnvReader, filesOn: boolean): GraphFilesConfig {
+  if (!filesOn) return { mode: "off" };
+  const hint = r.get("TEAMS_BRIDGE_NO_FILE_HINT")?.trim();
+  const noFileHint = hint ? { noFileHint: hint } : {};
+  const raw = r.get("TEAMS_BRIDGE_FILES_GRAPH")?.trim().toLowerCase();
+  if (!raw || raw === "off") return { mode: "off", ...noFileHint };
+  if (raw === "delegated") {
+    r.problems.push("TEAMS_BRIDGE_FILES_GRAPH=delegated is not built yet (RFC HF P2): use app or off");
+    return { mode: "off", ...noFileHint };
+  }
+  if (raw !== "app") {
+    r.problems.push('TEAMS_BRIDGE_FILES_GRAPH must be one of "off", "app"');
+    return { mode: "off", ...noFileHint };
+  }
+  const appId = (r.get("TEAMS_BRIDGE_APP_ID") ?? r.get("CLIENT_ID") ?? "").trim().toLowerCase();
+  if (!appId) r.problems.push("TEAMS_BRIDGE_FILES_GRAPH=app needs TEAMS_BRIDGE_APP_ID (the Teams app's manifest id) or CLIENT_ID");
+  else if (!GUID.test(appId)) r.problems.push("TEAMS_BRIDGE_APP_ID must be the Teams app's manifest id, a GUID");
+  return { mode: "app", appId, ...noFileHint };
 }

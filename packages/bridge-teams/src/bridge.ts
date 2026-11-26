@@ -26,8 +26,9 @@ import { App, ExpressAdapter } from "@microsoft/teams.apps";
 import { parseCardAction, renderCard } from "./cards.js";
 import type { TeamsConfig } from "./config.js";
 import { attachmentsSummary, dumpFields } from "./dump.js";
-import { groupsOf, identify, uninstalledSub } from "./identity.js";
-import { routeMessage, seenOf } from "./inbound.js";
+import { GRAPH_PUBLIC_BASE, GraphFiles, withGraphFiles, type GraphFilesOptions } from "./graph.js";
+import { groupsOf, identify, personSub, uninstalledSub } from "./identity.js";
+import { hasFileDownloadInfo, looksLikeFile, noFileText, routeMessage, seenOf } from "./inbound.js";
 import { filesOf, teamsFilePort, teamsVoicePort } from "./voice.js";
 
 const ADAPTIVE_CARD = "application/vnd.microsoft.card.adaptive";
@@ -45,6 +46,13 @@ export type ConversationRef = {
 export class TeamsBridgeApp extends App {
   createStreamFor(ref: ConversationRef): StreamLike {
     return this.activitySender.createStream(ref as unknown as ConversationReference);
+  }
+
+  /** graphToken is the app-only Graph token for a tenant (RFC HF §3.6), as
+   *  the raw bearer, or undefined. Never logged. */
+  async graphToken(tenantId?: string): Promise<string | undefined> {
+    const t = await this.getAppGraphToken(tenantId);
+    return t ? t.toString() : undefined;
   }
 
   async sendTo(ref: ConversationRef, activity: OutboundActivity): Promise<void> {
@@ -74,6 +82,9 @@ export type TeamsBridgeOptions = BridgeOptions<ConversationRef> & {
   app?: TeamsAppOptions;
   /** The fetch attached files are downloaded with (tests). */
   fileFetch?: typeof fetch;
+  /** The Graph fallback's fetch, token and timings (tests). The token
+   *  defaults to the SDK's app Graph token, the host to its cloud's. */
+  graph?: Pick<GraphFilesOptions, "fetch" | "token" | "timeoutMs" | "retryDelaysMs">;
 };
 
 /** LoopbackExpressAdapter is the SDK's Express adapter listening on one
@@ -135,6 +146,22 @@ export function createTeamsBridge(cfg: TeamsConfig, opts: TeamsBridgeOptions = {
   });
   // The bridge's gate name in loomcycle; unset for a bridge with a token.
   const gate = shared.gate?.name;
+  const fileLog = opts.logger ?? consoleLogger;
+  // The Graph fallback (RFC HF), app-only mode. Graph's host comes from the
+  // SDK's cloud, so a sovereign cloud's token goes to its own Graph.
+  const { appId, noFileHint } = cfg.graphFiles;
+  const graph =
+    cfg.graphFiles.mode === "app" && appId
+      ? new GraphFiles({
+          base: app.graphBaseUrl ?? GRAPH_PUBLIC_BASE,
+          appId,
+          token: (tenantId) => app.graphToken(tenantId),
+          hosts: cfg.fileHosts,
+          log: fileLog,
+          ...opts.graph,
+        })
+      : undefined;
+  const filePort = teamsFilePort({ hosts: cfg.fileHosts, fetch: opts.fileFetch, log: fileLog });
 
   const adapter: BridgeAdapter<ConversationRef> = {
     platform: { name: "teams", label: "Teams" },
@@ -160,9 +187,10 @@ export function createTeamsBridge(cfg: TeamsConfig, opts: TeamsBridgeOptions = {
       typing: (ref) => app.sendTo(ref, { type: "typing" }),
       log: opts.logger ?? consoleLogger,
     }),
-    // Attached files (RFC HE), from the same hosts as recordings. The core
-    // uses it only with BRIDGE_FILES=1.
-    files: teamsFilePort({ hosts: cfg.fileHosts, fetch: opts.fileFetch, log: opts.logger ?? consoleLogger }),
+    // Attached files (RFC HE), from the same hosts as recordings, and the
+    // files the Graph fallback found (RFC HF). The core uses it only with
+    // BRIDGE_FILES=1.
+    files: graph ? withGraphFiles(filePort, graph, fileLog) : filePort,
     async start(ctx) {
       if (cfg.dumpActivities) {
         // Registered first, so it sees every activity that passed the SDK's
@@ -190,14 +218,36 @@ export function createTeamsBridge(cfg: TeamsConfig, opts: TeamsBridgeOptions = {
             ...attachmentsSummary(activity.attachments),
           });
         }
+        const id = identify(activity, cfg.allowedTenants, gate);
+        const filesOn = ctx.config.files?.enabled === true;
+        const personal = filesOn && id.ok && id.scope === "personal";
+        // With Graph on, every 1:1 message Teams sent no file for is looked
+        // up (RFC HF D3): a caption leaves no trace of the file, so a message
+        // with text may carry one too. The lookup is bounded, and the
+        // message waits for it, so its text and files reach the agent as one.
+        const sender = personSub(activity.from?.aadObjectId ?? "");
+        const conversationId = activity.conversation?.id;
+        const found =
+          graph && personal && sender && conversationId && activity.id && !hasFileDownloadInfo(atts)
+            ? await graph.lookup({ conversationId, tenantId: activity.conversation?.tenantId, userId: sender, messageId: activity.id })
+            : [];
+        // A message shaped like a file that brought none is answered, so the
+        // person knows the file never arrived (RFC HF D6). It still goes on to
+        // the router, which drops an empty message but notes the person wrote.
+        if (personal && found.length === 0 && looksLikeFile(text, atts)) {
+          await app
+            .sendTo(ref as unknown as ConversationRef, { type: "message", text: noFileText(noFileHint) })
+            .catch((err: unknown) => ctx.log.warn("teams no-file reply failed", { error: (err as Error)?.name }));
+        }
         await routeMessage(
           ctx.router,
-          identify(activity, cfg.allowedTenants, gate),
+          id,
           ref as unknown as ConversationRef,
           text,
           activity,
           ctx.config.voice?.enabled === true,
-          ctx.config.files?.enabled === true,
+          filesOn,
+          found,
         );
       });
       app.on("card.action", async ({ activity, ref }) => {

@@ -3,10 +3,12 @@ export type { ConversationRef, TeamsBridge, TeamsBridgeOptions } from "./bridge.
 export { parseCardAction, questionCard, renderCard, resultCard, reviewCard } from "./cards.js";
 export type { Card } from "./cards.js";
 export { DEFAULT_PORT, loadConfig } from "./config.js";
-export type { TeamsConfig } from "./config.js";
+export type { GraphFilesConfig, TeamsConfig } from "./config.js";
+export { GRAPH_PUBLIC_BASE, GraphFiles, isGraphFileRef, referencesOf, shareId, withGraphFiles } from "./graph.js";
+export type { GraphFileRef, GraphFilesOptions, GraphLookup } from "./graph.js";
 export { conversationSubject, groupsOf, identify, NOT_AVAILABLE_TEXT, personSub, subjectFor, tenantGroup, uninstalledSub } from "./identity.js";
 export type { ActivityIdentityFields, RefGroupFields } from "./identity.js";
-export { routeMessage } from "./inbound.js";
+export { hasFileDownloadInfo, looksLikeFile, NO_FILE_TEXT, noFileText, routeMessage } from "./inbound.js";
 export type { MessageFields, MessageRouter } from "./inbound.js";
 export { AUDIO_FILE_TYPES, audioFileOf, DEFAULT_FILE_HOSTS, FILE_DOWNLOAD_INFO, filesOf, hostAllowed, TeamsFileError, teamsFilePort, teamsVoicePort } from "./voice.js";
 export type { TeamsAttachment, TeamsAudioRef, TeamsFilePortOptions, TeamsFileRef, TeamsVoicePortOptions } from "./voice.js";
