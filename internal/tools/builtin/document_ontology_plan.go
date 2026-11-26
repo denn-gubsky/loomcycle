@@ -89,6 +89,9 @@ type plannedChange struct {
 	newName                          string // the name it gives, when editRenames
 	notes                            []string
 	counts                           map[string]*connector.OntologyPlanCount
+	// otherCollisions: for a class rename, the stored keys in user and agent scopes the
+	// rename job would move onto a key another row holds (counted, never listed).
+	otherCollisions int
 	// proposal is the proposal this change stands for (op proposal), "" for a direct one.
 	proposal string
 	// release is the release a rollback plans toward (op release), 0 for none.

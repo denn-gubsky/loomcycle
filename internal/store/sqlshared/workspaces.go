@@ -15,7 +15,7 @@ import (
 
 // workspaceColNames is the column order scanWorkspace reads.
 var workspaceColNames = []string{"id", "tenant_id", "user_id", "name", "worker_id", "kind", "lifetime", "engine",
-	"owner_run_id", "owner_agent_id", "root_run_id", "state", "shares", "owner_kind", "opened_token", "last_used_at", "egress", "created_at", "updated_at"}
+	"owner_run_id", "owner_agent_id", "root_run_id", "state", "shares", "owner_kind", "opened_token", "last_used_at", "egress", "root", "created_at", "updated_at"}
 
 var workspaceCols = workspaceColList("")
 
@@ -38,7 +38,7 @@ func scanWorkspace(d Dialect, sc Row) (store.WorkspaceRow, error) {
 	)
 	if err := sc.Scan(&r.ID, &r.TenantID, &r.UserID, &r.Name, &r.WorkerID, &r.Kind, &r.Lifetime, &r.Engine,
 		&r.OwnerRunID, &r.OwnerAgentID, &r.RootRunID, &state, &shares, &r.OwnerKind, &r.OpenedToken,
-		d.TimeDest(&r.LastUsedAt), &egress, d.TimeDest(&r.CreatedAt), d.TimeDest(&r.UpdatedAt)); err != nil {
+		d.TimeDest(&r.LastUsedAt), &egress, &r.Root, d.TimeDest(&r.CreatedAt), d.TimeDest(&r.UpdatedAt)); err != nil {
 		return store.WorkspaceRow{}, err
 	}
 	r.State = store.WorkspaceState(state)
@@ -98,13 +98,22 @@ func WorkspaceCreate(ctx context.Context, q Querier, row store.WorkspaceRow) (st
 	if row.Lifetime == store.WorkspaceLifetimeDurable && row.UserID == "" {
 		return store.WorkspaceRow{}, fmt.Errorf("workspace create: a durable workspace needs a user")
 	}
+	// A root is one user's own folder (RFC GW P13): a row with no user would
+	// match every user-less run. It is kept on that user's disk already, so
+	// never durable.
+	if row.Root != "" && row.UserID == "" {
+		return store.WorkspaceRow{}, fmt.Errorf("workspace create: a root workspace needs a user")
+	}
+	if row.Root != "" && row.Lifetime == store.WorkspaceLifetimeDurable {
+		return store.WorkspaceRow{}, fmt.Errorf("workspace create: a root workspace is not durable")
+	}
 	d := q.Dialect()
 	now := time.Now().UTC()
 	_, err := q.Exec(ctx, `INSERT INTO workspaces (`+workspaceCols+`)
 		VALUES (`+Placeholders(len(workspaceColNames))+`)`,
 		row.ID, row.TenantID, row.UserID, row.Name, row.WorkerID, row.Kind, row.Lifetime, row.Engine,
 		row.OwnerRunID, row.OwnerAgentID, row.RootRunID, string(row.State), encodeShares(row.Shares),
-		row.OwnerKind, row.OpenedToken, d.TimeArg(now), encodeEgress(row.Egress), d.TimeArg(now), d.TimeArg(now))
+		row.OwnerKind, row.OpenedToken, d.TimeArg(now), encodeEgress(row.Egress), row.Root, d.TimeArg(now), d.TimeArg(now))
 	if IsUniqueViolation(err) {
 		return store.WorkspaceRow{}, &store.ErrConflict{Kind: "workspace", ID: row.Name}
 	}

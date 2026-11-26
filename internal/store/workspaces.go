@@ -90,7 +90,11 @@ type WorkspaceRow struct {
 	// Egress are the names of the routes the workspace may send requests
 	// out through (RFC GW §6.3), fixed at open. Never nil on a row read
 	// back: none is an empty list, and an empty list is no way out.
-	Egress    []string
+	Egress []string
+	// Root is the name of the user's folder a personal worker offers, for a
+	// workspace that is that folder (RFC GW §4.5, P13); empty for every
+	// other workspace. A root workspace has a user and is not durable.
+	Root      string
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }

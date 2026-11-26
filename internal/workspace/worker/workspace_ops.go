@@ -28,6 +28,13 @@ const maxExecTimeout = 24 * time.Hour
 // reach, and fsops refuses `..`, an absolute path elsewhere and a symlink out
 // of it.
 func (w *worker) inWorkspace(ctx context.Context, dir, op string, args, input []byte) answer {
+	return w.inWorkspaceOf(ctx, filepath.Base(dir), dir, op, args, input)
+}
+
+// inWorkspaceOf is inWorkspace for workspace id, whose directory dir is not
+// <root>/<id> when id is bound to a root (RFC GW §4.5): the quota and the
+// session are keyed on the id, never on the directory's name.
+func (w *worker) inWorkspaceOf(ctx context.Context, id, dir, op string, args, input []byte) answer {
 	st, err := os.Lstat(dir)
 	if err != nil || !st.IsDir() {
 		return refuse(workspace.ClassNotFound, "the workspace is not on this worker")
@@ -46,20 +53,20 @@ func (w *worker) inWorkspace(ctx context.Context, dir, op string, args, input []
 	var a answer
 	switch op {
 	case workspace.OpExec:
-		a = w.execInQuota(ctx, filepath.Base(dir), real, raw)
+		a = w.execInQuota(ctx, id, real, raw)
 	case workspace.OpRead:
 		a = readOp(ctx, real, raw)
 	case workspace.OpWrite:
 		var in workspace.WriteArgs
 		if a = decodeArgs(raw, &in); a.class == "" {
-			a = w.inQuota(ctx, filepath.Base(dir), real, in.Path, func(*fsops.VolumeFS, *os.Root, string, os.FileInfo) int64 { return int64(len(in.Content)) }, func() answer {
+			a = w.inQuota(ctx, id, real, in.Path, func(*fsops.VolumeFS, *os.Root, string, os.FileInfo) int64 { return int64(len(in.Content)) }, func() answer {
 				return textAnswer(fsops.Write(ctx, real, "", in.Path, in.Content, 0))
 			})
 		}
 	case workspace.OpEdit:
 		var in workspace.EditArgs
 		if a = decodeArgs(raw, &in); a.class == "" {
-			a = w.inQuota(ctx, filepath.Base(dir), real, in.Path, func(v *fsops.VolumeFS, parent *os.Root, base string, fi os.FileInfo) int64 {
+			a = w.inQuota(ctx, id, real, in.Path, func(v *fsops.VolumeFS, parent *os.Root, base string, fi os.FileInfo) int64 {
 				return editGrowth(v, parent, base, fi, in)
 			}, func() answer {
 				return textAnswer(fsops.Edit(ctx, real, "", fsops.EditRequest{Path: in.Path, OldString: in.OldString, NewString: in.NewString, ReplaceAll: in.ReplaceAll}))
@@ -83,12 +90,10 @@ func (w *worker) inWorkspace(ctx context.Context, dir, op string, args, input []
 		return refuse(workspace.ClassUnsupportedOp, "this worker does not run %q", op)
 	}
 	// Only text the runtime wrote is rewritten: a refusal's detail, and the
-	// result line of a write or an edit. A file's own text (read, grep) is
-	// returned as it is, even where it holds the path.
-	if op != workspace.OpExec {
-		a = hidePaths(a, op == workspace.OpWrite || op == workspace.OpEdit, real, dir)
-	}
-	return a
+	// result line of a write or an edit. A file's own text (read, grep) and
+	// a command's output are returned as they are, even where they hold the
+	// path.
+	return hidePaths(a, op == workspace.OpWrite || op == workspace.OpEdit, real, dir)
 }
 
 // decodeArgs decodes an op's arguments strictly: an argument the op does not

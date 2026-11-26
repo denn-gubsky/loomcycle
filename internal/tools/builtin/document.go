@@ -125,11 +125,11 @@ type Document struct {
 	planScopeBudget time.Duration
 
 	// renameJobBudget bounds one slice of the class-rename job; zero is renameJobSlice.
-	// renameJobStop, when set, is asked after each step of the job and stops the slice
-	// when it answers true, as an interruption would. A test sets both; nil in
-	// production.
+	// renameJobStop, when set, is asked after each step of the job in each scope (by the
+	// scope's kind: tenant, user, agent) and stops the slice when it answers true, as an
+	// interruption would. A test sets both; nil in production.
 	renameJobBudget time.Duration
-	renameJobStop   func(step string) bool
+	renameJobStop   func(scope, step string) bool
 
 	// beforeMoveWrite, when set, runs in move_chunk after its checks and before its
 	// write. A test moves the chunk there to prove the write is conditional on the
@@ -2097,6 +2097,18 @@ func (d *Document) writeBodyAs(ctx context.Context, mscope store.MemoryScope, ke
 // document says it came from. This is the one place every body write goes
 // through, which is why the rule lives here.
 func (d *Document) putBody(ctx context.Context, mscope store.MemoryScope, key sqlmem.ScopeKey, chunkID, chunkType, body string, fields json.RawMessage, origin string, stamped map[string]any) error {
+	return d.storeBody(ctx, mscope, key, chunkID, chunkType, body, fields, origin, stamped, true)
+}
+
+// putFieldsKeepIndex is putBody for a write that changes a chunk's fields and not its
+// body: the index text is built from the body and the chunk's place, never from its
+// fields, so the stored vector stays right and no embedding call is made (the class
+// rename job's classification-record step, RFC GQ plan risk 3).
+func (d *Document) putFieldsKeepIndex(ctx context.Context, mscope store.MemoryScope, key sqlmem.ScopeKey, chunkID, chunkType, body string, fields json.RawMessage) error {
+	return d.storeBody(ctx, mscope, key, chunkID, chunkType, body, fields, "", nil, false)
+}
+
+func (d *Document) storeBody(ctx context.Context, mscope store.MemoryScope, key sqlmem.ScopeKey, chunkID, chunkType, body string, fields json.RawMessage, origin string, stamped map[string]any, embed bool) error {
 	scopeID := docMemScopeID(mscope, key)
 	// RFC BL: key chunk bodies on the same tenant the document's dirent + SQL
 	// structure use (direntTenant = the raw RunIdentity tenant), so bodies and
@@ -2169,7 +2181,9 @@ func (d *Document) putBody(ctx context.Context, mscope store.MemoryScope, key sq
 	// unsearchable, but a chunk whose write was rejected because an embedder was
 	// cold is lost work the author has to redo. Authoring must not become
 	// embedder-dependent.
-	d.embedBody(ctx, tenant, mscope, key, bodyKey, chunkID, chunkType, body)
+	if embed {
+		d.embedBody(ctx, tenant, mscope, key, bodyKey, chunkID, chunkType, body)
+	}
 	return nil
 }
 
@@ -4046,6 +4060,12 @@ func (d *Document) updateChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 			present = map[string]json.RawMessage{}
 		}
 		present["body"] = json.RawMessage(`""`)
+		// The job takes an `apply` release when it finishes; the ontology as it stands
+		// before the rename is released first when no release holds it (owner ruling Q2),
+		// so that release's diff is the rename alone. A record, not a gate.
+		if _, _, err := d.CatchUpOntologyRelease(ctx); err != nil {
+			slog.WarnContext(ctx, "ontology: catch_up release before a class rename failed", "tenant", key.Tenant, "chunk_id", in.ID)
+		}
 		if err := d.createRenameJob(ctx, key, rename); err != nil {
 			return errFrom("update_chunk: could not record the rename job, so nothing was changed: "+err.Error(), err), nil
 		}

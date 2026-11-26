@@ -260,8 +260,11 @@ func assertPlanCountsEqualDirectQueries(t *testing.T, d *Document, base context.
 	if got := planCount(t, rn, "instances"); got.N != 1 {
 		t.Errorf("instances = %+v, want Acme", got)
 	}
-	if rn.Risk != connector.OntologyRiskStales || len(rn.Notes) == 0 {
-		t.Errorf("rename Company: risk %s notes %v, want stales and the rename-job note", rn.Risk, rn.Notes)
+	// The rename job carries it (RFC GQ P5.4): the user scope's rows and Acme's @a no
+	// longer refuse it; the job's notes say the instance is rewritten with it.
+	if rn.Risk != connector.OntologyRiskStales || rn.Job == nil || !rn.Job.Runnable ||
+		!strings.Contains(strings.Join(rn.Job.Notes, "\n"), `the instance "Acme" is of the class`) {
+		t.Errorf("rename Company: risk %s job %+v, want stales and a runnable job naming Acme's @a", rn.Risk, rn.Job)
 	}
 
 	// Edit: a meaning-only edit keeps everything; an edit adding @functional counts the

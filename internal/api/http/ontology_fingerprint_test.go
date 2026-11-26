@@ -17,9 +17,10 @@ import (
 // /v1/_document, a tenant operator's retire of a class something rests on, without a
 // plan's fingerprint, answers 409 plan_required carrying the fingerprint POST
 // /v1/_ontology/plan reports; a wrong one answers 409 plan_stale; the plan's own
-// fingerprint applies it. Renaming that class while a user scope holds a row of it,
-// which the rename job does not reach yet (RFC GQ P5.3), is refused rename_job_pending
-// (the RFC GQ ruling of 2026-11-20), with the plan's fingerprint too.
+// fingerprint applies it. Renaming that class while a user scope holds a subject key it
+// would move onto a key another subject there holds is refused rename_identity_collision
+// with the plan's fingerprint too: the rename job reaches user scopes (RFC GQ P5.4), and
+// the plan finds the collision there first.
 func TestOntologyEdit_PlanRefusalIs409WithTheFingerprint(t *testing.T) {
 	s, mi := tierFixture(t)
 	replaceOntologyWithSections(t, s, mi, []ontologyTestChunk{
@@ -41,6 +42,9 @@ func TestOntologyEdit_PlanRefusalIs409WithTheFingerprint(t *testing.T) {
 	}
 	exec(map[string]any{"op": "create_document", "scope": "tenant", "title": "A memo", "type": "Memo"})
 	exec(map[string]any{"op": "create_document", "scope": "user", "title": "My memo", "type": "Memo"})
+	for _, k := range []string{"Memo:staff", "Memorandum:staff"} {
+		exec(map[string]any{"op": "create_document", "scope": "user", "title": "Staff", "type": "Memo", "subject": "Staff", "natural_key": k})
+	}
 	memo := s.getOntology(t, mi.Tenant).ClassChunks["Memo"]
 	op := tierOperator(mi.Tenant, "op")
 
@@ -55,8 +59,8 @@ func TestOntologyEdit_PlanRefusalIs409WithTheFingerprint(t *testing.T) {
 		return s.postDocument(t, op, "", body)
 	}
 	rename, retire := `"title":"Memorandum"`, fmt.Sprintf(`"status":%q`, memrank.OntologyStatusRetired)
-	if code, out := update(rename, plan.Fingerprint); code != http.StatusUnprocessableEntity || !strings.Contains(fmt.Sprint(out["error"]), "rename_job_pending") {
-		t.Errorf("rename with the plan's fingerprint = %d %v, want 422 rename_job_pending", code, out)
+	if code, out := update(rename, plan.Fingerprint); code != http.StatusUnprocessableEntity || !strings.Contains(fmt.Sprint(out["error"]), "rename_identity_collision") {
+		t.Errorf("rename with the plan's fingerprint = %d %v, want 422 rename_identity_collision", code, out)
 	}
 	for _, c := range []struct{ fp, code string }{{"", "plan_required"}, {"stale", "plan_stale"}} {
 		code, out := update(retire, c.fp)

@@ -59,6 +59,21 @@ The worker reads:
 
 A worker is known by its token's grant and its name (`--id`, by default the host name): `tenant:<tenant>/<name>` or `shared/<name>`. Keep the name the same across restarts, or the runtime will read every workspace on its disk as unknown and remove it. On `host` the worker reports `python` and `node` when it finds them on its `PATH`, on `container` when its session image has them; a workspace opened without a `toolchain` goes only to a worker with both. [WORKERS.md](WORKERS.md#workspace-workers) and [CONFIGURATION.md](CONFIGURATION.md#workspace-workers-workspace) have the full settings.
 
+### A personal worker's roots
+
+A personal worker (RFC GW §4.5) runs on a user's own machine and offers folders of it, its roots, by name:
+
+```sh
+loomcycle worker --role workspace --personal \
+  --root code=~/code/myproject --root notes=~/notes
+```
+
+`--root name=path` may be repeated; `~` is the home folder and a relative path is taken from the current folder. The worker refuses to start when a root does not exist or is not a folder, when one root lies inside another, when a root is, holds or lies inside its own `LOOMCYCLE_WORKSPACE_ROOT`, when a name is used twice, and when `--personal` is given without a root, with the `container` engine, or `--root` without `--personal`. It reports each root to the runtime as a label carrying its name only; a root's path never leaves the machine, and no answer names it.
+
+A workspace opened on a root is that folder, not a copy. One workspace is open on a root at a time; a second is refused as busy. Releasing the workspace, or the runtime removing it, only unbinds the folder: the worker never deletes a root or anything in it. Checkpoints, restores, forks and templates are refused on a root, and the disk quota does not apply to it. The worker stages uploads in a `.loomcycle-work` folder inside the root, as in any workspace, and never clears it: what a worker killed mid-upload left there stays for the user to remove. A personal worker runs the `host` engine, so a command runs with the user's own rights and can reach the rest of that user's files by absolute path; the worker logs this at start.
+
+The runtime side, a personal worker token and opening a workspace on a root, comes with later parts of RFC GW P13; until then a personal worker's roots are not reachable from a run.
+
 ## The container engine
 
 With `LOOMCYCLE_WORKSPACE_ENGINE=container` a worker runs each workspace's commands in a container of its own, the workspace's **session** (phase 3). The worker drives a container daemon through its command line (`docker`, or `podman`); its session image is `LOOMCYCLE_WORKSPACE_CONTAINER_IMAGE` (required). The published one, `denngubsky/loomcycle-workspace:<version>` (each minor release after v1.165.0), carries Python 3 with pip and venv, Node.js with npm, git, the document and media helpers, and a fixed set of data, document and chart libraries ([WORKERS.md](WORKERS.md#the-workspace-session-image) lists them); use the tag of the runtime's own version.

@@ -190,7 +190,8 @@ func (d *Document) AcceptChangeProposal(ctx context.Context, scope, chunkID, pla
 		slog.WarnContext(ctx, "ontology: catch_up release before an accept failed", "proposal", chunkID, "err", err)
 		releaseWarnings = append(releaseWarnings, "No release was taken of the ontology before this change: "+err.Error())
 	}
-	if err := d.applyChangeAccept(ctx, a, fp, &rep); err != nil {
+	// A class rename's job may finish inside the write; this accept takes the release.
+	if err := d.applyChangeAccept(withRenameReleaseByCaller(ctx), a, fp, &rep); err != nil {
 		return true, rep, err
 	}
 	rep.Superseded, rep.Warnings = d.supersedeChangeProposals(ctx, a)

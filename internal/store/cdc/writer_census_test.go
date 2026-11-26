@@ -43,9 +43,10 @@ var changeDocumentStampers = map[string]bool{
 var stampedWriters = map[string]int{
 	// Every body write: create_document, create_chunk, update_chunk, upsert_chunk,
 	// set_asset, import_md (new and reimport), facts, subject merge and adoption,
-	// ontology instances. The callers that know the document stamp it; putBody
+	// ontology instances, the rename job's classification records (storeBody, which
+	// putBody and putFieldsKeepIndex call). The callers that know the document stamp it; it
 	// reads the chunk row's for the rest.
-	"internal/tools/builtin/document.go:(*Document).putBody": 2,
+	"internal/tools/builtin/document.go:(*Document).storeBody": 2,
 	// Every body delete: delete_chunk, delete_document, create_document's unwind,
 	// the retention prune (cascadeDeleteChunks) and the fact re-home's dropped
 	// placeholder root.
