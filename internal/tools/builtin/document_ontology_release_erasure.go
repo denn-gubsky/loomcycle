@@ -155,10 +155,9 @@ func (d *Document) EraseSubjectsFromReleases(ctx context.Context, subjects []Sub
 	if dryRun || (len(matches) == 0 && len(summaries) == 0) {
 		return out, nil
 	}
-	// A scope from before the flag gains it here: provisioning runs once per process.
-	if err := d.migrateReleaseRedacted(ctx, key); err != nil {
-		return out, err
-	}
+	// A scope from before the flag has none yet if this process provisioned it first:
+	// the reads above probed for the column, and a failed probe outside noWrites
+	// re-provisions the scope (reensureSchema), which runs migrateReleaseRedacted.
 	for _, s := range summaries {
 		if err := d.exec(ctx, key, `UPDATE ontology_releases SET plan_summary = ?, redacted = 1 WHERE seq = ?`, s.summary, s.seq); err != nil {
 			return out, fmt.Errorf("scrub release %d's plan summary: %w", s.seq, err)
