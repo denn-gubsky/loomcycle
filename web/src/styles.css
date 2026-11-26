@@ -10014,12 +10014,34 @@ button.doc-ref-target.external {
   outline: 1px solid var(--running);
   outline-offset: -1px;
 }
-/* A folder's document count (RFC HA): empty until the runtime sends one. */
+/* The runtime's filter (RFC HA): a document that matched itself carries the
+   search's edge mark, so "marked" reads the same in both modes; a document
+   kept only for the names below it steps back. Folders never match
+   themselves and stay as they are — their count is of matches. */
+.etree-row.filter-match {
+  box-shadow: inset 2px 0 0 var(--running);
+}
+.etree-row.filter-kept .etree-name,
+.etree-row.filter-kept .etree-icon {
+  color: var(--fg-soft);
+}
+.etree-row.filter-kept .etree-name {
+  font-style: italic;
+}
+/* A folder's document count (RFC HA): empty until the runtime sends one.
+   Figures are tabular so counts line up down the tree; a capped count
+   ("10k+") is a floor, set a touch lighter. */
 .etree-count {
   margin-left: 6px;
   color: var(--fg-soft);
   font-size: var(--ex-text-meta);
   font-weight: 400;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.etree-count.capped {
+  letter-spacing: 0.01em;
+  opacity: 0.85;
 }
 .etree-count:empty {
   display: none;

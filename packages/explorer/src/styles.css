@@ -2333,12 +2333,34 @@
   outline: 1px solid var(--running);
   outline-offset: -1px;
 }
-/* A folder's document count (RFC HA): empty until the runtime sends one. */
+/* The runtime's filter (RFC HA): a document that matched itself carries the
+   search's edge mark, so "marked" reads the same in both modes; a document
+   kept only for the names below it steps back. Folders never match
+   themselves and stay as they are — their count is of matches. */
+.loomcycle-explorer .etree-row.filter-match {
+  box-shadow: inset 2px 0 0 var(--running);
+}
+.loomcycle-explorer .etree-row.filter-kept .etree-name,
+.loomcycle-explorer .etree-row.filter-kept .etree-icon {
+  color: var(--fg-soft);
+}
+.loomcycle-explorer .etree-row.filter-kept .etree-name {
+  font-style: italic;
+}
+/* A folder's document count (RFC HA): empty until the runtime sends one.
+   Figures are tabular so counts line up down the tree; a capped count
+   ("10k+") is a floor, set a touch lighter. */
 .loomcycle-explorer .etree-count {
   margin-left: 6px;
   color: var(--fg-soft);
   font-size: var(--ex-text-meta);
   font-weight: 400;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.loomcycle-explorer .etree-count.capped {
+  letter-spacing: 0.01em;
+  opacity: 0.85;
 }
 .loomcycle-explorer .etree-count:empty {
   display: none;
