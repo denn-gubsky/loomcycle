@@ -152,10 +152,11 @@ agents:
       open: true                 # may open workspaces of its own
       templates: true            # may save and delete templates (default false)
       connect: true              # may reach a peer's exposed ports through a share, and share with connect (default false)
+      durable: true              # may open durable workspaces, kept for the user's next run (default false)
       engine: host               # least isolating engine it accepts; unset = any
 ```
 
-`exec`, `run_cell`, `reset_kernel`, `start`, `stop`, `logs`, `request` and `await` need `exec`; `write` and `edit` need `write`; `read`, `view`, `glob`, `grep`, `list` and `status` need `read`; `open` needs `open: true`; `expose` and `unexpose` need `expose: true`; `request` on a workspace shared with the run needs `connect: true` instead of `exec`. A sub-agent holds only what both it and its parent hold, before and after a resume. The grant is not per-run overridable, and an agent a tenant member authors may not set it. A grant on an agent without the tool, or while `workspace.mode` is off, does nothing; the boot log and `loomcycle doctor` name such agents.
+`exec`, `run_cell`, `reset_kernel`, `start`, `stop`, `logs`, `request` and `await` need `exec`; `write` and `edit` need `write`; `read`, `view`, `glob`, `grep`, `list` and `status` need `read`; `open` needs `open: true`; `expose` and `unexpose` need `expose: true`; `open` with `lifetime: "durable"` needs `durable: true`; `request` on a workspace shared with the run needs `connect: true` instead of `exec`. A sub-agent holds only what both it and its parent hold, before and after a resume. The grant is not per-run overridable, and an agent a tenant member authors may not set it. A grant on an agent without the tool, or while `workspace.mode` is off, does nothing; the boot log and `loomcycle doctor` name such agents.
 
 ## Egress
 
@@ -229,10 +230,10 @@ One tool, `Workspace`, with an `op`:
 
 | op | What it does | Arguments |
 |---|---|---|
-| `open` | open (or return) a workspace of this run | `name`, `toolchain` (`python` or `node`; omit for a worker with both) |
+| `open` | open (or return) a workspace of this run | `name`, `toolchain` (`python` or `node`; omit for a worker with both), `lifetime` (`durable`: see Durable workspaces) |
 | `list` | this run's workspaces | — |
 | `status` | its state, and whether its directory is on the worker | `name` |
-| `release` | delete it now | `name` |
+| `release` | delete it now; a durable one is kept for the user's next run unless `discard` | `name`, `discard` |
 | `exec` | run a shell command in it (`/bin/sh -c`) | `name`, `command`, `cwd`, `timeout_s` |
 | `run_cell` | run code in an interpreter that keeps its variables between calls | `name`, `code`, `kernel` (`python` or `node`), `timeout_s` |
 | `reset_kernel` | stop the interpreter; the next cell starts clean | `name`, `kernel` |
@@ -552,6 +553,36 @@ agents:
 **How long it lasts.** A share is stored on the workspace's row, so every replica honours it and it survives a pause and a resume of either run. It ends with `unshare`, with the workspace's release, or when either run ends.
 
 **Audit.** Each share, unshare and each tool call through a share writes an audit event (`workspace_share`, `workspace_unshare`, `workspace_share_use`) naming the workspace, both runs and the access; a share with connect says so (`connect`), and each request through one is a use naming the port (`request :<port> via Workspace`).
+
+## Durable workspaces
+
+A durable workspace is kept after its run ends, under the tenant, the user and its name (RFC GW §4.2, P12). A later run of the same user opens it again and finds its files, on the worker that holds them.
+
+```yaml
+workspace:
+  durable:
+    enabled: true          # off unless set
+    max_per_user: 8        # durable workspaces a user keeps, pinned or parked (default 8)
+agents:
+  builder:
+    tools: [Workspace]
+    workspace:
+      ops: [read, write, exec]
+      open: true
+      durable: true        # may open durable workspaces (default false)
+```
+
+```json
+{"op": "open", "name": "site", "lifetime": "durable"}
+```
+
+- **Who reaches it.** Only runs of the user who opened it, in its tenant, by its name and `lifetime: "durable"`. An `open` without `lifetime` never reaches it: it makes an ephemeral workspace of its own. Another user of the tenant who opens the same name gets a workspace of their own.
+- **One run at a time.** A run that opens it holds it (its pin). A second live run of the user is refused `held`, naming the holder's agent id. The pin is taken by a compare-and-set on the workspace's row, so two runs on two replicas never both hold it. A run that holds it and is paused keeps it.
+- **When its run ends, or releases it,** it is parked: its files stay; what runs in it ends (servers, interpreters, the session); its shares end, its pages close, and a Documents checkout in it is forgotten, so commit before you release. A parked workspace is reached by no run, takes no place in its worker's capacity, and sends nothing out through egress.
+- **Opening it again** pins it to the new run on its worker. The worker must be attached to the replica the run is on (else `worker_lost`; try again), and the run's grant must cover the engine and the egress routes it was opened with (else `not_granted`). Its routes stay the ones it was opened with; a template is for a new one only.
+- **Removing it.** `release {name, discard: true}` deletes it, files and all; it also deletes, by name, a durable workspace of the user that no live run holds. Otherwise it is kept until the user's erasure: nothing deletes a parked workspace by age.
+- **Its worker.** A durable workspace lives on one worker's disk. If the worker goes away, the workspace is marked lost after `lost_after_s` and `open` answers `lost`; when the worker comes back with its disk, the workspace is ready again, whatever became of its last run.
+- **Not over the MCP server.** A workspace opened over loomcycle's MCP server is never durable; it ends by the session's release rule.
 
 ## Documents as a working tree
 

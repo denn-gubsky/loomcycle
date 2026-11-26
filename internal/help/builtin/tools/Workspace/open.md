@@ -20,6 +20,14 @@ workspace unchanged.
 - `template` — a template to start from, by name (`templates` lists them):
   your own first, then your tenant's. The workspace starts as a copy of its
   files and is then yours. Not with `toolchain`: the template names its own.
+- `lifetime` — `ephemeral` (the default: gone when your run ends) or
+  `durable`: kept under your user and this name after your run ends, with
+  its files. A later run of yours opens it again with
+  `{"op": "open", "name": ..., "lifetime": "durable"}` and finds its files;
+  it returns on the worker that holds it. Only one run holds it at a time.
+  Needs your grant's `workspace.durable` and the operator's
+  `workspace.durable.enabled`. An open without `lifetime` never reaches a
+  durable workspace: it makes an ephemeral one.
 
 ## Returns
 
@@ -28,9 +36,17 @@ lists the routes when it has any.
 
 ## Errors
 
-- `not_granted` — `egress` names a route your grant does not.
+- `not_granted` — `egress` names a route your grant does not; or, for a
+  durable workspace, your grant has no `durable`, or does not cover the
+  engine or routes it was opened with.
+- `durable_off` — durable workspaces are off here.
+- `held` — another run of yours holds that durable workspace; the detail
+  names its agent id. It is free when that run releases it or ends.
+- `lost` — the durable workspace's worker is away: try later, or
+  `release {name, discard: true}`.
 - `limit` — your run (or your tenant) holds as many workspaces as allowed:
-  `release` one first.
+  `release` one first. For durable ones: you keep as many as allowed
+  (`workspace.durable.max_per_user`); discard one first.
 - `no_worker` — no attached worker serves you with that toolchain.
 - `at_capacity` — every worker that could take it is full.
 - `template_not_found` — no template of that name you may use.
