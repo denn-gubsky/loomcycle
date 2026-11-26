@@ -94,11 +94,32 @@ export function looksLikeFile(text: string, attachments: readonly TeamsAttachmen
   return atts.every((a) => (a.contentType ?? "").toLowerCase().startsWith("text/html") && htmlIsEmpty(a.content));
 }
 
-function htmlIsEmpty(content: unknown): boolean {
+const NBSP = ["&nbsp;", "&#160;"];
+
+/** htmlIsEmpty says an HTML body shows no text: outside its tags there is
+ *  only whitespace and non-breaking spaces. One linear pass that only
+ *  decides yes or no; it builds no text, so nothing it reads is ever used
+ *  as HTML. An unclosed tag counts as text, so it is not empty. */
+export function htmlIsEmpty(content: unknown): boolean {
   if (content === undefined || content === null) return true;
   if (typeof content !== "string") return false;
-  return !content
-    .replace(/<[^>]*>/g, "")
-    .replace(/&nbsp;|&#160;/gi, " ")
-    .trim();
+  let i = 0;
+  while (i < content.length) {
+    const c = content[i]!;
+    if (c === "<") {
+      const end = content.indexOf(">", i + 1);
+      if (end < 0) return false;
+      i = end + 1;
+      continue;
+    }
+    if (c === "&") {
+      const entity = NBSP.find((e) => content.slice(i, i + e.length).toLowerCase() === e);
+      if (!entity) return false;
+      i += entity.length;
+      continue;
+    }
+    if (c.trim() !== "") return false;
+    i++;
+  }
+  return true;
 }

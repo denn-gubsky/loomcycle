@@ -12,8 +12,8 @@ import { FILE_TEXT, MemoryStore, type FileIn, type FilePort } from "@loomcycle/b
 
 import { createTeamsBridge, type TeamsBridge, type TeamsBridgeOptions } from "../src/bridge.js";
 import { loadConfig } from "../src/config.js";
-import { GraphFileRefusal, GraphFiles, shareId, withGraphFiles, type GraphFileRef, type GraphFilesOptions } from "../src/graph.js";
-import { looksLikeFile, NO_FILE_TEXT, noFileText } from "../src/inbound.js";
+import { GraphFileRefusal, GraphFiles, shareId, trimTrailingSlashes, withGraphFiles, type GraphFileRef, type GraphFilesOptions } from "../src/graph.js";
+import { htmlIsEmpty, looksLikeFile, NO_FILE_TEXT, noFileText } from "../src/inbound.js";
 import { FILE_DOWNLOAD_INFO, TeamsFileError, type TeamsAttachment } from "../src/voice.js";
 import { FakeLoomcycle, RecordingLogger, silentLogger, waitFor } from "./fakes.js";
 
@@ -64,6 +64,9 @@ function world(over: Partial<World> = {}): World {
 }
 
 type Req = { url: string; auth: string | null; redirect?: RequestInit["redirect"] };
+
+/** onGraph says a request went to the Graph host, by its parsed origin. */
+const onGraph = (r: Req) => new URL(r.url).origin === GRAPH;
 
 /** fakeGraph answers Graph's calls and SharePoint's downloads from w, and
  *  records every request with the Authorization it carried. */
@@ -239,7 +242,7 @@ describe("the Graph download", () => {
     const { files, requests, log } = graphFiles(world({ itemDrive: `drive-${MALLORY}` }));
     const port = withGraphFiles({ download: async () => ({ bytes: PDF }) }, files, log);
     await expect(port.download({ ref: ref(), name: "a.pdf", type: "pdf" }, 1000, signal())).rejects.toBeInstanceOf(GraphFileRefusal);
-    expect(requests.some((r) => r.url.includes("/content") || !r.url.startsWith(GRAPH))).toBe(false);
+    expect(requests.some((r) => r.url.includes("/content") || !onGraph(r))).toBe(false);
     expect(log.lines).toEqual([{ level: "warn", msg: "teams file download refused", attrs: { reason: "not_sender_drive", via: "graph" } }]);
   });
 
@@ -257,7 +260,9 @@ describe("the Graph download", () => {
   });
 
   it("encodes a sharing URL as unpadded base64url", () => {
-    expect(shareId("https://a.sharepoint.com/x?y=1")).toBe(`u!${Buffer.from("https://a.sharepoint.com/x?y=1").toString("base64").replace(/=+$/, "").replace(/\+/g, "-").replace(/\//g, "_")}`);
+    // Standard base64: aHR0cHM6Ly9hLnNoYXJlcG9pbnQuY29tL3g/eT0x and ...tLz8+Pg==
+    expect(shareId("https://a.sharepoint.com/x?y=1")).toBe("u!aHR0cHM6Ly9hLnNoYXJlcG9pbnQuY29tL3g_eT0x");
+    expect(shareId("https://a.sharepoint.com/?>>")).toBe("u!aHR0cHM6Ly9hLnNoYXJlcG9pbnQuY29tLz8-Pg");
   });
 
   it("refuses a contentUrl off the allowed hosts without asking Graph", async () => {
@@ -313,6 +318,21 @@ describe("looksLikeFile", () => {
     expect(looksLikeFile("", [])).toBe(false);
     expect(looksLikeFile("", [html("<p>hi</p>")])).toBe(false);
     expect(looksLikeFile("", [html(""), { contentType: FILE_DOWNLOAD_INFO, content: {} }])).toBe(false);
+  });
+
+  it("reads an HTML body as empty only when it shows no text", () => {
+    expect(htmlIsEmpty("<div><p> </p>&NBSP;&#160;<br/></div>\n")).toBe(true);
+    expect(htmlIsEmpty("<p>a</p>")).toBe(false);
+    expect(htmlIsEmpty("<p")).toBe(false);
+    expect(htmlIsEmpty("&amp;")).toBe(false);
+    expect(htmlIsEmpty("<<<<".repeat(50_000))).toBe(false);
+    expect(htmlIsEmpty({})).toBe(false);
+  });
+
+  it("trims a base URL's trailing slashes", () => {
+    expect(trimTrailingSlashes("https://graph.microsoft.us///")).toBe("https://graph.microsoft.us");
+    expect(trimTrailingSlashes("https://graph.microsoft.com")).toBe("https://graph.microsoft.com");
+    expect(trimTrailingSlashes("/".repeat(100_000))).toBe("");
   });
 
   it("adds the operator's hint to the reply", () => {
@@ -472,7 +492,7 @@ describe("teams bridge with the Graph fallback", () => {
     expect(lc.callsTo("putInboxFile")[0]!.args).toEqual(["run-1", "a.pdf", "application/pdf"]);
     expect(lc.inbox![0]!.bytes).toEqual(PDF);
     expect(graph.requests.find((r) => r.url.includes("/messages/"))!.url).toContain(`/messages/in-`);
-    const sp = graph.requests.filter((r) => !r.url.startsWith(GRAPH));
+    const sp = graph.requests.filter((r) => !onGraph(r));
     expect(sp.map((r) => r.url)).toEqual([SP_LINK]);
     expect(sp[0]!.auth).toBeNull();
     expect(JSON.stringify(lc.calls)).not.toContain(TOKEN);
@@ -498,7 +518,7 @@ describe("teams bridge with the Graph fallback", () => {
     await waitFor(() => said.length > 0, "the download refusal");
     expect(said).toEqual([FILE_TEXT.download(1)]);
     expect(lc.callsTo("putInboxFile")).toEqual([]);
-    expect(graph.requests.some((r) => r.url.includes("/content") || !r.url.startsWith(GRAPH))).toBe(false);
+    expect(graph.requests.some((r) => r.url.includes("/content") || !onGraph(r))).toBe(false);
   });
 
   it("tells the person no file came when Graph is off, with the operator's hint", async () => {

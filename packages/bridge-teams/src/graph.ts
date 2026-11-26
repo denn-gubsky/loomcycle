@@ -116,7 +116,7 @@ export class GraphFiles {
 
   constructor(private readonly o: GraphFilesOptions) {
     this.doFetch = o.fetch ?? fetch;
-    this.base = o.base.replace(/\/+$/, "");
+    this.base = trimTrailingSlashes(o.base);
   }
 
   /** lookup is the files the message carries in Graph, or none. It never
@@ -339,6 +339,14 @@ async function pinned(link: string, hosts: readonly string[], maxBytes: number, 
         throw new TeamsFileError(err.reason);
     }
   }
+}
+
+/** trimTrailingSlashes drops the slashes a base URL ends with, without a
+ *  regex. */
+export function trimTrailingSlashes(s: string): string {
+  let end = s.length;
+  while (end > 0 && s[end - 1] === "/") end--;
+  return s.slice(0, end);
 }
 
 function signInPage(contentType: string): boolean {
