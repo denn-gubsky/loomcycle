@@ -791,6 +791,10 @@ type mockConnector struct {
 	jobRes       connector.OntologyJobResult
 	jobErr       error
 
+	rollbackReq connector.ApplyOntologyRollbackRequest
+	rollbackRes connector.ApplyOntologyRollbackResult
+	rollbackErr error
+
 	dirTenant      atomic.Value
 	erasureTenant  atomic.Value
 	erasureSubject atomic.Value
@@ -1399,6 +1403,12 @@ func (m *mockConnector) GetOntologyJob(_ context.Context, req connector.GetOntol
 func (m *mockConnector) ResumeOntologyJob(_ context.Context, req connector.ResumeOntologyJobRequest) (connector.OntologyJobResult, error) {
 	m.jobResumeReq = req
 	return m.jobRes, m.jobErr
+}
+
+// ApplyOntologyRollback records the request and answers with the configured result.
+func (m *mockConnector) ApplyOntologyRollback(_ context.Context, req connector.ApplyOntologyRollbackRequest) (connector.ApplyOntologyRollbackResult, error) {
+	m.rollbackReq = req
+	return m.rollbackRes, m.rollbackErr
 }
 
 // ListReviewQueue, RuleStatements and RevertRuling record the request and answer

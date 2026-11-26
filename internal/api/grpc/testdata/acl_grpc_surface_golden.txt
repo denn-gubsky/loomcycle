@@ -4,6 +4,7 @@ AckChannel	channel:publish	false	ack channel:*
 AclBinding	substrate:tenant	false	read def:acl/*
 AclDef	substrate:tenant	false	read def:acl/*
 AgentDef	substrate:tenant	false	read def:agent/*
+ApplyOntologyRollback	substrate:tenant	false	write document:*
 ApplyReviewPolicy	substrate:tenant	false	read document:*
 Authz	any	false	-
 AwaitChannels	substrate:tenant	false	await channel:*

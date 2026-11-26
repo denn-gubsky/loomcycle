@@ -368,6 +368,24 @@ service Loomcycle {
   // Mirrors POST /v1/_ontology/plan.
   rpc PlanOntology(PlanOntologyRequest) returns (PlanOntologyResponse);
 
+  // ApplyOntologyRollback applies the plan of rolling the tenant ontology
+  // back to a release (a PlanOntology change {op: release, seq}). It plans
+  // again and is refused unless plan_fingerprint is still that plan's; the
+  // writes go through the ontology's own guards, and a write by anyone else
+  // stops it. Never automatic.
+  //
+  // Operator-only, as PlanOntology. A refusal carries a google.rpc.ErrorInfo
+  // whose reason is the code HTTP returns. What HTTP's 409 body carries
+  // beside the code is in the ErrorInfo's metadata: `fingerprint` (the
+  // ontology's current one) on plan_required and plan_stale
+  // (FAILED_PRECONDITION), and `applied` (the writes made, as HTTP's JSON
+  // array) on partially_applied (ABORTED). rename_job_pending and
+  // entry_locked are FAILED_PRECONDITION, invalid_request INVALID_ARGUMENT;
+  // the plan's own refusals map as PlanOntology's.
+  //
+  // Mirrors POST /v1/_ontology/rollback.
+  rpc ApplyOntologyRollback(ApplyOntologyRollbackRequest) returns (ApplyOntologyRollbackResponse);
+
   // ListOntologyReleases lists the tenant ontology's releases — the copies
   // taken when it was confirmed and on each applied or rolled-back change,
   // the newest 50 kept — newest first. It writes nothing.
@@ -2717,9 +2735,11 @@ message BindSubjectPrincipalResponse {
 
 // OntologyChange is one change a plan is asked about.
 message OntologyChange {
-  // retire | rename | move | edit | delete | proposal
+  // retire | unretire | rename | move | edit | delete | add | release |
+  // proposal
   string op = 1;
-  // The entry's chunk id (every op but proposal).
+  // The entry's chunk id (every op but proposal and release); for add, a
+  // chunk id of release seq that is not in force now.
   string entry = 2;
   // rename: the new name.
   string name = 3;
@@ -2732,6 +2752,12 @@ message OntologyChange {
   // retire proposal plans as the direct changes accepting it makes; an add
   // proposal as op "add", risk none.
   string id = 6;
+  // release (its only other field, the request's only change): roll back to
+  // this release — the plan lists the direct changes that make the ontology
+  // declare what it declared, each carrying `release`. add: the release the
+  // entry is added back from. Apply a release's plan with
+  // ApplyOntologyRollback.
+  int64 seq = 7;
 }
 
 message PlanOntologyRequest {
@@ -2782,6 +2808,52 @@ message OntologyPlannedChange {
   // What the class-rename job would do for a rename of a class something
   // rests on (HTTP's `job`); absent for every other change.
   OntologyRenameJobPlan job = 8;
+  // The release a rollback plans toward (op release), on every change it
+  // expands to; 0 for any other change.
+  int64 release = 9;
+}
+
+message ApplyOntologyRollbackRequest {
+  // Whose ontology. Only an admin may name a tenant; for anyone else it is
+  // the caller's own.
+  string tenant = 1;
+  // The release to roll back to.
+  int64 seq = 2;
+  // The fingerprint of the plan of {op: release, seq} (PlanOntology).
+  string plan_fingerprint = 3;
+}
+
+// OntologyRollbackStep is one write a rollback made.
+message OntologyRollbackStep {
+  string op = 1;
+  string entry = 2;
+  string name = 3;
+  // add: the chunk the entry was added back as.
+  string new_id = 4;
+}
+
+// OntologyRollbackReport says what rolling the ontology back did.
+message OntologyRollbackReport {
+  int64 release = 1;
+  // What the release declared, and what the ontology in force declares after
+  // the rollback; matches is their equality.
+  string release_content_version = 2;
+  string content_version = 3;
+  bool matches = 4;
+  // destroys | stales | none
+  string risk = 5;
+  repeated OntologyRollbackStep applied = 6;
+  // The class-rename jobs the rollback's renames started.
+  repeated OntologyJobStatus rename_jobs = 7;
+  // The release taken of the ontology the rollback left; 0 when none was.
+  int64 rollback_release = 8;
+  repeated string notes = 9;
+  repeated string warnings = 10;
+}
+
+message ApplyOntologyRollbackResponse {
+  string tenant = 1;
+  OntologyRollbackReport rollback = 2;
 }
 
 // OntologyRenameJobPlan is the class-rename job a rename would start: the

@@ -557,6 +557,41 @@ func OntologyJobCode(err error) string {
 	return ""
 }
 
+// A rollback that did not complete (Connector.ApplyOntologyRollback,
+// OntologyRollbackRefusal.Code). The plan's own refusals — a release that does
+// not exist, a caller that may not plan, no SQL Memory — are the ErrOntologyPlan*
+// sentinels instead.
+const (
+	// RollbackPlanRequired / RollbackPlanStale — no fingerprint, or not the
+	// ontology's current one; the refusal carries the current one. Nothing was
+	// written.
+	RollbackPlanRequired = "plan_required"
+	RollbackPlanStale    = "plan_stale"
+	// RollbackRenameJobPending — a class rename of the rollback the rename job
+	// cannot carry now, or that would collide stored keys. Nothing was written.
+	RollbackRenameJobPending = "rename_job_pending"
+	// RollbackEntryLocked — an entry the rollback would change is locked.
+	RollbackEntryLocked = "entry_locked"
+	// RollbackInvalid — a write of the rollback was refused before anything was
+	// written (HTTP 422).
+	RollbackInvalid = "invalid_request"
+	// RollbackPartiallyApplied — some writes were made, then one was refused or
+	// the ontology changed under the rollback; the refusal lists those made.
+	RollbackPartiallyApplied = "partially_applied"
+)
+
+// OntologyRollbackRefusal is a rollback that did not complete, with what every
+// transport answers about it beside the code: Fingerprint (plan_required,
+// plan_stale) and Applied (partially_applied).
+type OntologyRollbackRefusal struct {
+	Code        string
+	Message     string
+	Fingerprint string
+	Applied     []OntologyRollbackStep
+}
+
+func (e *OntologyRollbackRefusal) Error() string { return e.Message }
+
 // Reviewing statements in bulk (Connector.ListReviewQueue, RuleStatements,
 // RevertRuling). Each is returned wrapped WithMessage; StatementReviewCode
 // names the sentinel for the wire.

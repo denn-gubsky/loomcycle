@@ -608,6 +608,10 @@ func (m *parityMock) ResumeOntologyJob(context.Context, connector.ResumeOntology
 	return connector.OntologyJobResult{}, nil
 }
 
+func (m *parityMock) ApplyOntologyRollback(context.Context, connector.ApplyOntologyRollbackRequest) (connector.ApplyOntologyRollbackResult, error) {
+	return connector.ApplyOntologyRollbackResult{}, nil
+}
+
 func (m *parityMock) ListReviewQueue(context.Context, connector.ListReviewQueueRequest) (connector.ListReviewQueueResult, error) {
 	return connector.ListReviewQueueResult{}, nil
 }

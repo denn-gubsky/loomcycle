@@ -227,6 +227,7 @@ async def test_plan_ontology():
                 "notes": ["n"],
                 "proposal": "p1",
                 "job": None,
+                "release": 0,
             }
         ],
         "issues": ["i"],
@@ -529,3 +530,116 @@ async def test_ontology_job_refusal_carries_the_code_as_reason(rpc, code, status
     with pytest.raises(LoomcycleError) as ei:
         await call
     assert ei.value.reason == reason
+
+
+class _RollbackStub:
+    def __init__(self):
+        self.req = None
+        self.plan_req = None
+
+    async def PlanOntology(self, req, metadata=None):
+        self.plan_req = req
+        return pb.PlanOntologyResponse(
+            tenant="acme",
+            changes=[
+                pb.OntologyPlannedChange(
+                    op="unretire",
+                    entry=pb.OntologyPlanEntry(chunk_id="c1", name="Memo", section="classes", kind="class"),
+                    risk="none",
+                    release=2,
+                )
+            ],
+        )
+
+    async def ApplyOntologyRollback(self, req, metadata=None):
+        self.req = req
+        return pb.ApplyOntologyRollbackResponse(
+            tenant="acme",
+            rollback=pb.OntologyRollbackReport(
+                release=2, release_content_version="aaaa", content_version="aaaa", matches=True, risk="none",
+                applied=[pb.OntologyRollbackStep(op="add", entry="c2", name="Ledger", new_id="c9")],
+                rename_jobs=[_pb_job()], rollback_release=3, notes=["n"], warnings=["w"],
+            ),
+        )
+
+
+@pytest.mark.asyncio
+async def test_plan_ontology_sends_a_release_change_and_reads_its_release():
+    stub = _RollbackStub()
+    got = await _client(stub).plan_ontology([{"op": "release", "seq": 2}, {"op": "add", "seq": 2, "entry": "c5"}])
+    assert [(c.op, c.seq, c.entry) for c in stub.plan_req.changes] == [("release", 2, ""), ("add", 2, "c5")]
+    assert got["changes"][0]["release"] == 2
+
+
+@pytest.mark.asyncio
+async def test_rollback_ontology_sends_seq_and_fingerprint_and_returns_the_report():
+    stub = _RollbackStub()
+    got = await _client(stub).rollback_ontology(2, "f" * 64, tenant="globex")
+    assert (stub.req.seq, stub.req.plan_fingerprint, stub.req.tenant) == (2, "f" * 64, "globex")
+    assert got == {
+        "tenant": "acme",
+        "rollback": {
+            "release": 2, "release_content_version": "aaaa", "content_version": "aaaa", "matches": True,
+            "risk": "none", "applied": [{"op": "add", "entry": "c2", "name": "Ledger", "new_id": "c9"}],
+            "rename_jobs": [_JOB], "rollback_release": 3, "notes": ["n"], "warnings": ["w"],
+        },
+    }
+
+
+def _status_with_metadata(code: int, message: str, reason: str, meta: dict) -> bytes:
+    """A serialized google.rpc.Status carrying ErrorInfo{reason, domain,
+    metadata}."""
+
+    def varint(n: int) -> bytes:
+        out = b""
+        while True:
+            b, n = n & 0x7F, n >> 7
+            if n:
+                out += bytes([b | 0x80])
+            else:
+                return out + bytes([b])
+
+    def field(num: int, payload: bytes) -> bytes:
+        return bytes([num << 3 | 2]) + varint(len(payload)) + payload
+
+    info = field(1, reason.encode()) + field(2, b"loomcycle")
+    for k, v in meta.items():
+        info += field(3, field(1, k.encode()) + field(2, v.encode()))
+    any_ = field(1, b"type.googleapis.com/google.rpc.ErrorInfo") + field(2, info)
+    return bytes([0x08, code]) + field(2, message.encode()) + field(3, any_)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("code", "status", "reason", "meta", "fingerprint", "applied"),
+    [
+        (grpc.StatusCode.FAILED_PRECONDITION, 9, "plan_stale", {"fingerprint": "e" * 64}, "e" * 64, []),
+        (grpc.StatusCode.FAILED_PRECONDITION, 9, "plan_required", {"fingerprint": "e" * 64}, "e" * 64, []),
+        (
+            grpc.StatusCode.ABORTED, 10, "partially_applied",
+            {"applied": '[{"op":"retire","entry":"c1","name":"Memo"}]'}, "",
+            [{"op": "retire", "entry": "c1", "name": "Memo"}],
+        ),
+        (grpc.StatusCode.FAILED_PRECONDITION, 9, "rename_job_pending", {}, "", []),
+    ],
+)
+async def test_rollback_ontology_refusal_carries_the_code_and_its_metadata(code, status, reason, meta, fingerprint, applied):
+    trailing = grpc.aio.Metadata()
+    trailing.add("grpc-status-details-bin", _status_with_metadata(status, "refused", reason, meta))
+    err = grpc.aio.AioRpcError(
+        code=code,
+        initial_metadata=grpc.aio.Metadata(),
+        trailing_metadata=trailing,
+        details="refused",
+        debug_error_string="",
+    )
+
+    class _Refusing:
+        async def ApplyOntologyRollback(self, req, metadata=None):
+            raise err
+
+    with pytest.raises(LoomcycleError) as ei:
+        await _client(_Refusing()).rollback_ontology(2, "f" * 64)
+    assert ei.value.reason == reason
+    assert ei.value.fingerprint == fingerprint
+    assert ei.value.applied == applied
