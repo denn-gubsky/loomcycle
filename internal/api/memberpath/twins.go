@@ -84,6 +84,9 @@ var twins = map[string][]Twin{
 	"MergeSubjects":        {{Method: http.MethodPost, Path: "/v1/_ontology/subjects/merge"}},
 	"BindSubjectPrincipal": {{Method: http.MethodPost, Path: "/v1/_ontology/subjects/principal"}},
 	"PlanOntology":         {{Method: http.MethodPost, Path: "/v1/_ontology/plan"}},
+	// Rolling the ontology back to a release.
+	"ApplyOntologyRollback": {{Method: http.MethodPost, Path: "/v1/_ontology/rollback"}},
+	// Its releases and its rename job.
 	"ListOntologyReleases": {{Method: http.MethodGet, Path: "/v1/_ontology/releases"}},
 	"DiffOntologyReleases": {{Method: http.MethodGet, Path: "/v1/_ontology/releases/diff"}},
 	"GetOntologyJob":       {{Method: http.MethodGet, Path: "/v1/_ontology/job"}},
