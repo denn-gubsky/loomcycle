@@ -51,6 +51,22 @@ describe("dataLayerFromClient — @loomcycle/client → wire mapping", () => {
     );
   });
 
+  it("TestPathLs_SendsCountsAndOnlyTheFiltersThatAreSet", async () => {
+    // RFC HA: with_counts and the filters ride on a one-level ls; an unset
+    // filter is not sent as "".
+    const s = stubClient();
+    const dl = dataLayerFromClient(s.client);
+    await dl.pathLs("/kb", "tenant", false, undefined, {
+      limit: 500,
+      withCounts: true,
+      filters: { name_contains: "plan", type: "", status: "draft" },
+    });
+    expect(s.path).toHaveBeenCalledWith(
+      { op: "ls", path: "/kb", scope: "tenant", recursive: false, limit: 500, with_counts: true, name_contains: "plan", status: "draft" },
+      undefined,
+    );
+  });
+
   it("pathIsStored: a stat refusal means implicit, any other failure propagates", async () => {
     const s = stubClient();
     const dl = dataLayerFromClient(s.client);
@@ -140,7 +156,7 @@ describe("dataLayerFromClient — @loomcycle/client → wire mapping", () => {
     const s = stubClient();
     await dataLayerFromClient(s.client).documentQueryChunks("doc1", "user", BROWSE);
     expect(s.document).toHaveBeenCalledWith(
-      { op: "query_chunks", document_id: "doc1", scope: "user", limit: 1000 },
+      { op: "query_chunks", document_id: "doc1", scope: "user", limit: 1000, with_summary: true },
       BROWSE,
     );
   });
