@@ -1,11 +1,14 @@
 import type { DocSummary } from "./colorScheme";
+import type { PathLsFilters } from "./dataLayer";
 import { documentSummaryOf, isAnnotationEntry, type PathNode } from "../components/PathTree";
 
-// Search and filter over the Path tree (RFC GZ). Both work on the folders
+// Search and filter over the Path tree (RFC GZ). Search works on the folders
 // already listed: the tree is lazy, so a folder nobody opened holds nothing
-// to match yet, and the search line says so. Once the runtime filters a
-// listing itself (RFC HA echoes the filters it applied), the same controls
-// cover the whole subtree; `findCoverage` is where that is decided.
+// to match yet, and the search line says so. The filter is the runtime's
+// (RFC HA): each one-level listing is asked with the filters, so it covers
+// the whole subtree; a runtime that does not filter (no echo of the filters
+// on its answer) gets the filter applied here, to the folders already listed.
+// `findCoverage` is where that is decided.
 
 export interface TreeFilter {
   name: string;
@@ -19,10 +22,10 @@ export function filterActive(f: TreeFilter): boolean {
   return f.name.trim() !== "" || f.type !== "" || f.status !== "";
 }
 
-// findCoverage says what a search or a filter reaches: "opened" — the folders
-// already listed — until the runtime answers listings with the filters it
-// applied (RFC HA), then "subtree". No runtime does yet, so a listing never
-// carries the echo and this stays "opened".
+// findCoverage says what a search or a filter reaches, from the root listing
+// it is drawn from: "subtree" when the runtime answered it with the filters it
+// applied (RFC HA), else "opened" — the folders already listed. A search's
+// listing is never filtered, so a search always reads "opened".
 export type FindCoverage = "opened" | "subtree";
 export function findCoverage(rootListing: unknown): FindCoverage {
   const echo = (rootListing as { appliedFilters?: unknown } | undefined)?.appliedFilters;
@@ -32,6 +35,55 @@ export function findCoverage(rootListing: unknown): FindCoverage {
 export function coverageLabel(mode: "search" | "filter", c: FindCoverage): string {
   const verb = mode === "search" ? "searching" : "filtering";
   return c === "subtree" ? `${verb} the whole tree` : `${verb} opened folders`;
+}
+
+// lsFilters is a filter as a one-level ls takes it; undefined when nothing is
+// set. The name is trimmed, as the local filter reads it.
+export function lsFilters(f: TreeFilter): PathLsFilters | undefined {
+  if (!filterActive(f)) return undefined;
+  const out: PathLsFilters = {};
+  const name = f.name.trim();
+  if (name) out.name_contains = name;
+  if (f.type) out.type = f.type;
+  if (f.status) out.status = f.status;
+  return out;
+}
+
+// AUTO_OPEN_FOLDERS bounds how many folders a filtered tree opens by itself.
+// Every folder a filtered listing keeps leads to a match, so opening it is
+// what the reader would do next; but each opening is one more filtered ls
+// (which can read up to 50,000 documents' metadata), so past the bound the
+// folders wait, closed, for a click.
+export const AUTO_OPEN_FOLDERS = 8;
+
+// autoOpen picks the folders of a filtered tree to open next, breadth first:
+// drawn (every folder above is open), not open yet, never opened before
+// (`tried` — a folder the reader closes stays closed), and leading to a
+// match: a directory always does, a document with names below it only when
+// its count says something below matches. At most `budget - tried.size`.
+export function autoOpen(
+  tree: PathNode[],
+  open: ReadonlySet<string>,
+  tried: ReadonlySet<string>,
+  budget: number = AUTO_OPEN_FOLDERS,
+): string[] {
+  const room = budget - tried.size;
+  if (room <= 0) return [];
+  const out: string[] = [];
+  let level = tree;
+  while (level.length > 0 && out.length < room) {
+    const next: PathNode[] = [];
+    for (const n of level) {
+      if (isAnnotationEntry(n)) continue;
+      const opens =
+        n.kind === "directory" || (n.hasChildren === true && (!n.matched || (n.documents ?? 0) > 0));
+      if (!opens) continue;
+      if (open.has(n.fullPath)) next.push(...n.children);
+      else if (!tried.has(n.fullPath) && out.length < room) out.push(n.fullPath);
+    }
+    level = next;
+  }
+  return out;
 }
 
 const fold = (s: string) => s.toLocaleLowerCase();
