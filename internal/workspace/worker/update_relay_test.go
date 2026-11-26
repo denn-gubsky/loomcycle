@@ -60,6 +60,29 @@ func TestUpdateRelay_QueuesPostsAndRefusesTheRest(t *testing.T) {
 	}
 }
 
+// A body over the bound is answered 413, never with a reset connection: the
+// relay reads (and drops) what the client sends before it closes, as the
+// host listener (net/http) does, so a client still writing its body gets
+// the answer and not a broken pipe.
+func TestUpdateRelay_AnOversizeBodyIsAnswered413NotReset(t *testing.T) {
+	w := relayWorker(t)
+	u, err := w.updateURL(context.Background(), "ws1", filepath.Join(w.opt.Root, "ws1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	big := bytes.Repeat([]byte("x"), workspace.MaxUpdateBytes+128<<10)
+	for i := range 20 {
+		resp, err := http.Post(u, "application/json", bytes.NewReader(big))
+		if err != nil {
+			t.Fatalf("post %d of an oversize body: %v; want a 413", i, err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusRequestEntityTooLarge {
+			t.Fatalf("post %d = %d, want 413", i, resp.StatusCode)
+		}
+	}
+}
+
 // A relay that ended (a restore stops the session) is made again at the
 // next server start.
 func TestUpdateRelay_AnEndedRelayIsMadeAgain(t *testing.T) {
