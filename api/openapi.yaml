@@ -831,20 +831,21 @@ paths:
       parameters:
         - { $ref: "#/components/parameters/OntologyReleaseTenant" }
       requestBody:
-        required: false
+        required: true
         content:
           application/json:
             schema:
               type: object
               additionalProperties: false
+              required: [id]
               properties:
-                id: { type: string, description: "The job's id from the status read: the resume is refused (job_not_found) unless that job is the one still unfinished." }
+                id: { type: string, minLength: 1, description: "Required: the job's id from the status read. The resume is refused (job_not_found) unless that job is the one still unfinished, so a resume aimed at a job that has since finished cannot carry on a newer one." }
       responses:
         "200":
           description: The job after its slice.
           content: { application/json: { schema: { $ref: "#/components/schemas/OntologyJobResult" } } }
         "400":
-          description: "`invalid_body`: not JSON, or an unknown field."
+          description: "`invalid_body`: not JSON, an unknown field, or no `id` (a missing body, `{}` and an empty `id` alike)."
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
         "403": { description: "`forbidden`: not an admin or a tenant operator." }
         "404": { description: "`job_not_found`: no unfinished job, or not the one `id` names." }

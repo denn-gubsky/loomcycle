@@ -30,9 +30,10 @@ func (s *Server) handleOntologyJob(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, res)
 }
 
-// handleOntologyJobResume serves POST /v1/_ontology/job/resume. The body is optional:
-// {"id": "<the job's id>"} refuses the resume unless that job is the one still
-// unfinished.
+// handleOntologyJobResume serves POST /v1/_ontology/job/resume. The body
+// {"id": "<the job's id>"} is required: the resume is refused unless that job is the
+// one still unfinished. A missing or empty id is 400 invalid_body, as a malformed body
+// is; the connector refuses it (after its operator check), so every transport does.
 func (s *Server) handleOntologyJobResume(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		ID string `json:"id"`
@@ -40,7 +41,7 @@ func (s *Server) handleOntologyJobResume(w http.ResponseWriter, r *http.Request)
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&body); err != nil && !errors.Is(err, io.EOF) {
-		writeJSONError(w, http.StatusBadRequest, "invalid_body", `expected {} or {"id": "<the job's id>"}`)
+		writeJSONError(w, http.StatusBadRequest, "invalid_body", `expected {"id": "<the job's id>"}`)
 		return
 	}
 	res, err := s.ResumeOntologyJob(r.Context(), connector.ResumeOntologyJobRequest{Tenant: r.URL.Query().Get("tenant"), ID: body.ID})
@@ -65,6 +66,9 @@ func writeOntologyJobError(w http.ResponseWriter, err error) {
 		writeJSONError(w, http.StatusConflict, code, err.Error())
 	case errors.Is(err, connector.ErrOntologyJobUnavailable):
 		writeJSONError(w, http.StatusServiceUnavailable, code, err.Error())
+	case errors.Is(err, connector.ErrOntologyJobIDRequired):
+		// HTTP's one code for a request it cannot act on, as for a malformed body.
+		writeJSONError(w, http.StatusBadRequest, "invalid_body", err.Error())
 	default:
 		writeJSONError(w, http.StatusInternalServerError, "job_failed", "the ontology job could not be read or resumed; see the server log")
 	}
