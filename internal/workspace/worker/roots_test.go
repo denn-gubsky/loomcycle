@@ -302,3 +302,24 @@ func TestRoots_RemovingAPathOfARootIsRefused(t *testing.T) {
 		t.Fatalf("the root's file: %v", err)
 	}
 }
+
+// D-P13-18: the start's clean-up of the worker's work folder skips a root.
+// A user's own .loomcycle-work in their folder, with a file in it, is still
+// there after the worker restarts.
+func TestRoots_RestartLeavesTheUsersWorkFolderInARoot(t *testing.T) {
+	w, _, user := newPersonalWorker(t)
+	mine := filepath.Join(user, workDir, "mine.txt")
+	if err := os.MkdirAll(filepath.Dir(mine), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, mine, 3)
+	mustOK(t, openRoot(t, w, "ws1", "work"), "open")
+	w2 := &worker{opt: w.opt, engine: &engine.Host{}, log: w.log}
+	if err := w2.loadBindings(); err != nil {
+		t.Fatal(err)
+	}
+	w2.cleanWork()
+	if _, err := os.Stat(mine); err != nil {
+		t.Fatalf("the user's file after a restart: %v", err)
+	}
+}

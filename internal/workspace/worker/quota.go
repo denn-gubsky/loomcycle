@@ -304,7 +304,13 @@ func (w *worker) cleanWork() {
 	defer func() { w.kernels.Clean(keep); w.cleanCheckpoints(keep); w.cleanTemplates() }()
 	for _, id := range held {
 		keep[id] = true
-		r, err := os.OpenRoot(w.wsDir(id))
+		if _, ok := w.boundRoot(id); ok {
+			// A root is the user's folder: nothing in it is deleted, a
+			// folder of theirs named like the work folder included
+			// (D-P13-18). What a killed put left there stays.
+			continue
+		}
+		r, err := os.OpenRoot(filepath.Join(w.opt.Root, id))
 		if err != nil {
 			continue
 		}
