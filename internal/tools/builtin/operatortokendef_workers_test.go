@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -99,5 +100,66 @@ func TestOperatorTokenDef_ARotationKeepsWorkerShared(t *testing.T) {
 	rotated := storedRow(t, st, mustOp(t, tool, ctx, `{"op":"rotate","def_id":"`+created["def_id"].(string)+`"}`))
 	if r, err := auth.ParseRestrictions(rotated.RestrictionsJSON); err != nil || !r.WorkerShared {
 		t.Errorf("rotated restrictions %q (%v), want worker_shared", rotated.RestrictionsJSON, err)
+	}
+}
+
+// RFC GW P13 (D-P13-2, owner ruling Q2): an admin may mint a user's personal
+// worker token here with worker_personal; it needs
+// workspace.personal_workers on, an explicit subject that is an enabled user
+// of tenant_id, scopes exactly [workers:attach], and never worker_shared. A
+// tenant operator mints it on the per-user mint, never through this tool.
+func TestOperatorTokenDef_WorkerPersonalIsAnAdminsWithTheSwitchAndAnEnabledUser(t *testing.T) {
+	tool, ctx, st, cleanup := operatorTokenDefFixture(t)
+	defer cleanup()
+	for _, u := range []store.UserRow{
+		{TenantID: "acme", Subject: "alice", AccessMode: "isolated", Status: "active"},
+		{TenantID: "acme", Subject: "carol", AccessMode: "tenant", Status: "disabled"},
+		{TenantID: "other", Subject: "dave", AccessMode: "tenant", Status: "active"},
+	} {
+		if err := st.UserCreate(ctx, u); err != nil {
+			t.Fatal(err)
+		}
+	}
+	good := `{"op":"create","name":"alice-laptop","tenant_id":"acme","subject":"alice","scopes":["workers:attach"],"worker_personal":true}`
+	if res := execRaw(t, tool, ctx, good); !res.IsError {
+		t.Fatalf("switch unset: accepted: %s", res.Text)
+	}
+	tool.PersonalWorkers = func() bool { return false }
+	if res := execRaw(t, tool, ctx, good); !res.IsError {
+		t.Fatalf("switch off: accepted: %s", res.Text)
+	}
+	tool.PersonalWorkers = func() bool { return true }
+	for _, in := range []string{
+		`{"op":"create","name":"p1","tenant_id":"acme","scopes":["workers:attach"],"worker_personal":true}`,
+		`{"op":"create","name":"p2","tenant_id":"acme","subject":"carol","scopes":["workers:attach"],"worker_personal":true}`,
+		`{"op":"create","name":"p3","tenant_id":"acme","subject":"dave","scopes":["workers:attach"],"worker_personal":true}`,
+		`{"op":"create","name":"p4","tenant_id":"acme","subject":"nobody","scopes":["workers:attach"],"worker_personal":true}`,
+		`{"op":"create","name":"p5","tenant_id":"acme","subject":"alice","scopes":["workers:attach"],"worker_personal":true,"worker_shared":true}`,
+		`{"op":"create","name":"p6","tenant_id":"acme","subject":"alice","scopes":["substrate:user"],"worker_personal":true}`,
+	} {
+		if res := execRaw(t, tool, ctx, in); !res.IsError {
+			t.Errorf("%s: accepted: %s", in, res.Text)
+		}
+	}
+	if n := countTokenRows(t, st); n != 0 {
+		t.Fatalf("%d rows stored by refused creates", n)
+	}
+	row := storedRow(t, st, mustOp(t, tool, ctx, good))
+	r, err := auth.ParseRestrictions(row.RestrictionsJSON)
+	if err != nil || !r.WorkerPersonal {
+		t.Fatalf("restrictions %q, %v", row.RestrictionsJSON, err)
+	}
+	att, err := auth.WorkerAttachment(auth.Principal{TenantID: row.TenantID, Subject: row.Subject, Scopes: row.AllowedScopes, TokenDefID: row.DefID, Restrictions: r})
+	if err != nil || !att.Personal || att.UserID != "alice" {
+		t.Errorf("attaches as %+v (%v)", att, err)
+	}
+	rotated := storedRow(t, st, mustOp(t, tool, ctx, `{"op":"rotate","def_id":"`+row.DefID+`"}`))
+	if r, err := auth.ParseRestrictions(rotated.RestrictionsJSON); err != nil || !r.WorkerPersonal {
+		t.Errorf("rotated restrictions %q (%v), want worker_personal", rotated.RestrictionsJSON, err)
+	}
+	// A tenant operator, even with the switch on, is refused here.
+	tctx := tenantOpCtx(t, ctx, tntOp)
+	if res := execRaw(t, tool, tctx, `{"op":"create","name":"w","subject":"alice","scopes":["workers:attach"],"worker_personal":true}`); !res.IsError {
+		t.Errorf("a tenant operator: accepted: %s", res.Text)
 	}
 }
