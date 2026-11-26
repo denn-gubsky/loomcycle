@@ -4100,6 +4100,55 @@ export function diffOntologyReleases(from: number, to: number | "current"): Prom
   return jsonFetch<DiffOntologyReleasesResult>(`/v1/_ontology/releases/diff?${q}`);
 }
 
+// ---- The ontology job (RFC GQ P5.6: GET /v1/_ontology/job, POST …/resume) ----
+//
+// The same shape as @loomcycle/client's OntologyJobStatus. An operator's read
+// and action: a member gets 403.
+
+/** A job carrying a class rename or a concept re-tag through the stored rows
+ *  of the tenant scope and every user and agent scope. */
+export interface OntologyJobStatus {
+  id: string;
+  kind: "class_rename" | "concept_retag" | string;
+  entry: string;
+  /** The old names (a class rename) or the old tags (a re-tag). */
+  from: string[];
+  /** The new name; for a re-tag the new tags joined by ", ". */
+  to: string;
+  to_tags?: string[];
+  state: "pending" | "running" | "blocked" | "done" | "abandoned" | string;
+  step?: string;
+  /** Rows rewritten so far, by step. */
+  done?: Record<string, number>;
+  /** Why a blocked job cannot go on. */
+  error?: string;
+  /** Rows still under an old name in the scope the job is at. */
+  remaining: number;
+  scope?: "tenant" | "user" | "agent" | string;
+  scopes_done?: number;
+  scopes_total?: number;
+  /** Unix nanoseconds (display only). */
+  created_at?: number;
+  updated_at?: number;
+}
+
+export interface OntologyJobResult {
+  tenant: string;
+  /** The unfinished job, else the one updated last; null when there never was one. */
+  job: OntologyJobStatus | null;
+}
+
+/** The tenant's ontology job. Writes nothing. */
+export function getOntologyJob(): Promise<OntologyJobResult> {
+  return jsonFetch<OntologyJobResult>("/v1/_ontology/job");
+}
+
+/** Give the unfinished job one slice of work; `id` refuses the resume unless that
+ *  job is still the unfinished one. */
+export function resumeOntologyJob(id?: string): Promise<OntologyJobResult> {
+  return postJSON<OntologyJobResult>("/v1/_ontology/job/resume", JSON.stringify(id ? { id } : {}));
+}
+
 // ---- Ontology subject merge (POST /v1/_ontology/subjects/merge) ----
 
 /** One subject of the tenant ontology: its document, root chunk and key. */
