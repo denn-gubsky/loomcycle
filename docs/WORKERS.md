@@ -189,6 +189,8 @@ It carries what a general workspace needs without a download (RFC GW §4.4):
 
 Every package comes from Debian's archive (trixie), so building the image downloads nothing from PyPI or npm. Anything else an agent needs it installs into its workspace (a virtual environment, `node_modules`), never into the image. The image is about 1.3 GB unpacked; an operator who needs less builds a slimmer one and names it in the worker's settings.
 
+Its `browser` target (`docker build -f Dockerfile.workspace --target browser .`) is the same image plus Chromium, for `Workspace op=screenshot` ([WORKSPACES.md](WORKSPACES.md#looking-at-a-picture)). A container-engine worker whose session image has `chromium` finds it at its start and reports the `browser` label; only such a worker takes screenshots. It is a second image, so a general workspace stays the size it is.
+
 ## Versions
 
 A runtime refuses a worker that speaks another worker protocol (the workspace worker protocol is at version 2 since the egress stream) and logs a warning for a worker of another build. Upgrade the runtime and the workers together; a worker that is refused exits with a message naming both versions.
