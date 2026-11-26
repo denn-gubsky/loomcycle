@@ -8,7 +8,7 @@ the dispatcher run ends — no `rm -rf` needed.
 ```
  POST /v1/runs → exp8-dispatcher (rw default)
    ├─ VolumeDef op=create name="lc-src" mode=rw ephemeral=true  → <EPHEMERAL_PATH>
-   ├─ Bash: git clone https://github.com/denn-gubsky/loomcycle <EPHEMERAL_PATH>/loomcycle
+   ├─ Git op=clone volume=lc-src repo=loomcycle url=https://github.com/denn-gubsky/loomcycle depth=1
    ├─ Agent op=parallel_spawn: 8 × exp8-reviewer (inherit ephemeral vol, Read/Grep/Glob only)
    │    each writes Memory key review:<slice>:findings (confidence ≥ 80)
    └─ Agent op=spawn: exp8-consolidator → reads Memory → Write work/exp8/review-report.md
@@ -41,7 +41,9 @@ the orchestrator drives the fan-in barrier and the repo lives outside loomcycle.
 - **loomcycle ≥ v1.0.0** on PATH (or `LOOMCYCLE_BIN`). Check: `loomcycle --version`.
 - **A provider** — Anthropic OAuth (`loomcycle anthropic login`, kept enabled by `run.sh`) or
   `DEEPSEEK_API_KEY` in `.env.local`.
-- **`git`** on PATH (the dispatcher clones from GitHub).
+- Internet access to github.com: the dispatcher clones with the `Git` tool
+  (the runtime's own git; no `git` binary needed). `run.sh` sets
+  `LOOMCYCLE_GIT_SOURCE_HOSTS=github.com`.
 - Internet access to `github.com/denn-gubsky/loomcycle`.
 
 Fully self-contained — no external services, no MCP servers to install, no pre-cloned repo.
@@ -141,7 +143,8 @@ default rw volume root = `./work`).
 
 ## Troubleshooting
 
-**Dispatcher fails at git clone**: check internet access and that `git` is on PATH.
+**Dispatcher fails at git clone**: check internet access, and that
+`LOOMCYCLE_GIT_SOURCE_HOSTS` names `github.com` (`host_not_allowed` otherwise).
 
 **"dynamic-root volume not found"**: `run.sh` creates `work/dynamic/` automatically; if you
 started the server without `run.sh`, create it manually and restart.

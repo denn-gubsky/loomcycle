@@ -12,9 +12,9 @@ export LOOMCYCLE_LISTEN_ADDR="${LOOMCYCLE_LISTEN_ADDR:-127.0.0.1:8787}"
 # Anthropic-OAuth primary (research/dev). If you have NOT run `loomcycle anthropic
 # login`, leave this unset (or the provider is excluded) and runs use deepseek-v4-pro.
 export LOOMCYCLE_ANTHROPIC_OAUTH_DEV_ENABLED="${LOOMCYCLE_ANTHROPIC_OAUTH_DEV_ENABLED:-1}"
-# exp1 tool sandbox: Read/Write/Edit/Bash scoped to ./work via the `default`
-# volume in loomcycle.yaml (run.sh cd's to ./work, so `path: .` == ./work).
-export LOOMCYCLE_BASH_ENABLED="${LOOMCYCLE_BASH_ENABLED:-1}"
+# exp1 tools: Read/Write/Edit scoped to ./work via the `default` volume in
+# loomcycle.yaml (run.sh cd's to ./work, so `path: .` == ./work); commands run
+# in a workspace on the local worker (workspace.mode: local).
 
 mkdir -p "$HERE/data" "$HERE/work"
 LOOMCYCLE_BIN="${LOOMCYCLE_BIN:-loomcycle}"

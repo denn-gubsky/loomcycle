@@ -8,6 +8,11 @@ publish task → exp4-tasks → CODER (writes code, pushes a branch, opens a PR 
         └▶ Gitea merge/review webhook ─▶ /v1/_webhooks/review-done ─▶ ADVISOR ─▶ Telegram "✅ merged"
 ```
 
+> **Deprecated tool.** The coder and reviewer run `git` through the `Bash` tool,
+> which a future release removes (RFC GW P15; `docs/MIGRATING-FROM-BASH.md`). This
+> example moves to git workspaces once RFC GW P11's git operations ship; until
+> then it needs `LOOMCYCLE_BASH_ENABLED=1`, which `run.sh` sets.
+
 ## What it demonstrates
 - **Inbound webhooks** with HMAC verification (`X-Hub-Signature-256`), spawning an
   agent with the signed event as its prompt (`payload_mapping: {goal: "$"}`).
