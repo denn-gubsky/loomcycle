@@ -406,3 +406,103 @@ describe("OntologySection releases (RFC GQ P3.7)", () => {
     expect(Array.from(mounted.el.querySelectorAll("[role=tab]")).map((t) => t.textContent)).toContain("releases");
   });
 });
+
+describe("OntologySection rename job (RFC GQ P5.6)", () => {
+  let mounted: { root: Root; el: HTMLElement } | null = null;
+  afterEach(() => {
+    if (mounted) act(() => mounted!.root.unmount());
+    mounted?.el.remove();
+    mounted = null;
+    vi.unstubAllGlobals();
+  });
+
+  const running = {
+    id: "j1",
+    kind: "class_rename",
+    entry: "c-memo",
+    from: ["Memo"],
+    to: "Note",
+    state: "running",
+    step: "chunks_type",
+    done: { documents_type: 4 },
+    remaining: 12,
+    scope: "user",
+    scopes_done: 1,
+    scopes_total: 3,
+  };
+
+  // stubJob answers the ontology and its job routes: the status with job, a resume
+  // with resumed (or a 409 job_busy when resumed is null).
+  function stubJob(calls: Call[], job: unknown, resumed: unknown = { ...running, state: "done", step: "", scopes_done: 3 }) {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        calls.push({ url, body: init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : undefined });
+        if (url === "/v1/_ontology/job") return new Response(JSON.stringify({ tenant: "t", job }), { status: 200 });
+        if (url === "/v1/_ontology/job/resume") {
+          if (resumed === null) {
+            return new Response(JSON.stringify({ code: "job_busy", error: "a class rename is being checked right now" }), {
+              status: 409,
+              statusText: "Conflict",
+            });
+          }
+          return new Response(JSON.stringify({ tenant: "t", job: resumed }), { status: 200 });
+        }
+        if (url.startsWith("/v1/_ontology")) return new Response(JSON.stringify(state), { status: 200 });
+        return new Response("404 page not found", { status: 404 });
+      }),
+    );
+  }
+
+  const panel = (el: HTMLElement) => el.querySelector("[aria-label='ontology job']");
+
+  it("shows an unfinished job's progress to an operator and resumes it with its id", async () => {
+    const calls: Call[] = [];
+    stubJob(calls, running);
+    mounted = await mount(operator);
+    const p = panel(mounted.el);
+    expect(p?.textContent).toContain("Class rename: Memo → Note");
+    expect(p?.textContent).toContain("step chunks_type in the user scope · 1 of 3 scopes done · 12 rows left in this scope");
+    const resume = Array.from(p!.querySelectorAll("button")).find((b) => b.textContent === "Resume");
+    expect(resume).toBeDefined();
+    await act(async () => resume!.click());
+    await settle();
+    const post = calls.find((c) => c.url === "/v1/_ontology/job/resume");
+    expect(post?.body).toEqual({ id: "j1" });
+    expect(panel(mounted.el)?.textContent).toContain("finished");
+    expect(Array.from(panel(mounted.el)!.querySelectorAll("button")).map((b) => b.textContent)).not.toContain("Resume");
+  });
+
+  it("shows a blocked job's reason and a refused resume's code", async () => {
+    stubJob([], { ...running, state: "blocked", error: "a user scope: identity_keys: a row could not be rewritten" }, null);
+    mounted = await mount(operator);
+    expect(panel(mounted.el)?.textContent).toContain("a row could not be rewritten");
+    const resume = Array.from(panel(mounted.el)!.querySelectorAll("button")).find((b) => b.textContent === "Resume");
+    await act(async () => resume!.click());
+    await settle();
+    expect(panel(mounted.el)?.textContent).toContain("a class rename is being checked right now");
+  });
+
+  it("offers no resume for a finished job, and shows nothing without one", async () => {
+    stubJob([], { ...running, state: "done", step: "", scopes_done: 3 });
+    mounted = await mount(operator);
+    expect(panel(mounted.el)?.textContent).toContain("Last rename job");
+    expect(panel(mounted.el)?.querySelector("button")).toBeNull();
+    act(() => mounted!.root.unmount());
+    mounted.el.remove();
+    vi.unstubAllGlobals();
+
+    stubJob([], null);
+    mounted = await mount(operator);
+    expect(panel(mounted.el)).toBeNull();
+  });
+
+  it("reads no job for a member", async () => {
+    const calls: Call[] = [];
+    stubJob(calls, running);
+    mounted = await mount(member);
+    expect(calls.some((c) => c.url.startsWith("/v1/_ontology/job"))).toBe(false);
+    expect(panel(mounted.el)).toBeNull();
+  });
+});

@@ -87,6 +87,10 @@ func CarvedOut(method, path string) bool {
 	// P5.7): the operator's decision, as ruling on a proposal is.
 	case path == "/v1/_ontology/rollback":
 		return true
+	// The rename and re-tag job rewrites stored rows in every scope of the tenant (RFC
+	// GQ P5.6): reading where it is and giving it a slice are the operator's.
+	case path == "/v1/_ontology/job" || strings.HasPrefix(path, "/v1/_ontology/job/"):
+		return true
 	case path == "/v1/_limits" && (method == http.MethodPut || method == http.MethodDelete):
 		return true
 	// RFC EY: who may do what is the operator's to write and to read; a

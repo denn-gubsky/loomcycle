@@ -16,6 +16,10 @@ export interface TeamsConfig {
   /** Host suffixes an attached file's download link may point to (voice
    *  messages, RFC GA), each starting with a dot. */
   fileHosts: readonly string[];
+  /** TEAMS_BRIDGE_DUMP_ACTIVITIES=1: log every inbound activity, redacted
+   *  (dump.ts), to see what Teams sent. Off by default: the dump holds what
+   *  people write. */
+  dumpActivities: boolean;
 }
 
 export const DEFAULT_PORT = 3978;
@@ -34,8 +38,9 @@ export function loadConfig(env: Env = process.env): TeamsConfig {
     r.problems.push("CLIENT_ID is required (or set BRIDGE_DEV=1 for local testing)");
   }
   const fileHosts = loadFileHosts(r);
+  const dumpActivities = r.flag("TEAMS_BRIDGE_DUMP_ACTIVITIES");
   r.check("teams-bridge");
-  return { shared, allowedTenants, fileHosts };
+  return { shared, allowedTenants, fileHosts, dumpActivities };
 }
 
 /** loadFileHosts reads TEAMS_BRIDGE_FILE_HOSTS: domain suffixes such as

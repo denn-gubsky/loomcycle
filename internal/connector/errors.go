@@ -521,6 +521,42 @@ func OntologyReleaseCode(err error) string {
 	return ""
 }
 
+// Reading and resuming the tenant's ontology job (Connector.GetOntologyJob,
+// ResumeOntologyJob). Returned wrapped WithMessage; OntologyJobCode names them.
+var (
+	// ErrOntologyJobForbidden — the caller is not an admin or a tenant operator:
+	// the job rewrites stored rows in every scope of the tenant, the operator's to
+	// drive.
+	ErrOntologyJobForbidden = errors.New("connector: ontology jobs not permitted")
+	// ErrOntologyJobNotFound — a resume found no unfinished job, or not the one
+	// its id named.
+	ErrOntologyJobNotFound = errors.New("connector: no such unfinished ontology job")
+	// ErrOntologyJobBusy — another call holds the ontology rename lease (a rename
+	// is being checked or written, or the job is being given a slice).
+	ErrOntologyJobBusy = errors.New("connector: the ontology job is busy")
+	// ErrOntologyJobUnavailable — this deployment has no SQL Memory.
+	ErrOntologyJobUnavailable = errors.New("connector: ontology jobs need SQL Memory")
+)
+
+// OntologyJobCode is the stable wire code for a job refusal. "" for an error that
+// is none of the sentinels (an internal failure).
+func OntologyJobCode(err error) string {
+	for _, c := range []struct {
+		sentinel error
+		code     string
+	}{
+		{ErrOntologyJobForbidden, "forbidden"},
+		{ErrOntologyJobNotFound, "job_not_found"},
+		{ErrOntologyJobBusy, "job_busy"},
+		{ErrOntologyJobUnavailable, "unavailable"},
+	} {
+		if errors.Is(err, c.sentinel) {
+			return c.code
+		}
+	}
+	return ""
+}
+
 // Reviewing statements in bulk (Connector.ListReviewQueue, RuleStatements,
 // RevertRuling). Each is returned wrapped WithMessage; StatementReviewCode
 // names the sentinel for the wire.
