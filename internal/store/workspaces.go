@@ -257,4 +257,7 @@ type WorkspaceStore interface {
 	// pinned or parked, in any state: what workspace.durable.max_per_user
 	// bounds.
 	WorkspaceCountDurableByUser(ctx context.Context, tenantID, userID string) (int, error)
+	// WorkspaceListDurableByUser returns those rows, ordered by name: what
+	// the user's erasure removes.
+	WorkspaceListDurableByUser(ctx context.Context, tenantID, userID string) ([]WorkspaceRow, error)
 }

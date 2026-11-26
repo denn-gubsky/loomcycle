@@ -513,3 +513,14 @@ func WorkspaceSetGit(ctx context.Context, q Querier, tenantID, id string, git st
 	}
 	return n > 0, nil
 }
+
+func WorkspaceListDurableByUser(ctx context.Context, q Querier, tenantID, userID string) ([]store.WorkspaceRow, error) {
+	d := q.Dialect()
+	rows, err := q.Query(ctx,
+		`SELECT `+workspaceCols+` FROM workspaces WHERE tenant_id = ? AND user_id = ? AND lifetime = ? ORDER BY name, id`,
+		tenantID, userID, store.WorkspaceLifetimeDurable)
+	if err != nil {
+		return nil, fmt.Errorf("workspace list durable by user: %w", err)
+	}
+	return collectWorkspaces(d, rows)
+}
