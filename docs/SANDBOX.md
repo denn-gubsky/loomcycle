@@ -1,5 +1,7 @@
 # Sandboxed code execution
 
+> **Deprecated.** The builder sidecar, the `sandbox` and `dev-exec` bundles and the `loomcycle-toolbox` image are deprecated, and a future release removes them (RFC GW P15). They still work. Workspaces replace them: a workspace worker with the `container` engine runs each workspace in a container of its own, and the `dev-workspace` bundle's `dev/exec` takes the same command envelope. [MIGRATING-FROM-BASH.md](MIGRATING-FROM-BASH.md#the-builder-sidecar) maps each piece across; [WORKSPACES.md](WORKSPACES.md) is the guide.
+
 There are two ways to let a loomcycle agent run code, and they trade off
 convenience against isolation:
 

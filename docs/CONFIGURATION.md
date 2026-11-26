@@ -2944,6 +2944,8 @@ The embedded Web UI (`/ui`) has a dedicated **Volumes** tab (admin-gated, alongs
 
 ### 9d.4 Bashbox memory: `LOOMCYCLE_BASHBOX_OVERLAY_MAX_BYTES`
 
+> **Deprecated.** Bashbox and this variable are deprecated, and a future release removes them (RFC GW P15); nothing replaces the variable, since workspaces run commands on a worker with a disk quota of their own (`workspace.disk_quota_mb`). See [MIGRATING-FROM-BASH.md](MIGRATING-FROM-BASH.md#environment-variables).
+
 `Bashbox` honors a read-only volume by sending the command's writes to an in-memory overlay that is thrown away when the call ends; the empty directory that hides a `dynamic_root` inside a read-write volume is in memory too. That memory is loomcycle's own heap, shared with every run on the replica, so one call may write at most **`LOOMCYCLE_BASHBOX_OVERLAY_MAX_BYTES`** bytes **in total** to in-memory files — deleting does not give it back (default **64 MiB**; a value under 1 MiB is raised to 1 MiB, and a non-positive or malformed one keeps the default). A write past the limit fails with `no space left on device`, the result says the limit was reached, and the call fails. Every byte written counts, every new file, directory and link counts about 512 bytes plus its path (what gbash spends on each entry beyond its name), and so does a file of the read-only volume that `chmod`, `chown`, `touch`, `mv`, `ln` or an append copies into memory: its bytes are charged as they are read in, so a copy bigger than what is left of the limit fails instead of being kept, and two names for one file are two copies. Reading the volume without changing it streams from disk and is not counted. Bytes written to a named pipe count too, because gbash buffers a pipe in memory without limit, so a pipeline that streams more than the limit through a FIFO fails. Writes to a read-write volume go to disk and are not counted.
 
 What it does not bound: several calls at once each get their own limit (concurrent calls × the cap, plus gbash's in-memory files costing about 2–2.6× the bytes written), and the read side has its own gbash limits (8 MiB per file read, 32 MiB per shell variable, 256 MiB across variables, 1 MiB per output stream). Renaming a directory of the read-only volume copies the metadata of every entry under it into memory uncounted; that is bounded by the size of the operator's tree. For mutually hostile tenants on one process, also set a memory limit on loomcycle's container.
@@ -3900,7 +3902,7 @@ Stream timeouts, the Ollama `num_gpu` and hosted `num_ctx`, and the code-agent b
 
 | Variable | Default | Effect |
 |---|---|---|
-| `LOOMCYCLE_BASH_ENABLED` | off | `1` enables the host `Bash` tool. It is not a sandbox; see [SANDBOX.md](SANDBOX.md). |
+| `LOOMCYCLE_BASH_ENABLED` | off | `1` enables the host `Bash` tool. It is not a sandbox; see [SANDBOX.md](SANDBOX.md). **Deprecated** (RFC GW P15 removes it): turn on workspaces (`workspace.mode`) and give the agent the `Workspace` tool instead; see [MIGRATING-FROM-BASH.md](MIGRATING-FROM-BASH.md). |
 | `LOOMCYCLE_HTTP_CALLER_AUTHORITATIVE` | off | `1` makes a request's `allowed_hosts` the whole host policy for that run instead of a narrowing of `LOOMCYCLE_HTTP_HOST_ALLOWLIST` (which then applies only to runs that send no list). |
 | `LOOMCYCLE_CODE_AGENTS_ROOT` | `./agent_code` | Where code-js agents live (`<root>/<name>/index.js`). |
 | `LOOMCYCLE_KMS_VAULT_ALLOW_HTTP` | off | `1` accepts a plain `http://` Vault address for Vault Transit keys (a dev server). Off because the Vault token travels in a header. |

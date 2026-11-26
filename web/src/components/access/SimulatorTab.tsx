@@ -14,7 +14,7 @@ function idPlaceholder(cat: AclCatalog, type: string): string {
   if (!t) return "";
   switch (selectorShape(t)) {
     case "glob":
-      return `name, e.g. ${type === "tool" ? "Bash" : type === "agent" ? "chat/support" : "name"} (blank = any)`;
+      return `name, e.g. ${type === "tool" ? "Workspace" : type === "agent" ? "chat/support" : "name"} (blank = any)`;
     case "enum":
       return `one of ${t.scopes!.join(", ")}`;
     case "scoped":
@@ -172,7 +172,7 @@ export default function SimulatorTab({
               spellCheck={false}
               rows={12}
               value={draft}
-              placeholder={"acls:\n  - name: interns\n    rules:\n      - effect: deny\n        actions: [invoke]\n        resources: ['tool:Bash']\nbindings:\n  - acl: interns\n    subject_kind: user\n    subject_id: alice"}
+              placeholder={"acls:\n  - name: interns\n    rules:\n      - effect: deny\n        actions: [invoke]\n        resources: ['tool:Workspace']\nbindings:\n  - acl: interns\n    subject_kind: user\n    subject_id: alice"}
               onChange={(e) => onDraft(e.target.value)}
             />
           </div>

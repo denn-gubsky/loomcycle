@@ -2,6 +2,11 @@
 name: bashbox
 description: Bashbox — a TRUE in-process shell sandbox (gbash) that spawns no OS process, roots paths at your volume, has no network, and HONORS read-only volumes. The sandboxed alternative to Bash.
 ---
+**Deprecated.** Bashbox and `Bash` still work, and a future release removes
+both. When you hold the `Workspace` tool, run commands there
+instead: `Workspace op=open`, then `op=exec` (help topic `Workspace`). Use
+Bashbox only when `Workspace op=open` says this install runs no workspaces.
+
 Bashbox runs a shell command in a **true sandbox**. It is the isolated
 counterpart to `Bash`: where `Bash` shells out to a real `/bin/sh` (and so is
 "restricted, not isolated" — see the `Bash` warning), Bashbox executes the
