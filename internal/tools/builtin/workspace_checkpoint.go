@@ -48,7 +48,10 @@ func (w *Workspace) fork(ctx context.Context, o lifecycle.Owner, pol tools.Works
 	if pol.Engine != "" && workspace.EngineRank(row.Engine) < workspace.EngineRank(pol.Engine) {
 		return workspaceRefusal("engine", fmt.Sprintf("%q runs on the %s engine; this agent requires %s", row.Name, row.Engine, pol.Engine))
 	}
-	fork, fa, err := w.Manager.Fork(ctx, o, row, in.As, in.Checkpoint)
+	if in.Branch != "" && row.Kind != store.WorkspaceKindGit {
+		return workspaceRefusal("invalid_argument", "branch is for a fork of a git workspace")
+	}
+	fork, fa, err := w.Manager.ForkBranch(ctx, o, row, in.As, in.Checkpoint, in.Branch)
 	if err != nil {
 		return workspaceError(err, in.Name)
 	}
@@ -57,6 +60,7 @@ func (w *Workspace) fork(ctx context.Context, o lifecycle.Owner, pol tools.Works
 	if in.Checkpoint != "" {
 		out["checkpoint"] = in.Checkpoint
 	}
+	withGit(out, fork.Git)
 	if len(fa.Skipped) > 0 {
 		out["skipped"] = fa.Skipped
 	}

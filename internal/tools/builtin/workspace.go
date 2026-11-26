@@ -112,7 +112,7 @@ func (w *Workspace) InputSchema() json.RawMessage {
 			"as":               {"type": "string", "description": "fork: the new workspace's name; save_template: the template's name."},
 			"template":         {"type": "string", "description": "open: a template to start the workspace from, by name (templates lists them; your own first, then your tenant's); delete_template: the template to delete."},
 			"repo":             {"type": "string", "description": "open: an https repository URL on a host the operator lists; the workspace is that repository checked out (a git workspace)."},
-			"branch":           {"type": "string", "description": "open with repo: the workspace's own branch, the only one a push may move; never the forge's default branch, and one the forge already has only when the operator allows it. Default loom/<name>-<id>. git_checkout: the branch to check out."},
+			"branch":           {"type": "string", "description": "open with repo: the workspace's own branch, the only one a push may move; never the forge's default branch, and one the forge already has only when the operator allows it. Default loom/<name>-<id>. git_checkout: the branch to check out. fork of a git workspace: the fork's own branch (default loom/<as>-<id>; a named one only where the operator allows adopting existing branches)."},
 			"base":             {"type": "string", "description": "open with repo: the full ref (refs/heads/..., refs/tags/...) or commit to start at. Default the forge's default branch."},
 			"credential":       {"type": "string", "description": "open with repo: the credential to fetch with, $cred:<name>, restricted to URLs covering the repository. Omit for a public repository."},
 			"all_users":        {"type": "boolean", "description": "templates: every user's templates of your tenant too (a tenant operator's session only)."},
@@ -170,7 +170,7 @@ var workspaceOpArgs = map[string][]string{
 	"checkpoints":       {"name"},
 	"restore":           {"name", "checkpoint"},
 	"delete_checkpoint": {"name", "checkpoint"},
-	"fork":              {"name", "as", "checkpoint"},
+	"fork":              {"name", "as", "checkpoint", "branch"},
 	// RFC GW §5.5: a checkpoint of the run's own workspace saved as a
 	// template, a template deleted, and the templates the run may open.
 	"save_template":   {"name", "checkpoint", "as", "scope"},
