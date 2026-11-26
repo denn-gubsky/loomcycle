@@ -209,6 +209,9 @@ func (b *boot) wireCredentials() {
 		// hosts, bounds, slots and read resolver.
 		b.workspaceTool.GitSource = gitSource
 		gitTool.PushCredential = builtin.GitPushCredentialResolver(credEngine, ghAppMinter.TokenForRepositoryWrite, registerSecret)
+		// A git workspace's push: the same push hosts and resolver.
+		b.workspaceTool.GitPushHosts = gitTool.PushHosts
+		b.workspaceTool.GitPushCredential = gitTool.PushCredential
 		if len(gitTool.PushHosts) > 0 {
 			pushHosts := strings.Join(gitTool.PushHosts, ", ")
 			slog.Info(fmt.Sprintf("git: push enabled for %s (max %d MiB per push)", pushHosts, gitTool.PushMaxBytes>>20),

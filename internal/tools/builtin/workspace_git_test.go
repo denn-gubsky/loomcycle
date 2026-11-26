@@ -25,10 +25,16 @@ import (
 // The Workspace tool's open of a git workspace (RFC GW P11 plan §3.6): the
 // run's checks, in the run, before any request reaches the forge.
 
-const wsForgeToken = "tok-ws-forge-3d1a"
+const (
+	wsForgeToken = "tok-ws-forge-3d1a"
+	// wsForgePushToken is the only token the forge takes a push from: what
+	// the push resolver hands out, and never the read resolver.
+	wsForgePushToken = "tok-ws-forge-push-81be"
+)
 
 type wsForge struct {
 	url      string
+	bare     string
 	requests atomic.Int64
 	ca       *http.Transport
 }
@@ -67,12 +73,18 @@ func newWSForge(t *testing.T) *wsForge {
 		t.Fatal(err)
 	}
 	git(base, "clone", "-q", "--bare", work, filepath.Join(served, "acme", "app.git"))
+	git(filepath.Join(served, "acme", "app.git"), "config", "http.receivepack", "true")
 	h := &cgi.Handler{Path: filepath.Join(strings.TrimSpace(string(out)), "git-http-backend"),
 		Env: []string{"GIT_PROJECT_ROOT=" + served, "GIT_HTTP_EXPORT_ALL=1", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null"}}
 	f := &wsForge{}
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.requests.Add(1)
-		if _, p, ok := r.BasicAuth(); !ok || p != wsForgeToken {
+		_, p, ok := r.BasicAuth()
+		if push := r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/git-receive-pack"); push && p != wsForgePushToken {
+			http.Error(w, "this token may not push", http.StatusForbidden)
+			return
+		}
+		if !ok || (p != wsForgeToken && p != wsForgePushToken) {
 			w.Header().Set("WWW-Authenticate", `Basic realm="git"`)
 			http.Error(w, "authentication required", http.StatusUnauthorized)
 			return
@@ -80,7 +92,7 @@ func newWSForge(t *testing.T) *wsForge {
 		h.ServeHTTP(w, r)
 	}))
 	t.Cleanup(srv.Close)
-	f.url, f.ca = srv.URL+"/acme/app.git", srv.Client().Transport.(*http.Transport)
+	f.url, f.ca, f.bare = srv.URL+"/acme/app.git", srv.Client().Transport.(*http.Transport), filepath.Join(served, "acme", "app.git")
 	return f
 }
 
@@ -105,6 +117,12 @@ func newWSGitFixture(t *testing.T, forge *wsForge) *wsFixture {
 			}
 			return "x-access-token", wsForgeToken, nil
 		}}
+	f.tool.GitPushCredential = func(_ context.Context, ref, _ string) (string, string, error) {
+		if ref != "$cred:forge" {
+			return "", "", ErrGitCredentialURLNotAllowed
+		}
+		return "x-access-token", wsForgePushToken, nil
+	}
 	f.tool.GitPush = config.WorkspacePushConfig{}.Resolved()
 	return f
 }
@@ -211,5 +229,155 @@ func TestWorkspaceGit_OpenWithACredentialTheForgeRefusesIsGitAccessDenied(t *tes
 	ctx := withGitRemote(f.runCtx(t, "alice", "", gitOpenPol()), true)
 	if res := f.call(t, ctx, gitOpenInput(forge, nil)); refusalClass(res) != "git_access_denied" {
 		t.Fatalf("open = %s, want git_access_denied", res.Text)
+	}
+}
+
+// gitWSDir is the directory of the run's workspace name.
+func gitWSDir(t *testing.T, f *wsFixture, ctx context.Context, name string) string {
+	t.Helper()
+	rows, err := f.st.WorkspaceListByOwnerRun(context.Background(), "acme", tools.RunID(ctx))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range rows {
+		if r.Name == name {
+			return filepath.Join(f.h.Root, r.ID)
+		}
+	}
+	t.Fatalf("no workspace %s", name)
+	return ""
+}
+
+func gitWSCommit(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, "work.txt"), []byte("work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"add", "work.txt"}, {"commit", "-q", "-m", "work"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null",
+			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.com", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.com")
+		if b, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, b)
+		}
+	}
+}
+
+func withPushGrant(ctx context.Context) context.Context {
+	return tools.UpdateRunPolicy(ctx, func(p *tools.RunPolicy) { p.GitRemote = tools.GitRemotePolicyValue{Fetch: true, Push: true} })
+}
+
+func gitWritePol() tools.WorkspacePolicyValue {
+	return tools.WorkspacePolicyValue{Open: true, Read: true, Write: true}
+}
+
+// Every network op of a git workspace writes one audit line, refused or
+// not, and none holds the token.
+func TestWorkspaceGit_EveryNetworkOpWritesOneAuditLineWithoutTheToken(t *testing.T) {
+	forge := newWSForge(t)
+	f := newWSGitFixture(t, forge)
+	sink := &recordingSink{}
+	f.tool.GitAudit = sink
+	ctx := withPushGrant(f.runCtx(t, "alice", "", gitWritePol()))
+	calls := []struct {
+		in      string
+		outcome string
+	}{
+		{gitOpenInput(forge, nil), "ok"},
+		{`{"op":"git_fetch","name":"app"}`, "ok"},
+		{`{"op":"git_pull","name":"app"}`, "invalid_revision"}, // the own branch is not on the forge yet
+		{`{"op":"git_push","name":"app"}`, "git_push_disabled"},
+		{`{"op":"git_push","name":"app"}`, "ok"},
+		{gitOpenInput(forge, map[string]any{"name": "two", "credential": "$cred:unrestricted"}), "credential_url_not_allowed"},
+	}
+	for i, c := range calls {
+		if i == 4 {
+			f.tool.GitPushHosts = f.tool.GitSource.Hosts
+			gitWSCommit(t, gitWSDir(t, f, ctx, "app"))
+		}
+		before := len(sink.evs)
+		res := f.call(t, ctx, c.in)
+		if n := len(sink.evs) - before; n != 1 {
+			t.Fatalf("call %d (%s) wrote %d audit lines: %s", i, c.in, n, res.Text)
+		}
+		ev := sink.evs[len(sink.evs)-1]
+		if ev.Action != "workspace_git" || ev.GitOutcome != c.outcome || ev.GitHost == "" || ev.GitRunID == "" {
+			t.Fatalf("call %d (%s): audit %+v, result %s", i, c.in, ev, res.Text)
+		}
+	}
+	b, _ := json.Marshal(sink.evs)
+	if strings.Contains(string(b), wsForgeToken) || strings.Contains(string(b), wsForgePushToken) {
+		t.Fatal("an audit line holds the token")
+	}
+	if push := sink.evs[4]; len(push.GitRefs) != 1 || !strings.HasPrefix(push.GitRefs[0], "refs/heads/loom/app-") {
+		t.Fatalf("the push's line names %v", push.GitRefs)
+	}
+}
+
+// A push needs the agent's git_remote push and a host on the push list,
+// before anything reaches the forge.
+func TestWorkspaceGit_PushNeedsGitRemotePushAndAPushHost(t *testing.T) {
+	forge := newWSForge(t)
+	f := newWSGitFixture(t, forge)
+	fetchOnly := withGitRemote(f.runCtx(t, "alice", "", gitWritePol()), true)
+	f.mustOK(t, fetchOnly, gitOpenInput(forge, nil))
+	for name, c := range map[string]struct {
+		ctx   context.Context
+		hosts []string
+		want  string
+	}{
+		"no git_remote push":      {fetchOnly, []string{hostOf(t, forge.url)}, "git_remote_not_allowed"},
+		"no push hosts":           {withPushGrant(fetchOnly), nil, "git_push_disabled"},
+		"a host not on that list": {withPushGrant(fetchOnly), []string{"elsewhere.example"}, "host_not_allowed"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f.tool.GitPushHosts = c.hosts
+			before := forge.requests.Load()
+			if res := f.call(t, c.ctx, `{"op":"git_push","name":"app"}`); refusalClass(res) != c.want {
+				t.Fatalf("push = %s, want %s", res.Text, c.want)
+			}
+			if forge.requests.Load() != before {
+				t.Fatal("a refused push reached the forge")
+			}
+		})
+	}
+}
+
+// What the forge says goes to the operator's log, never to the model: a
+// push the forge's own hook rejects answers its class, not the hook's words.
+func TestWorkspaceGit_TheForgesWordsNeverReachTheResult(t *testing.T) {
+	forge := newWSForge(t)
+	hook := filepath.Join(forge.bare, "hooks", "pre-receive")
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\necho FORGE-MARKER-7f3 >&2\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f := newWSGitFixture(t, forge)
+	f.tool.GitPushHosts = f.tool.GitSource.Hosts
+	ctx := withPushGrant(f.runCtx(t, "alice", "", gitWritePol()))
+	f.mustOK(t, ctx, gitOpenInput(forge, nil))
+	gitWSCommit(t, gitWSDir(t, f, ctx, "app"))
+	res := f.call(t, ctx, `{"op":"git_push","name":"app"}`)
+	var out struct{ Error, Detail string }
+	if err := json.Unmarshal([]byte(res.Text), &out); err != nil || !res.IsError {
+		t.Fatalf("push answered %s", res.Text)
+	}
+	// Only the class and the worker's fixed words: the forge's report
+	// ("pre-receive hook declined", its side band) stays in the log.
+	if strings.Contains(res.Text, "FORGE-MARKER") || out.Detail != "the push did not go through" {
+		t.Fatalf("a push the forge's hook rejected answered %s", res.Text)
+	}
+}
+
+// The network ops are a git workspace's own: refused on a general one.
+func TestWorkspaceGit_NetworkOpsRefuseAGeneralWorkspace(t *testing.T) {
+	forge := newWSForge(t)
+	f := newWSGitFixture(t, forge)
+	ctx := withPushGrant(f.runCtx(t, "alice", "", gitWritePol()))
+	f.mustOK(t, ctx, `{"op":"open","name":"plain"}`)
+	for _, op := range []string{"git_fetch", "git_pull", "git_push"} {
+		if res := f.call(t, ctx, `{"op":"`+op+`","name":"plain"}`); refusalClass(res) != "not_a_git_workspace" {
+			t.Fatalf("%s = %s", op, res.Text)
+		}
 	}
 }
