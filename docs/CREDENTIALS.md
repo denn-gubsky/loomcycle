@@ -429,6 +429,8 @@ credentialdef  op=create  scope=tenant  name=ANTHROPIC_API_KEY  value=sk-ant-…
 
 ## Into a shell — `Bash` and Bashbox host commands
 
+> **Deprecated.** `LOOMCYCLE_BASH_ALLOWED_CREDS`, `LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS` and the `shell_credentials` agent field are deprecated with the `Bash` and Bashbox tools, and a future release removes them (RFC GW P15). They still work. Their replacement keeps the credential out of the model's reach: an egress route with a credential (`workspace.egress.routes`, or a tenant's `EgressRouteDef`), which the core adds to a workspace's outgoing request so no shell sees it. [MIGRATING-FROM-BASH.md](MIGRATING-FROM-BASH.md#shell_credentials) maps each across.
+
 `LOOMCYCLE_BASH_ALLOWED_CREDS` and `LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS`
 name credentials injected, by name, into the environment of a `Bash` command or
 of a Bashbox host command (the `git` / `gh` an operator allowlisted with
