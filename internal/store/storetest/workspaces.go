@@ -38,6 +38,7 @@ func RunWorkspaces(t *testing.T, factory Factory) {
 		"PinAndUnpinAreCompareAndSet":           testWorkspacePinAndUnpinAreCompareAndSet,
 		"ParkedRowIsReachedByNoRun":             testWorkspaceParkedRowIsReachedByNoRun,
 		"CountDurableByUser":                    testWorkspaceCountDurableByUser,
+		"ParkingKeepsTheGitRecord":              testWorkspaceParkingKeepsTheGitRecord,
 	} {
 		t.Run(name, func(t *testing.T) {
 			s, cleanup := factory(t)

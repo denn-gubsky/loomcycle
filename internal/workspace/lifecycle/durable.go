@@ -224,6 +224,13 @@ func (m *Manager) pin(ctx context.Context, o Owner, req OpenRequest, r store.Wor
 // names). Pinning it and discarding it both ask it, so a run never takes,
 // nor destroys, more than its own grant would have made.
 func grantCovers(engine string, egress []string, r store.WorkspaceRow) error {
+	// A git workspace (RFC GW P11) holds a repository and a credential
+	// reference its ops resolve in the run's name. No grant yet says which
+	// runs may take those over, so another run takes none: deny until P11
+	// settles it.
+	if r.Git != nil || r.Kind == store.WorkspaceKindGit {
+		return fmt.Errorf("%w: it is a git workspace, which another run may not take over or discard yet", ErrDurableGrant)
+	}
 	if !engineAccepted(engine, r.Engine) {
 		return fmt.Errorf("%w: it runs on the %s engine, and this agent accepts %s only", ErrDurableGrant, r.Engine, engine)
 	}

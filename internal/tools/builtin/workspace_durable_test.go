@@ -323,3 +323,29 @@ func TestDurable_DiscardNeedsTheGrantToCoverItsRoutes(t *testing.T) {
 		t.Errorf("the row after a refused discard: %v", err)
 	}
 }
+
+// A durable git workspace (RFC GW P11) is neither re-opened nor discarded
+// by another run until P11 settles the grant that covers its repository and
+// credential: refused not_granted, nothing touched.
+func TestDurable_AGitWorkspaceIsNotTakenByAnotherRun(t *testing.T) {
+	f := durableFixture(t, 8)
+	maker := f.runAsAgent(t, "acme", "alice", "a1", wsKeeper)
+	f.mustOK(t, maker, openDurable)
+	r, err := f.st.WorkspaceGetDurable(context.Background(), "acme", "alice", "work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := f.st.WorkspaceSetGit(context.Background(), "acme", r.ID, store.WorkspaceGit{URL: "https://forge.example/acme/repo.git", Branch: "loom/work", Credential: "$cred:forge", Mirror: "m1"}); err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	f.endRun(t, maker)
+	next := f.runAsAgent(t, "acme", "alice", "a2", wsKeeper)
+	for _, in := range []string{openDurable, `{"op":"release","name":"work","discard":true}`} {
+		if c := refusalClass(f.call(t, next, in)); c != "not_granted" {
+			t.Errorf("%s on a parked git workspace = %q, want not_granted", in, c)
+		}
+	}
+	if got, err := f.st.WorkspaceGetDurable(context.Background(), "acme", "alice", "work"); err != nil || got.OwnerKind != store.WorkspaceOwnerParked || got.Git == nil {
+		t.Errorf("after the refusals: %+v, %v; want it parked with its git record", got, err)
+	}
+}
