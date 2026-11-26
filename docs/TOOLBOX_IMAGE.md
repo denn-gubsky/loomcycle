@@ -1,5 +1,7 @@
 # The `loomcycle-toolbox` image
 
+> **Deprecated.** The `loomcycle-toolbox` image, and the `Bash` and `Bashbox` tools it exists to serve, are deprecated, and a future release removes them (RFC GW P15). They still work. Workspaces replace them: an agent runs its commands in a workspace on a workspace worker, a process outside loomcycle's container that holds no credential, and the published session image `denngubsky/loomcycle-workspace` carries the toolchain. [MIGRATING-FROM-BASH.md](MIGRATING-FROM-BASH.md) maps each piece across; [WORKSPACES.md](WORKSPACES.md) is the guide.
+
 **The default `denngubsky/loomcycle` image is distroless** — no shell, no
 package manager, no Python, no compilers ([`Dockerfile`](../Dockerfile) →
 `gcr.io/distroless/static:nonroot`). That is the right default: a ~40 MB image

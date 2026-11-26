@@ -64,7 +64,8 @@ const (
 
 // ontologyReleasesDDL: one header per release. complete is 0 while the entries are being
 // written and 1 once they all are; a reader lists complete releases only, and the next
-// release removes an incomplete one. seq is max+1, taken under the release lock.
+// release removes an incomplete one. seq is max+1, taken under the release lock, which
+// holds across replicas (holdOntologyReleaseLock).
 const ontologyReleasesDDL = `CREATE TABLE IF NOT EXISTS ontology_releases (
 		seq BIGINT PRIMARY KEY, content_version TEXT NOT NULL, fingerprint TEXT NOT NULL,
 		reason TEXT NOT NULL, actor TEXT, created_at BIGINT NOT NULL,
@@ -127,12 +128,12 @@ func (d *Document) TakeOntologyRelease(ctx context.Context, reason string, summa
 	if err != nil {
 		return OntologyRelease{}, err
 	}
-	unlock, err := d.editions.lock(ctx, key, "ontology_release", memrank.OntologyPath)
+	held, err := d.holdOntologyReleaseLock(ctx, key)
 	if err != nil {
 		return OntologyRelease{}, err
 	}
-	defer unlock()
-	return d.takeOntologyRelease(ctx, key, mscope, reason, summary)
+	defer held.unlock()
+	return d.takeOntologyRelease(ctx, key, mscope, held, reason, summary)
 }
 
 // CatchUpOntologyRelease takes a catch_up release when the content version in force is
@@ -144,11 +145,11 @@ func (d *Document) CatchUpOntologyRelease(ctx context.Context) (OntologyRelease,
 	if err != nil {
 		return OntologyRelease{}, false, err
 	}
-	unlock, err := d.editions.lock(ctx, key, "ontology_release", memrank.OntologyPath)
+	held, err := d.holdOntologyReleaseLock(ctx, key)
 	if err != nil {
 		return OntologyRelease{}, false, err
 	}
-	defer unlock()
+	defer held.unlock()
 	read, ok := d.tenantOntologyRead(ctx)
 	if !ok || read.ContentVersion == "" {
 		return OntologyRelease{}, false, nil
@@ -160,7 +161,7 @@ func (d *Document) CatchUpOntologyRelease(ctx context.Context) (OntologyRelease,
 	if len(newest) == 1 && newest[0].ContentVersion == read.ContentVersion {
 		return OntologyRelease{}, false, nil
 	}
-	rel, err := d.takeOntologyRelease(ctx, key, mscope, OntologyReleaseCatchUp, nil)
+	rel, err := d.takeOntologyRelease(ctx, key, mscope, held, OntologyReleaseCatchUp, nil)
 	if err != nil {
 		return OntologyRelease{}, false, err
 	}
@@ -194,8 +195,8 @@ func (d *Document) ontologyReleases(ctx context.Context, key sqlmem.ScopeKey, li
 	return out, nil
 }
 
-// takeOntologyRelease copies, then writes. The caller holds the release lock.
-func (d *Document) takeOntologyRelease(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, reason string, summary any) (OntologyRelease, error) {
+// takeOntologyRelease copies, then writes. The caller holds the release lock, held.
+func (d *Document) takeOntologyRelease(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, held *releaseLock, reason string, summary any) (OntologyRelease, error) {
 	var cp releaseCopy
 	for attempt := 0; ; attempt++ {
 		c, moved, err := d.copyOntologyForRelease(ctx, key, mscope)
@@ -210,7 +211,7 @@ func (d *Document) takeOntologyRelease(ctx context.Context, key sqlmem.ScopeKey,
 			return OntologyRelease{}, ErrOntologyMovedDuringRelease
 		}
 	}
-	return d.writeOntologyRelease(ctx, key, cp, reason, releaseSummary(summary))
+	return d.writeOntologyRelease(ctx, key, held, cp, reason, releaseSummary(summary))
 }
 
 // copyOntologyForRelease reads the ontology document whole: every chunk that is not a
@@ -332,7 +333,13 @@ func releaseSummary(summary any) any {
 // writeOntologyRelease stores a copy: the header incomplete, the entries and their bodies
 // in batches, the header complete, then retention. Each step is its own statement or a
 // batch's own transaction, so no transaction is held across the whole copy.
-func (d *Document) writeOntologyRelease(ctx context.Context, key sqlmem.ScopeKey, cp releaseCopy, reason string, summary any) (OntologyRelease, error) {
+func (d *Document) writeOntologyRelease(ctx context.Context, key sqlmem.ScopeKey, held *releaseLock, cp releaseCopy, reason string, summary any) (OntologyRelease, error) {
+	// The copy may have taken a while; the lease must still be this release's before it
+	// removes an incomplete header (which, if the lease had been lost, could be another
+	// replica's copy in progress) and allocates a seq.
+	if err := held.renew(ctx); err != nil {
+		return OntologyRelease{}, err
+	}
 	// A copy cut off before it completed is not listed; it goes now.
 	if err := d.exec(ctx, key, `DELETE FROM ontology_release_entries
 		WHERE release_seq IN (SELECT seq FROM ontology_releases WHERE complete = 0)`); err != nil {
@@ -383,6 +390,9 @@ func (d *Document) writeOntologyRelease(ctx context.Context, key sqlmem.ScopeKey
 				return OntologyRelease{}, err
 			}
 		}
+		if err := held.renew(ctx); err != nil {
+			return OntologyRelease{}, err
+		}
 	}
 	if err := d.exec(ctx, key, `UPDATE ontology_releases SET complete = 1 WHERE seq = ?`, rel.Seq); err != nil {
 		return OntologyRelease{}, err
@@ -408,4 +418,93 @@ func (d *Document) pruneOntologyReleases(ctx context.Context, key sqlmem.ScopeKe
 	}
 	return d.exec(ctx, key, `DELETE FROM ontology_release_bodies
 		WHERE sha NOT IN (SELECT body_sha FROM ontology_release_entries)`)
+}
+
+// ontologyReleaseLease is the tenant scope's lease while a release is taken. The
+// in-process lock serialises releases within one replica only; two replicas sharing
+// one database could otherwise both allocate the same seq, one could remove the
+// other's incomplete copy as left over, or both could catch up the same content
+// version. A document_leases row is shared by every replica on both tiers, and its
+// acquisition is one conditional UPDATE, so only one replica holds it.
+//
+// It carries principalLeasePrefix: the lease op refuses that prefix, so no caller can
+// hold releases off the tenant, and heldScopeLease does not count it as a pass, so a
+// move of the tenant scope is not refused while a release is taken. Subject leases are
+// named by chunk ids, which never take this form.
+const ontologyReleaseLease = principalLeasePrefix + "ontology-release"
+
+const (
+	// ontologyReleaseLeaseTTL bounds how long a replica that died holding the lease
+	// keeps others waiting. The holder renews it before it writes and after each batch.
+	ontologyReleaseLeaseTTL = 60 * time.Second
+	// ontologyReleaseLeaseWait is how long a release waits for another replica's to
+	// finish: past the TTL, so a dead holder's lease has expired by then.
+	ontologyReleaseLeaseWait = ontologyReleaseLeaseTTL + 15*time.Second
+	ontologyReleaseLeasePoll = 25 * time.Millisecond
+)
+
+// ErrOntologyReleaseBusy: another replica held the release lease for longer than a
+// release waits. ErrOntologyReleaseLeaseLost: the lease expired under a slow release
+// and another replica took it, so this one stops before writing over that one's.
+var (
+	ErrOntologyReleaseBusy      = errors.New("another replica is taking an ontology release; it was not taken")
+	ErrOntologyReleaseLeaseLost = errors.New("the ontology release lease expired while the release was taken; it was not completed")
+)
+
+// releaseLock is a held release lock: the in-process one and the scope lease.
+type releaseLock struct {
+	d      *Document
+	key    sqlmem.ScopeKey
+	owner  string
+	unlock func()
+}
+
+// holdOntologyReleaseLock takes the release lock of key's tenant: first the in-process
+// lock, so releases of one replica queue without polling the database, then the scope
+// lease, waiting up to ontologyReleaseLeaseWait for another replica to let go.
+func (d *Document) holdOntologyReleaseLock(ctx context.Context, key sqlmem.ScopeKey) (*releaseLock, error) {
+	unlock, err := d.editions.lock(ctx, key, "ontology_release", memrank.OntologyPath)
+	if err != nil {
+		return nil, err
+	}
+	owner := randomLeaseOwner()
+	deadline := time.Now().Add(ontologyReleaseLeaseWait)
+	for {
+		lease, err := d.acquireDocumentLease(ctx, key, ontologyReleaseLease, owner, time.Now(), ontologyReleaseLeaseTTL)
+		if err != nil {
+			unlock()
+			return nil, err
+		}
+		if lease.Acquired {
+			break
+		}
+		if time.Now().After(deadline) {
+			unlock()
+			return nil, ErrOntologyReleaseBusy
+		}
+		select {
+		case <-ctx.Done():
+			unlock()
+			return nil, ctx.Err()
+		case <-time.After(ontologyReleaseLeasePoll):
+		}
+	}
+	l := &releaseLock{d: d, key: key, owner: owner}
+	l.unlock = func() {
+		_, _ = d.releaseDocumentLease(context.WithoutCancel(ctx), key, ontologyReleaseLease, owner)
+		unlock()
+	}
+	return l, nil
+}
+
+// renew extends the lease; ErrOntologyReleaseLeaseLost when another replica holds it.
+func (l *releaseLock) renew(ctx context.Context) error {
+	lease, err := l.d.acquireDocumentLease(ctx, l.key, ontologyReleaseLease, l.owner, time.Now(), ontologyReleaseLeaseTTL)
+	if err != nil {
+		return err
+	}
+	if !lease.Acquired {
+		return ErrOntologyReleaseLeaseLost
+	}
+	return nil
 }

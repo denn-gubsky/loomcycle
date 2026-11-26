@@ -312,6 +312,7 @@ export type {
   OntologyRenameJobPlan,
   OntologyRenameJobStep,
   OntologyRenameCollision,
+  OntologyTagMove,
   OntologyJobStatus,
   OntologyJobResult,
   OntologyRollbackStep,

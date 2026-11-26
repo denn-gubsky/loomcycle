@@ -10,6 +10,12 @@ Replace `APPS2` with your pool name, `PG_HOST` with your Postgres host,
 you use local models), and fill the `CHANGE_ME` / `PASTE_…` placeholders throughout. **All secrets live in an external env file (Phase 4) —
 never in the YAML you paste into the TrueNAS UI.**
 
+> **Deprecated: in-container code execution.** The toolbox image, `LOOMCYCLE_BASH_ENABLED`,
+> the `LOOMCYCLE_BASHBOX_FALLBACK_*` variables and the builder sidecar still work, and a
+> future release removes them (RFC GW P15); boot and `loomcycle doctor` warn while they
+> are set. Agents run commands in a workspace on a workspace worker instead
+> (`docs/WORKSPACES.md`; `docs/MIGRATING-FROM-BASH.md` maps each variable across).
+
 > **Image choice.** This walkthrough enables in-container code execution, so it uses
 > the **`denngubsky/loomcycle-toolbox:1.153.0`** image — a dev toolchain (python / go /
 > rust / c++ / node + git/gh/curl/jq/rsync/wget/unzip/sqlite3) on a shell-bearing base.
@@ -235,6 +241,8 @@ services:
       # GPU offload (num_gpu) is in the config overlay: providers.ollama-local.options.
 
       # --- code execution (TOOLBOX IMAGE ONLY; single-tenant/trusted) ---
+      # DEPRECATED (RFC GW P15 removes these): run commands in a workspace instead;
+      # see docs/MIGRATING-FROM-BASH.md.
       # Delete this whole block on the distroless image. Grant Bash/Bashbox to an
       # agent via its tools:.
       # Bashbox: in-process gbash sandbox (rooted at the agent's rw volume, no
@@ -461,7 +469,7 @@ acls:
   members-no-shell:
     description: members may run agents but not shell commands or git pushes
     rules:
-      - { effect: deny, actions: [invoke], resources: ["tool:Bash"] }
+      - { effect: deny, actions: [invoke], resources: ["tool:Workspace"] }
       - { effect: deny, actions: [push],   resources: ["git:*"] }
       - { effect: deny, actions: [write],  resources: ["volume:work"] }   # work becomes read-only for them
 groups:
@@ -474,7 +482,7 @@ acl_bindings:
 ```
 
 A rule is `{effect, actions, resources, when}`. Resources look like `agent:chat/*`,
-`tool:Bash`, `volume:work`, `memory:tenant`, `document:tenant:/kb/**`,
+`tool:Workspace`, `volume:work`, `memory:tenant`, `document:tenant:/kb/**`,
 `def:agent/*`, `team:*`; `when` can limit a rule by `transport`, `time`,
 `interactive`, `tier`, `source_cidr` and a few more. The Policies tab's rule editor
 offers every type and verb (the same catalog `POST /v1/_acldef` `op=catalog` returns). A malformed entry fails

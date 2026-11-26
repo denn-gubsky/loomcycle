@@ -301,7 +301,7 @@ func (w *worker) cleanWork() {
 		return
 	}
 	keep := map[string]bool{}
-	defer func() { w.kernels.Clean(keep); w.cleanCheckpoints(keep); w.cleanTemplates() }()
+	defer func() { w.kernels.Clean(keep); w.cleanCheckpoints(keep); w.cleanTemplates(); w.dropStrayPins(keep) }()
 	for _, id := range held {
 		keep[id] = true
 		if _, ok := w.boundRoot(id); ok {

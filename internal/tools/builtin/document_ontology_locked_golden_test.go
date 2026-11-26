@@ -18,7 +18,8 @@ var updateLockedGolden = flag.Bool("update-locked-golden", false, "rewrite testd
 // reads, describes, renders, reports its instances and plans exactly as before the
 // directive existed. The golden was written by the code before RFC GQ P2.3 (the P2.2
 // branch, 5ba1fba38) with -update-locked-golden; ids are masked, everything else is
-// compared byte for byte.
+// compared byte for byte. Re-pinned once since, for an additive field: the plan's
+// concept re-tag job block on the concept and scheme renames (RFC GQ P5.5).
 func TestOntology_WithoutLockedReadsIdentically(t *testing.T) {
 	f := newRetiredFixture(t)
 	read := f.read()

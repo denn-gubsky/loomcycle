@@ -39,7 +39,7 @@ func TestContainer_CargoConfigIsMountedReadOnlyWithEgress(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	c := testContainer(t, func(o *ContainerOptions) { o.Egress = &ContainerEgress{Dir: dir, HostDir: "/host/e"} })
-	a := c.runArgs("ws1", "/w/ws1")
+	a := c.runArgs("ws1", "/w/ws1", "")
 	if !hasPair(a, "-v", "/host/e/k1/"+cargoConfigFile+":"+cargoConfigMount+":ro") {
 		t.Fatalf("no read-only cargo config mount: %q", a)
 	}
@@ -63,7 +63,7 @@ func TestContainer_CargoConfigIsMountedReadOnlyWithEgress(t *testing.T) {
 // Without egress there is nothing for cargo to reach, so nothing is mounted.
 func TestContainer_NoCargoConfigWithoutEgress(t *testing.T) {
 	c := testContainer(t, nil)
-	if j := strings.Join(c.runArgs("ws1", "/w/ws1"), " "); strings.Contains(j, cargoConfigMount) {
+	if j := strings.Join(c.runArgs("ws1", "/w/ws1", ""), " "); strings.Contains(j, cargoConfigMount) {
 		t.Fatalf("cargo config without egress: %q", j)
 	}
 }

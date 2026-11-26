@@ -21,7 +21,7 @@ import (
 func (d *Document) renameJobPlan(ctx context.Context, key sqlmem.ScopeKey, read OntologyRead, p *plannedChange,
 	ch connector.OntologyPlannedChange, complete bool, skipped int) (*connector.OntologyRenameJobPlan, error) {
 	to := strings.TrimSpace(p.in.Name)
-	job := &connector.OntologyRenameJobPlan{ScopesNotCounted: skipped}
+	job := &connector.OntologyRenameJobPlan{Kind: ontologyJobKindClassRename, ScopesNotCounted: skipped}
 	from := renameOwnNames(p)
 	count := func(name string) connector.OntologyPlanCount { return ch.Counts[name] }
 	tenant := renameScope{key: key, tenant: true, name: renameTenantScope}

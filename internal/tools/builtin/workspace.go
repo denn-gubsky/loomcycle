@@ -38,17 +38,23 @@ type Workspace struct {
 	// interrupted cell has to stop before its kernel is killed. Zero is
 	// config's default.
 	KernelGrace time.Duration
+	// GitSource is the Git tool's network settings (hosts, bounds, slots,
+	// the read credential resolver), shared by git workspaces (RFC GW P11).
+	// Nil: no git workspace is opened.
+	GitSource *GitSourceConfig
+	// GitPush is workspace.push, resolved.
+	GitPush config.WorkspacePushConfig
 }
 
 func (w *Workspace) Name() string { return "Workspace" }
 
 func (w *Workspace) Description() string {
 	return "Open a workspace — a directory on a workspace worker, away from the runtime — and run shell commands and file operations in it. " +
-		"Pick the operation with `op`: open (`name`, optional `toolchain`, optional `egress`: the routes it may reach the network through, default all your grant names), list, status, release; exec (`command`, optional `cwd`, `timeout_s`); " +
+		"Pick the operation with `op`: open (`name`, optional `toolchain`, optional `egress`: the routes it may reach the network through, default all your grant names; with `repo`, an https repository URL, a git workspace: the repository checked out on its own branch, optional `branch` (default loom/<name>-<id>), `base` (a full ref or commit to start at, default the forge's default branch) and `credential` ($cred:<name>), which needs your git_remote fetch), list, status, release; exec (`command`, optional `cwd`, `timeout_s`); " +
 		"read, write, edit, glob, grep with the same arguments as the Read, Write, Edit, Glob and Grep tools (no `volume`); " +
 		"run_cell (`code`, optional `kernel` python|node, `timeout_s`) runs code in an interpreter that keeps its variables between cells, reset_kernel starts it clean. " +
 		"view (`path`) shows you a PNG, JPEG, GIF or WebP from the workspace as a picture, e.g. a chart you drew. " +
-		"start (`command`, optional `cwd`, `port`) runs a command that keeps running after the call, a server, and returns its id; stop (`server`) ends it; logs (`server`) reads its latest output, or without server lists the servers; request (`port`, `method`, `path`, optional `headers`, `body`) sends one HTTP request to a port a running server of the workspace declared and returns its status, headers and body (cut at 1 MiB); expose (`port`, optional `title`, `kind` page|panel) publishes that port to your user as a page in their chat and returns its base_path, unexpose (`port`) withdraws it; await (optional `timeout_s`) returns the next update your application posted to the address its servers find in LOOMCYCLE_UPDATE_URL (what the person did in the page), or timed_out. " +
+		"start (`command`, optional `cwd`, `port`) runs a command that keeps running after the call, a server, and returns its id; stop (`server`) ends it; logs (`server`) reads its latest output, or without server lists the servers; request (`port`, `method`, `path`, optional `headers`, `body`) sends one HTTP request to a port a running server of the workspace declared and returns its status, headers and body (cut at 1 MiB); screenshot (`port`, optional `path`, `width`, `height`) loads that port's page (default /) in a headless browser in the workspace and shows you the picture, on a worker whose sessions carry the browser; expose (`port`, optional `title`, `kind` page|panel) publishes that port to your user as a page in their chat and returns its base_path, unexpose (`port`) withdraws it; await (optional `timeout_s`) returns the next update your application posted to the address its servers find in LOOMCYCLE_UPDATE_URL (what the person did in the page), or timed_out. " +
 		"share (`name`, `with`: another run of your user by its agent id, `access`: read or read_write, optional `connect`: also its exposed pages) and unshare (`name`, `with`). " +
 		"checkpoint (`name`, optional `label`) records the workspace's files and answers an id; checkpoints lists them; restore (`name`, `checkpoint`) puts the files back and stops its interpreters and commands; delete_checkpoint frees one; fork (`name`, `as`, optional `checkpoint`) opens a second workspace of yours as a copy. Checkpoints count against the workspace's disk quota. " +
 		"A workspace another agent shared with you is named `<name>@<its agent id>` (list shows them): read, view, glob and grep on it, write and edit with read_write, and request to a port its owner exposed when shared with connect; never exec or run_cell. " +
@@ -62,23 +68,26 @@ func (w *Workspace) InputSchema() json.RawMessage {
 	return json.RawMessage(`{
 		"type": "object",
 		"properties": {
-			"op":               {"type": "string", "enum": ["open","release","list","status","exec","read","write","edit","glob","grep","share","unshare","run_cell","reset_kernel","view","start","stop","logs","request","await","expose","unexpose","checkpoint","checkpoints","restore","delete_checkpoint","fork","save_template","delete_template","templates"]},
+			"op":               {"type": "string", "enum": ["open","release","list","status","exec","read","write","edit","glob","grep","share","unshare","run_cell","reset_kernel","view","start","stop","logs","request","await","expose","unexpose","screenshot","checkpoint","checkpoints","restore","delete_checkpoint","fork","save_template","delete_template","templates"]},
 			"name":             {"type": "string", "description": "The workspace's name, your label for it within this run: 1-64 letters, digits, '.', '-', '_'. Every op but list takes it. A workspace shared with you: <name>@<owner agent id> (read, write, edit, glob, grep only)."},
 			"with":             {"type": "string", "description": "share/unshare: the agent id of the run to share with: your parent, a child, a sibling or another run of your user."},
 			"access":           {"type": "string", "enum": ["read","read_write"], "description": "share: read (read, glob, grep and copying files out) or read_write (also writing files in). Never commands."},
 			"lifetime":         {"type": "string", "enum": ["ephemeral","durable"], "description": "open: ephemeral (default, gone when your run ends) or durable (kept under your user and this name for your next run; needs workspace.durable)."},
+			"root":             {"type": "string", "description": "open: a folder of your user's own machine, by the name their personal worker offers it under; the workspace IS that folder, the user's real files (needs workspace.roots; not with template, toolchain or lifetime durable). Checkpoints, fork, templates and shares are refused on it, and release leaves the folder."},
 			"discard":          {"type": "boolean", "description": "release: delete a durable workspace, files and all, instead of keeping it (default false)."},
 			"connect":          {"type": "boolean", "description": "share: also let the peer send requests to the ports you exposed (needs your workspace.connect grant; default false)."},
 			"toolchain":        {"type": "string", "enum": ["python","node"], "description": "open: the toolchain the worker must have. Omit for a general workspace, on a worker with both."},
 			"egress":           {"type": "array", "items": {"type": "string"}, "description": "open: the egress routes the workspace may send requests out through, at http://egress/<route>/…, from those your grant names. Omit for all of them; [] for none."},
 			"command":          {"type": "string", "description": "exec, start: a shell command line, run with /bin/sh -c."},
 			"cwd":              {"type": "string", "description": "exec, start: the directory to start in, relative to the workspace (default its root)."},
-			"port":             {"type": "integer", "minimum": 1, "maximum": 65535, "description": "start: the port the server listens on, recorded with it; request: the port to send to, one a running server of this workspace declared at start (through a share: one its owner exposed); expose, unexpose: the port to publish to your user or withdraw."},
+			"port":             {"type": "integer", "minimum": 1, "maximum": 65535, "description": "start: the port the server listens on, recorded with it; request: the port to send to, one a running server of this workspace declared at start (through a share: one its owner exposed); expose, unexpose: the port to publish to your user or withdraw; screenshot: the port of a running server of this workspace whose page to take a picture of."},
 			"method":           {"type": "string", "description": "request: the HTTP method, upper case (GET, POST, ...)."},
 			"headers":          {"type": "object", "additionalProperties": {"type": "string"}, "description": "request: headers to send, name to value. Content-Length, Transfer-Encoding and Connection are the runtime's."},
 			"body":             {"type": "string", "description": "request: the body to send, up to 1 MiB."},
 			"title":            {"type": "string", "description": "expose: the page's title, shown to the user (one line, up to 200 bytes)."},
 			"kind":             {"type": "string", "enum": ["page","panel"], "description": "expose: how the chat shows it (default page)."},
+			"width":            {"type": "integer", "minimum": 1, "maximum": 1920, "description": "screenshot: the browser's viewport width in pixels (default 1280)."},
+			"height":           {"type": "integer", "minimum": 1, "maximum": 1080, "description": "screenshot: the browser's viewport height in pixels (default 800)."},
 			"server":           {"type": "string", "description": "stop, logs: the server's id, as start returned it (srv-1, ...)."},
 			"tail_bytes":       {"type": "integer", "minimum": 1, "description": "logs with server: how much of its latest output to return (default 65536, at most 262144)."},
 			"timeout_s":        {"type": "integer", "minimum": 1, "description": "exec: seconds before the command and everything it started are killed; run_cell: seconds before the cell is interrupted; await: seconds to wait for an update. Default and ceiling are the operator's."},
@@ -88,10 +97,14 @@ func (w *Workspace) InputSchema() json.RawMessage {
 			"checkpoint":       {"type": "string", "description": "restore, delete_checkpoint: the checkpoint's id (checkpoints lists them); fork: the checkpoint to start from (default the present files); save_template: the checkpoint to save."},
 			"as":               {"type": "string", "description": "fork: the new workspace's name; save_template: the template's name."},
 			"template":         {"type": "string", "description": "open: a template to start the workspace from, by name (templates lists them; your own first, then your tenant's); delete_template: the template to delete."},
+			"repo":             {"type": "string", "description": "open: an https repository URL on a host the operator lists; the workspace is that repository checked out (a git workspace)."},
+			"branch":           {"type": "string", "description": "open with repo: the workspace's own branch, the only one a push may move; never the forge's default branch, and one the forge already has only when the operator allows it. Default loom/<name>-<id>."},
+			"base":             {"type": "string", "description": "open with repo: the full ref (refs/heads/..., refs/tags/...) or commit to start at. Default the forge's default branch."},
+			"credential":       {"type": "string", "description": "open with repo: the credential to fetch with, $cred:<name>, restricted to URLs covering the repository. Omit for a public repository."},
 			"all_users":        {"type": "boolean", "description": "templates: every user's templates of your tenant too (a tenant operator's session only)."},
 			"owner":            {"type": "string", "description": "delete_template with scope user: the user whose template to delete (a tenant operator's session only; default yourself)."},
 			"scope":            {"type": "string", "enum": ["user","tenant"], "description": "save_template, delete_template: user (your runs only) or tenant (every user of your tenant; needs the tenant value in memory_scopes)."},
-			"path":             {"type": "string", "description": "read/write/edit: the file; glob/grep: the directory to search. Relative to the workspace. request: the request target, starting with / (e.g. /api/items?page=2)."},
+			"path":             {"type": "string", "description": "read/write/edit: the file; glob/grep: the directory to search. Relative to the workspace. request: the request target, starting with / (e.g. /api/items?page=2); screenshot: the page to load, starting with / (default /)."},
 			"content":          {"type": "string", "description": "write: the whole new file, up to 1 MiB."},
 			"old_string":       {"type": "string", "description": "edit: the exact text to replace; unique unless replace_all."},
 			"new_string":       {"type": "string", "description": "edit: the replacement."},
@@ -117,7 +130,7 @@ func (w *Workspace) InputSchema() json.RawMessage {
 // another op takes is refused, as a misspelt one is: silently dropping it
 // would do something the caller did not ask for.
 var workspaceOpArgs = map[string][]string{
-	"open":         {"name", "toolchain", "egress", "template", "lifetime"},
+	"open":         {"name", "toolchain", "egress", "template", "lifetime", "root", "repo", "branch", "base", "credential"},
 	"release":      {"name", "discard"},
 	"list":         {},
 	"status":       {"name"},
@@ -154,6 +167,9 @@ var workspaceOpArgs = map[string][]string{
 	"unexpose": {"name", "port"},
 	"share":    {"name", "with", "access", "connect"},
 	"unshare":  {"name", "with"},
+	// RFC GW §5.8: a picture of a page a server of the run's own workspace
+	// serves, by a browser in its container session (P10 plan §10).
+	"screenshot": {"name", "port", "path", "width", "height"},
 }
 
 // WorkspaceMCPOps are the ops the Workspace tool takes over loomcycle's MCP
@@ -204,6 +220,11 @@ var workspaceOpGrant = map[string]string{
 	// expose puts model-written active content in front of a person: its
 	// own grant (RFC GW §7). Withdrawing it needs the same.
 	"expose": "expose", "unexpose": "expose",
+	// A screenshot loads a server's page (RFC GW §5.8: grant connect), and
+	// the page's scripts run in the session, reaching what a command there
+	// reaches, as the owner's request does (exec, D-P9-20): so both, never
+	// connect alone (P10 review, MEDIUM; narrows §5.8).
+	"screenshot": "connect_and_exec",
 	// share needs the share grant and what it hands over: checked in share.
 	"share": "share", "unshare": "share",
 	// A checkpoint and a restore change what the workspace holds; a fork
@@ -221,6 +242,9 @@ type workspaceInput struct {
 	Toolchain string `json:"toolchain"`
 	// Lifetime is open's: "" or ephemeral, or durable (RFC GW §4.2, P12).
 	Lifetime string `json:"lifetime"`
+	// Root is open's: a folder of the user's own machine their personal
+	// worker offers, by name (RFC GW §4.5, P13).
+	Root string `json:"root"`
 	// Discard is release's: remove a durable workspace instead of parking it.
 	Discard         bool   `json:"discard"`
 	Command         string `json:"command"`
@@ -255,6 +279,10 @@ type workspaceInput struct {
 	Checkpoint string            `json:"checkpoint"`
 	As         string            `json:"as"`
 	Template   string            `json:"template"`
+	Repo       string            `json:"repo"`
+	Branch     string            `json:"branch"`
+	Base       string            `json:"base"`
+	Credential string            `json:"credential"`
 	AllUsers   bool              `json:"all_users"`
 	Owner      string            `json:"owner"`
 	Scope      string            `json:"scope"`
@@ -266,6 +294,9 @@ type workspaceInput struct {
 	Body       string            `json:"body"`
 	Title      string            `json:"title"`
 	Kind       string            `json:"kind"`
+	// Width and Height are screenshot's viewport; zero is the default.
+	Width  int `json:"width"`
+	Height int `json:"height"`
 }
 
 // workspaceRefusal is a failure the model sees: a class and a detail.
@@ -311,6 +342,8 @@ func (w *Workspace) Execute(ctx context.Context, input json.RawMessage) (tools.R
 		granted = pol.Expose
 	case "connect":
 		granted = pol.Connect
+	case "connect_and_exec":
+		granted = pol.Connect && pol.Allows(config.WorkspaceOpExec)
 	case "templates":
 		granted = pol.Templates
 	case "open_or_templates":
@@ -331,6 +364,11 @@ func (w *Workspace) Execute(ctx context.Context, input json.RawMessage) (tools.R
 		}
 	default:
 		return workspaceRefusal("invalid_argument", fmt.Sprintf("lifetime %q: want ephemeral or durable", in.Lifetime)), nil
+	}
+	// A root is the user's real folder: its own grant (RFC GW P13, owner
+	// ruling Q1), beside open, checked before anything is placed.
+	if in.Root != "" && !pol.Roots {
+		return workspaceRefusal("not_granted", "this agent's workspace grant does not allow opening a user's own folder (workspace.roots)"), nil
 	}
 	// discard destroys a durable workspace, which another run may have
 	// made: the durable grant too (security review of #2973), checked
@@ -409,6 +447,7 @@ func (w *Workspace) Execute(ctx context.Context, input json.RawMessage) (tools.R
 		return workspaceOK(out), nil
 	case "status":
 		out := map[string]any{"name": row.Name, "state": string(row.State), "engine": row.Engine}
+		withRoot(out, row.Root)
 		withEgress(out, row.Egress)
 		if row.State == store.WorkspaceReady {
 			exists, err := w.Manager.Status(ctx, row)
@@ -440,6 +479,8 @@ func (w *Workspace) Execute(ctx context.Context, input json.RawMessage) (tools.R
 		return w.await(ctx, row, in), nil
 	case "expose", "unexpose":
 		return w.exposeOp(ctx, owner, in), nil
+	case "screenshot":
+		return w.screenshot(ctx, owner, in), nil
 	}
 	return w.fileOp(ctx, row, in), nil
 }
@@ -491,8 +532,10 @@ func workspaceError(err error, name string) tools.Result {
 		return workspaceRefusal("not_granted", err.Error())
 	case errors.Is(err, lifecycle.ErrDurableNoUser), errors.Is(err, lifecycle.ErrDurableTemplate):
 		return workspaceRefusal("invalid_argument", err.Error())
-	case errors.Is(err, lifecycle.ErrDurableOverMCP):
+	case errors.Is(err, lifecycle.ErrDurableOverMCP), errors.Is(err, lifecycle.ErrRootOverMCP):
 		return workspaceRefusal("not_over_mcp", err.Error())
+	case errors.Is(err, lifecycle.ErrRootRefused):
+		return workspaceRefusal(workspace.ClassNotOnRoot, err.Error())
 	case errors.Is(err, lifecycle.ErrNotFound):
 		return workspaceRefusal("not_found", fmt.Sprintf("this run has no workspace named %q; open it first (list shows yours)", name))
 	case errors.Is(err, lifecycle.ErrInvalidName):
@@ -513,6 +556,16 @@ func workspaceError(err error, name string) tools.Result {
 		return workspaceRefusal("limit", err.Error())
 	case errors.Is(err, lifecycle.ErrShareBusy):
 		return workspaceRefusal("busy", err.Error())
+	case errors.Is(err, lifecycle.ErrGitAccess):
+		return workspaceRefusal("git_access_denied", err.Error())
+	case errors.Is(err, lifecycle.ErrGitBranch):
+		return workspaceRefusal("invalid_branch", err.Error())
+	case errors.Is(err, lifecycle.ErrGitBranchExists):
+		return workspaceRefusal("branch_exists", err.Error()+"; name another branch")
+	case errors.Is(err, lifecycle.ErrInvalidGitOpen):
+		return workspaceRefusal("invalid_argument", err.Error())
+	case errors.Is(err, lifecycle.ErrGitUnsupported):
+		return workspaceRefusal("not_supported_on_git", err.Error())
 	case errors.Is(err, lifecycle.ErrNameTaken):
 		return workspaceRefusal("exists", err.Error()+"; fork as another name, or release that one first")
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
@@ -539,7 +592,34 @@ func (w *Workspace) open(ctx context.Context, o lifecycle.Owner, pol tools.Works
 	if !ok {
 		return refusal
 	}
-	req := lifecycle.OpenRequest{Name: in.Name, Engine: pol.Engine, Egress: routes, Lifetime: in.Lifetime}
+	req := lifecycle.OpenRequest{Name: in.Name, Engine: pol.Engine, Egress: routes, Lifetime: in.Lifetime, Root: in.Root}
+	// A root is the user's own folder as it is; a git workspace is a clone
+	// the runtime makes (RFC GW P11). One workspace is never both.
+	if in.Root != "" && in.Repo != "" {
+		return workspaceRefusal("invalid_argument", "open takes repo or root, never both: a root is your own folder as it is, not a clone")
+	}
+	if in.Repo == "" && (in.Branch != "" || in.Base != "" || in.Credential != "") {
+		return workspaceRefusal("invalid_argument", "branch, base and credential are for a git workspace: open it with repo")
+	}
+	if in.Root != "" {
+		// A root is the user's folder as it is: no template, no toolchain
+		// (the lifecycle refuses durable, and every other mismatch).
+		if in.Template != "" || in.Toolchain != "" {
+			return workspaceRefusal("invalid_argument", "a root is your folder as it is: open it without template or toolchain")
+		}
+		return w.finishOpen(ctx, o, req)
+	}
+	if in.Repo != "" {
+		if in.Template != "" {
+			return workspaceRefusal("invalid_argument", "a git workspace does not start from a template")
+		}
+		git, release, refusal, ok := w.gitOpen(ctx, o, in)
+		if !ok {
+			return refusal
+		}
+		defer release()
+		req.Git = &git
+	}
 	if in.Template != "" {
 		if in.Toolchain != "" {
 			return workspaceRefusal("invalid_argument", "a template names its own toolchains; open it without toolchain")
@@ -572,11 +652,21 @@ func (w *Workspace) finishOpen(ctx context.Context, o lifecycle.Owner, req lifec
 		return workspaceError(err, req.Name)
 	}
 	out := map[string]any{"name": row.Name, "state": string(row.State), "engine": row.Engine}
+	withRoot(out, row.Root)
 	if req.Template != nil {
 		out["template"] = req.Template.Name
 	}
+	withGit(out, row.Git)
 	withEgress(out, row.Egress)
 	return workspaceOK(out)
+}
+
+// withRoot names the root a workspace is on (RFC GW P13), by its name only:
+// its path is the worker's and never reaches the core.
+func withRoot(out map[string]any, root string) {
+	if root != "" {
+		out["root"] = root
+	}
 }
 
 // openEgress is the routes an open records (RFC GW §6.3, O4 of the P4 plan):
@@ -620,6 +710,7 @@ func (w *Workspace) list(ctx context.Context, o lifecycle.Owner) tools.Result {
 		if r.Lifetime == store.WorkspaceLifetimeDurable {
 			e["lifetime"] = r.Lifetime
 		}
+		withRoot(e, r.Root)
 		withEgress(e, r.Egress)
 		if len(r.Shares) > 0 {
 			shares := make([]map[string]any, 0, len(r.Shares))
