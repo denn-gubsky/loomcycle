@@ -152,7 +152,8 @@ func (e *env) planGRPC(bearer string, changes []connector.OntologyChange) (conne
 		ContentVersion: resp.GetContentVersion(),
 	}
 	for _, c := range resp.GetChanges() {
-		pc := connector.OntologyPlannedChange{Op: c.GetOp(), Entry: entry(c.GetEntry()), Risk: c.GetRisk(), Notes: c.GetNotes()}
+		pc := connector.OntologyPlannedChange{Op: c.GetOp(), Entry: entry(c.GetEntry()), Risk: c.GetRisk(), Notes: c.GetNotes(),
+			Job: renameJobPlanFromProto(c.GetJob())}
 		for _, s := range c.GetSubtree() {
 			pc.Subtree = append(pc.Subtree, entry(s))
 		}
