@@ -147,9 +147,11 @@ func TestScreenshot_ReturnsTheBrowsersPicture(t *testing.T) {
 }
 
 // The browser is told to load the session's own loopback and nothing else:
-// every name but 127.0.0.1 resolves to nothing, no proxy, no WebRTC UDP,
-// no QUIC, no background networking, and a profile of its own in the
-// session's /tmp, gone after the shot, so no cookie or storage survives.
+// every request goes to a proxy that is not there but the declared port on
+// 127.0.0.1, with Chromium's own loopback bypass dropped; every name but 127.0.0.1 resolves to
+// nothing; no WebRTC UDP, no QUIC, no background networking; and a profile
+// of its own in the session's /tmp, gone after the shot, so no cookie or
+// storage survives.
 // Nothing of a credential is on its command line or in its environment.
 func TestScreenshot_TheBrowserReachesOnlyTheSessionsLoopback(t *testing.T) {
 	e := &shotEngine{shot: pngBytes}
@@ -170,7 +172,6 @@ func TestScreenshot_TheBrowserReachesOnlyTheSessionsLoopback(t *testing.T) {
 	for _, flag := range []string{
 		"--headless=new",
 		"--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE 127.0.0.1",
-		"--no-proxy-server",
 		"--disable-quic",
 		"--disable-background-networking",
 		"--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
@@ -182,8 +183,14 @@ func TestScreenshot_TheBrowserReachesOnlyTheSessionsLoopback(t *testing.T) {
 	if !slices.Contains(argv, "http://127.0.0.1:8000/") || !slices.Contains(argv, "800,600") {
 		t.Errorf("the browser does not load the loopback address at the viewport: %q", argv)
 	}
+	if !slices.Contains(argv, "--proxy-server=0.0.0.0:9") || !slices.Contains(argv, "--proxy-bypass-list=<-loopback>;127.0.0.1:8000") {
+		t.Errorf("every request but port 8000 on 127.0.0.1 is not sent to the dead proxy: %q", argv)
+	}
+	if slices.Contains(argv, "--no-proxy-server") {
+		t.Error("--no-proxy-server would switch the proxy rule off")
+	}
 	all := strings.Join(argv, " ")
-	for _, bad := range []string{"worker-secret-token", "Authorization", "Bearer", "Cookie", "--proxy-server="} {
+	for _, bad := range []string{"worker-secret-token", "Authorization", "Bearer", "Cookie", "--no-proxy-server", "--proxy-pac-url"} {
 		if strings.Contains(all, bad) {
 			t.Errorf("the browser's command line holds %q", bad)
 		}

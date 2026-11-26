@@ -17,10 +17,14 @@ import (
 // browserFlags are the browser's switches. The page is the workspace's own,
 // model-written, so each one closes a way out of the session's loopback:
 //
-//   - every host name but 127.0.0.1 resolves to nothing, so where egress
-//     gave the session a gateway a page still cannot name it;
-//   - no proxy, so the browser never reaches the session's egress route
-//     through one;
+//   - every request goes to a proxy that is not there (browserProxy) but
+//     the declared port on 127.0.0.1, the one entry of its bypass list, so
+//     a page cannot reach the egress gateway, another loopback port or
+//     anything else by address (P10 review, MEDIUM); "<-loopback>" drops
+//     Chromium's own bypass of loopback, without which every loopback port
+//     goes direct. A PAC rule (a data: URL) was tried first and does not
+//     hold: Chromium 14x still sends loopback direct under it;
+//   - every host name but 127.0.0.1 also resolves to nothing;
 //   - WebRTC sends no UDP but through a proxy (and there is none), QUIC is
 //     off, and so is every request the browser makes on its own
 //     (background networking, component updates, sync, the crash reporter,
@@ -38,7 +42,6 @@ var browserFlags = []string{
 	"--disable-dev-shm-usage",
 	"--no-first-run",
 	"--no-default-browser-check",
-	"--no-proxy-server",
 	"--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE 127.0.0.1",
 	"--disable-quic",
 	"--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
@@ -68,10 +71,23 @@ trap 'rm -rf "$d"' EXIT
 HOME="$d" XDG_CONFIG_HOME="$d" XDG_CACHE_HOME="$d" chromium "$@" --user-data-dir="$d/profile" --window-size="$size" --screenshot="$d/shot.png" -- "$url" </dev/null >/dev/null 2>"$d/err" || { tail -c 512 "$d/err" >&2; exit 1; }
 cat "$d/shot.png"`
 
-// screenshotArgv is the program a shot of url at width x height runs.
-func screenshotArgv(url string, width, height int) []string {
+// browserProxy is the proxy switches of a shot of port: every request goes
+// to 0.0.0.0:9, where nothing answers (Chromium does not fall back to a
+// direct connection when a fixed proxy fails), but the one bypass entry,
+// 127.0.0.1 at port. A process of the session could bind that port and act
+// as the proxy, but it would reach only what the session reaches, which a
+// screenshot's grant (exec) already allows. The port is an int checked by
+// ScreenshotURL, so no text of the call is written in.
+func browserProxy(port int) []string {
+	return []string{"--proxy-server=0.0.0.0:9", "--proxy-bypass-list=<-loopback>;127.0.0.1:" + strconv.Itoa(port)}
+}
+
+// screenshotArgv is the program a shot of url, on port, at width x height
+// runs.
+func screenshotArgv(url string, port, width, height int) []string {
 	argv := []string{"/bin/sh", "-c", browserScript, "sh", url, strconv.Itoa(width) + "," + strconv.Itoa(height)}
-	return append(argv, browserFlags...)
+	argv = append(argv, browserFlags...)
+	return append(argv, browserProxy(port)...)
 }
 
 // pngSignature starts every PNG.
@@ -114,7 +130,7 @@ func (w *worker) screenshotOp(ctx context.Context, id, real string, raw []byte) 
 		return refuse(workspace.ClassBrowserBusy, "a screenshot of this workspace is already being taken; try again when it ends")
 	}
 	defer w.shots.Delete(id)
-	p, err := w.engine.Start(ctx, engine.StartRequest{Workspace: id, Root: real, Dir: real, Argv: screenshotArgv(url, width, height)})
+	p, err := w.engine.Start(ctx, engine.StartRequest{Workspace: id, Root: real, Dir: real, Argv: screenshotArgv(url, in.Port, width, height)})
 	if err != nil {
 		return refuse(workspace.ClassFailed, "starting the browser: %v", err)
 	}

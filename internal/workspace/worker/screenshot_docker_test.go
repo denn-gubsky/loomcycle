@@ -19,15 +19,19 @@ import (
 // --target browser).
 const browserImageEnv = "LOOMCYCLE_TEST_BROWSER_IMAGE"
 
-// shotServer serves a page that asks for two pictures of the same server:
-// one by 127.0.0.1, one by a host name. It logs every path it is asked for,
-// so the test sees which requests the browser could make.
+// shotServer serves on argv[1] a page that asks for pictures four ways:
+// by 127.0.0.1 at its own port, by a host name meaning the loopback, at a
+// second loopback port (argv[2]: another server of the same workspace), and
+// at a literal address outside the session. It logs every path it is asked
+// for, so the test sees which requests the browser could make.
 const shotServer = `import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
-port = int(sys.argv[1])
+port, other = int(sys.argv[1]), int(sys.argv[2])
 page = ("<html><body style='background:#36c'><h1>hello</h1>"
         "<img src='http://127.0.0.1:%d/by-address.png'>"
-        "<img src='http://localhost:%d/by-name.png'></body></html>" % (port, port)).encode()
+        "<img src='http://localhost:%d/by-name.png'>"
+        "<img src='http://127.0.0.1:%d/other-port.png'>"
+        "<img src='http://10.0.0.1:%d/literal.png'></body></html>" % (port, port, other, port)).encode()
 class H(BaseHTTPRequestHandler):
     def do_GET(self):
         print("got", self.path, flush=True)
@@ -92,17 +96,20 @@ func TestContainerScreenshot_ReachesOnlyTheLoopbackAddress(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "ws1", "page.py"), []byte(shotServer), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	const port = 8765
-	info := startedServer(t, w, workspace.ServerStartArgs{Command: fmt.Sprintf("python3 page.py %d", port), Port: port})
-	// The server is up once it answers in the session.
-	deadline := time.Now().Add(60 * time.Second)
-	for {
-		res, err := c.Exec(ctx, engine.ExecRequest{Workspace: "ws1", Root: filepath.Join(root, "ws1"), Dir: filepath.Join(root, "ws1"),
-			Command: fmt.Sprintf(`python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:%d/ready')"`, port), Timeout: 10 * time.Second})
-		if err == nil && res.ExitCode == 0 || time.Now().After(deadline) {
-			break
+	const port, other = 8765, 8766
+	info := startedServer(t, w, workspace.ServerStartArgs{Command: fmt.Sprintf("python3 page.py %d %d", port, other), Port: port})
+	second := startedServer(t, w, workspace.ServerStartArgs{Command: fmt.Sprintf("python3 page.py %d %d", other, port), Port: other})
+	// Both are up once each answers in the session.
+	for _, p := range []int{port, other} {
+		deadline := time.Now().Add(60 * time.Second)
+		for {
+			res, err := c.Exec(ctx, engine.ExecRequest{Workspace: "ws1", Root: filepath.Join(root, "ws1"), Dir: filepath.Join(root, "ws1"),
+				Command: fmt.Sprintf(`python3 -c "import socket; socket.create_connection(('127.0.0.1', %d), 2)"`, p), Timeout: 10 * time.Second})
+			if err == nil && res.ExitCode == 0 || time.Now().After(deadline) {
+				break
+			}
+			time.Sleep(500 * time.Millisecond)
 		}
-		time.Sleep(500 * time.Millisecond)
 	}
 	a := shotRun(t, w, workspace.ScreenshotArgs{Port: port, Path: "/", Width: 800, Height: 600})
 	if a.class != "" {
@@ -111,12 +118,18 @@ func TestContainerScreenshot_ReachesOnlyTheLoopbackAddress(t *testing.T) {
 	if !bytes.HasPrefix(a.output, pngSignature) {
 		t.Fatalf("the picture is not a PNG (%d bytes)", len(a.output))
 	}
-	logs := serverOpRun(t, w, workspace.OpServerLogs, workspace.ServerLogsArgs{Server: info.ID})
-	log := string(logs.output)
-	if !strings.Contains(log, "by-address.png") {
-		t.Errorf("the picture by address was not asked for: %s", log)
+	logOf := func(id string) string {
+		a := serverOpRun(t, w, workspace.OpServerLogs, workspace.ServerLogsArgs{Server: id})
+		return string(a.output)
 	}
-	if strings.Contains(log, "by-name.png") {
+	log, otherLog := logOf(info.Server), logOf(second.Server)
+	if !strings.Contains(log, "/by-address.png") {
+		t.Errorf("the picture at the declared port was not asked for: %s", log)
+	}
+	if strings.Contains(log, "/by-name.png") {
 		t.Errorf("a host name reached the server, so the browser resolves names: %s", log)
+	}
+	if strings.Contains(otherLog, "/other-port.png") {
+		t.Errorf("a second loopback port was reached, so the browser is not confined to the declared one: %s", otherLog)
 	}
 }
