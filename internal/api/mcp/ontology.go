@@ -70,7 +70,7 @@ const ontologyToolSchema = `{
 			}
 		}},
 		"from":      {"type": "integer", "minimum": 1, "description": "release_diff (required): the earlier release's sequence number (seq from releases)."},
-		"to":        {"type": "integer", "minimum": 1, "description": "release_diff: the later release's sequence number. Omit it (or pass \"current\") to compare with the ontology as it stands now."},
+		"to":        {"type": "integer", "minimum": 1, "description": "release_diff: the later release's sequence number. Omit it to compare with the ontology as it stands now."},
 		"tenant":    {"type": "string", "description": "Admin only: whose ontology. Ignored for a tenant operator, which always acts on its own tenant."}
 	}
 }`
