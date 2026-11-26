@@ -185,7 +185,7 @@ func (m *Manager) pin(ctx context.Context, o Owner, req OpenRequest, r store.Wor
 	if err := grantCovers(req.Engine, req.Egress, r); err != nil {
 		return store.WorkspaceRow{}, err
 	}
-	if !m.disp.Attached(r.WorkerID, r.TenantID) {
+	if !m.disp.Attached(r.WorkerID, r.TenantID, r.UserID) {
 		return store.WorkspaceRow{}, dispatch.ErrWorkerLost
 	}
 	// Nothing of the last run may still run in it (a park its worker never
@@ -279,7 +279,7 @@ func (m *Manager) unpin(ctx context.Context, r store.WorkspaceRow) error {
 		}
 		return fmt.Errorf("workspace %s moved during its release", r.ID)
 	}
-	if m.disp.Attached(r.WorkerID, r.TenantID) {
+	if m.disp.Attached(r.WorkerID, r.TenantID, r.UserID) {
 		if err := m.park(ctx, r); err != nil {
 			m.log.Warn("cannot end what runs in a parked workspace; its next pin ends it", "workspace_id", r.ID, "err", err)
 		}
@@ -289,7 +289,7 @@ func (m *Manager) unpin(ctx context.Context, r store.WorkspaceRow) error {
 
 // park asks r's worker to end what runs in it and keep its files.
 func (m *Manager) park(ctx context.Context, r store.WorkspaceRow) error {
-	_, err := m.disp.Do(ctx, r.WorkerID, dispatch.Request{TenantID: r.TenantID, WorkspaceID: r.ID, Op: workspace.OpPark})
+	_, err := m.disp.Do(ctx, r.WorkerID, dispatch.Request{TenantID: r.TenantID, UserID: r.UserID, WorkspaceID: r.ID, Op: workspace.OpPark})
 	return err
 }
 

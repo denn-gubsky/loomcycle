@@ -72,7 +72,7 @@ func (m *Manager) callRow(ctx context.Context, r store.WorkspaceRow, op string, 
 	if err != nil {
 		return err
 	}
-	res, err := m.disp.Do(ctx, r.WorkerID, dispatch.Request{TenantID: r.TenantID, WorkspaceID: r.ID, Op: op, Args: raw, MaxOutput: maxAnswer})
+	res, err := m.disp.Do(ctx, r.WorkerID, dispatch.Request{TenantID: r.TenantID, UserID: r.UserID, WorkspaceID: r.ID, Op: op, Args: raw, MaxOutput: maxAnswer})
 	if err != nil {
 		return err
 	}
@@ -123,7 +123,7 @@ func (m *Manager) GetFile(ctx context.Context, o Owner, name string, args worksp
 		limit = args.Length
 	}
 	cw := &countingWriter{w: out}
-	_, err = m.disp.Stream(ctx, r.WorkerID, dispatch.Request{TenantID: r.TenantID, WorkspaceID: r.ID, Op: workspace.OpGet, Args: raw, MaxOutput: limit}, nil, cw)
+	_, err = m.disp.Stream(ctx, r.WorkerID, dispatch.Request{TenantID: r.TenantID, UserID: r.UserID, WorkspaceID: r.ID, Op: workspace.OpGet, Args: raw, MaxOutput: limit}, nil, cw)
 	return cw.n, err
 }
 
@@ -145,7 +145,7 @@ func (m *Manager) PutFile(ctx context.Context, o Owner, name string, args worksp
 		return out, err
 	}
 	var buf bytes.Buffer
-	_, err = m.disp.Stream(ctx, r.WorkerID, dispatch.Request{TenantID: r.TenantID, WorkspaceID: r.ID, Op: workspace.OpPut, Args: raw,
+	_, err = m.disp.Stream(ctx, r.WorkerID, dispatch.Request{TenantID: r.TenantID, UserID: r.UserID, WorkspaceID: r.ID, Op: workspace.OpPut, Args: raw,
 		MaxOutput: maxAnswer, InputSize: args.Size, MaxInput: args.MaxBytes}, in, &buf)
 	if err != nil {
 		return out, err
