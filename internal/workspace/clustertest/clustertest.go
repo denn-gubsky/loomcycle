@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/safego"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/workspace"
 	"github.com/denn-gubsky/loomcycle/internal/workspace/dispatch"
@@ -144,10 +145,10 @@ func testDurablePinRace(t *testing.T, st store.Store) {
 		errs := make([]error, 2)
 		for i, o := range []lifecycle.Owner{a, b} {
 			wg.Add(1)
-			go func() {
+			safego.Go(context.Background(), "clustertest.pin_race", func() {
 				defer wg.Done()
 				_, errs[i] = r.m[i].Open(context.Background(), o, lifecycle.OpenRequest{Name: "work", Toolchains: []string{"python", "node"}, Lifetime: store.WorkspaceLifetimeDurable})
-			}()
+			})
 		}
 		wg.Wait()
 		won, held := 0, 0
