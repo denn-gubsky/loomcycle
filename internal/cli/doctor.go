@@ -201,6 +201,8 @@ func RunDoctor(args []string, stdout, stderr io.Writer) int {
 	// A denied grant is a WARN, never a FAIL: many agents hold Memory for its
 	// non-scoped ops, and failing the config over a pattern that is often
 	// deliberate would make doctor something people stop running.
+	checkDeprecated(r, cfg)
+
 	if warns := cfg.ConfigWarnings(); len(warns) > 0 {
 		for _, w := range warns {
 			r.warn("Config advisory", w)
@@ -216,6 +218,21 @@ func RunDoctor(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+// checkDeprecated reports each use of what a future release removes (RFC GW
+// §9, P14): the Bash tool, Bashbox, the builder sidecar, shell_credentials and
+// their variables. Each line names the use, its replacement and the migration
+// guide's section, as the load wrote it; never a value.
+func checkDeprecated(r *doctorRun, cfg configForDoctor) {
+	uses := cfg.DeprecationWarnings()
+	if len(uses) == 0 {
+		r.pass("Deprecated", "nothing a future release removes is in use")
+		return
+	}
+	for _, u := range uses {
+		r.warn("Deprecated", u)
+	}
 }
 
 // checkWorkspaces reports workspace.mode (RFC GW) and the agents whose
@@ -361,6 +378,10 @@ type configForDoctor interface {
 	// common "why is my agent not doing that" went unmentioned by the command
 	// people run precisely to be told what is wrong.
 	ConfigWarnings() []string
+	// DeprecationWarnings are the load's warnings about what a future release
+	// removes (RFC GW §9, P14): doctor's "Deprecated" check, kept out of
+	// ConfigWarnings so none is said twice.
+	DeprecationWarnings() []string
 	// AWSAuthProviders returns the declared providers that authenticate with
 	// AWS credentials (an `auth:` block, RFC EM), by id.
 	AWSAuthProviders() map[string]AWSAuthProvider
