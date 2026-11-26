@@ -351,8 +351,14 @@ func withOntologyJob(res tools.Result, field string, st *connector.OntologyJobSt
 
 // unfinishedOntologyJob is the tenant's unfinished job, nil when there is none.
 func (d *Document) unfinishedOntologyJob(ctx context.Context, key sqlmem.ScopeKey) (*ontologyJob, error) {
+	return d.readOntologyJob(ctx, key, `WHERE state IN (?, ?, ?) ORDER BY created_at`, jobStatePending, jobStateRunning, jobStateBlocked)
+}
+
+// readOntologyJob is the first job row clause (a WHERE and an ORDER BY) selects, nil
+// when it selects none.
+func (d *Document) readOntologyJob(ctx context.Context, key sqlmem.ScopeKey, clause string, args ...any) (*ontologyJob, error) {
 	res, err := d.planQuery(ctx, key, `SELECT id, kind, entry, from_names, to_name, state, step, counts, coalesce(error, ''), scope_cursor
-		FROM ontology_jobs WHERE state IN (?, ?, ?) ORDER BY created_at LIMIT 1`, jobStatePending, jobStateRunning, jobStateBlocked)
+		FROM ontology_jobs `+clause+` LIMIT 1`, args...)
 	if err != nil || len(res.Rows) == 0 || len(res.Rows[0]) < 10 {
 		return nil, err
 	}
