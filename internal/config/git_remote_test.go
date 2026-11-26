@@ -97,11 +97,13 @@ func TestGitRemoteWarnings(t *testing.T) {
 		{"absent", AgentDef{Tools: []string{"Git"}}, Env{}, nil},
 		{"fetch with Git", AgentDef{Tools: []string{"Git"}, GitRemote: []string{"fetch"}}, Env{}, nil},
 		{"push with a host list", AgentDef{Tools: []string{"Git"}, GitRemote: []string{"fetch", "push"}}, hosts, nil},
-		{"no Git tool", AgentDef{Tools: []string{"Read"}, GitRemote: []string{"fetch"}}, Env{}, []string{"Git is not in tools"}},
+		{"no Git tool", AgentDef{Tools: []string{"Read"}, GitRemote: []string{"fetch"}}, Env{}, []string{"neither Git nor Workspace is in tools"}},
+		// RFC GW P11: git_remote also governs a git workspace's network ops.
+		{"fetch with Workspace", AgentDef{Tools: []string{"Workspace"}, GitRemote: []string{"fetch"}}, Env{}, nil},
 		{"push without hosts", AgentDef{Tools: []string{"Git"}, GitRemote: []string{"fetch", "push"}}, Env{}, []string{"LOOMCYCLE_GIT_PUSH_HOSTS is empty"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := strings.Join(gitRemoteWarnings("a", tc.def, tc.env), "\n")
+			got := strings.Join(gitRemoteWarnings("a", tc.def, tc.env, false), "\n")
 			if tc.want == nil {
 				if got != "" {
 					t.Fatalf("unexpected advisory: %s", got)
@@ -155,5 +157,51 @@ func TestLoad_GitEnvKnobs(t *testing.T) {
 	}
 	if cfg.Env.GitAuthorName != "Loom Bot" || cfg.Env.GitAuthorEmail != "bot@example.com" {
 		t.Errorf("author = %q <%q>", cfg.Env.GitAuthorName, cfg.Env.GitAuthorEmail)
+	}
+}
+
+// RFC GW P14: a bundle's own git_remote (team/orchestrator's push for the
+// team/repo skill) is not advised on while LOOMCYCLE_GIT_PUSH_HOSTS is
+// empty, as a bundle's own workspace grant is not called inert (D-P14-18):
+// a default install must load without an advisory. An operator's change to
+// it is the operator's, and is still advised on.
+func TestGitRemoteWarnings_ABundlesOwnPushIsNotAdvisedWithoutPushHosts(t *testing.T) {
+	bundle := Layer{Name: "agent-teams", Embedded: true, Data: []byte(`agents:
+  team/orchestrator:
+    description: a team lead
+    tools: [Workspace, Bashbox]
+    workspace: {ops: [read, write, exec], open: true}
+    git_remote: [fetch, push]
+`)}
+	pushAdvisories := func(cfg *Config) []string {
+		var out []string
+		for _, w := range cfg.Warnings {
+			if strings.Contains(w, "LOOMCYCLE_GIT_PUSH_HOSTS is empty") {
+				out = append(out, w)
+			}
+		}
+		return out
+	}
+	cfg, err := LoadLayers(bundle, Layer{Name: "t.yaml", Data: []byte(plainYAML)})
+	if err != nil {
+		t.Fatalf("LoadLayers: %v", err)
+	}
+	if got := pushAdvisories(cfg); len(got) != 0 {
+		t.Errorf("a bundle's own git_remote was advised on: %q", got)
+	}
+	// An operator's own agent with push is still advised on.
+	own := Layer{Name: "t.yaml", Data: []byte(plainYAML + `agents:
+  my/pusher:
+    description: an operator's agent
+    tools: [Workspace]
+    workspace: {ops: [read], open: true}
+    git_remote: [fetch, push]
+`)}
+	cfg, err = LoadLayers(bundle, own)
+	if err != nil {
+		t.Fatalf("LoadLayers with an operator agent: %v", err)
+	}
+	if got := pushAdvisories(cfg); len(got) != 1 || !strings.Contains(got[0], "my/pusher") {
+		t.Errorf("an operator's own push: advisories %q, want one naming my/pusher", got)
 	}
 }

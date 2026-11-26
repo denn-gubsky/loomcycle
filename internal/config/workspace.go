@@ -596,6 +596,38 @@ func bundledWorkspaceGrants(cfg *Config, layers []Layer) map[string]bool {
 	return out
 }
 
+// bundledGitRemotes names the agents whose git_remote an embedded layer gave
+// and the merged config still holds unchanged, as bundledWorkspaceGrants does
+// for the workspace grant.
+func bundledGitRemotes(cfg *Config, layers []Layer) map[string]bool {
+	given := map[string][]string{}
+	for _, l := range layers {
+		if !l.Embedded || l.Data == nil {
+			continue
+		}
+		var doc struct {
+			Agents map[string]struct {
+				GitRemote []string `yaml:"git_remote"`
+			} `yaml:"agents"`
+		}
+		if yaml.Unmarshal(l.Data, &doc) != nil {
+			continue
+		}
+		for name, a := range doc.Agents {
+			if a.GitRemote != nil {
+				given[name] = a.GitRemote
+			}
+		}
+	}
+	out := map[string]bool{}
+	for name, g := range given {
+		if a, ok := cfg.Agents[name]; ok && slices.Equal(a.GitRemote, g) {
+			out[name] = true
+		}
+	}
+	return out
+}
+
 // InertWorkspaceGrants names, sorted, the agents whose workspace grant
 // reaches nothing: Workspace is not in their tools, or workspace.mode is off.
 // The same agents workspaceWarnings advises on at load.
