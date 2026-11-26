@@ -1,5 +1,5 @@
 import type { BrowseScope, PathEntry, PathScope } from "../types";
-import type { ExplorerDataLayer, PathLsResult } from "./dataLayer";
+import type { ExplorerDataLayer, PathLsFilters, PathLsResult } from "./dataLayer";
 
 // The Path tree is loaded one directory at a time, one page at a time.
 //
@@ -28,6 +28,19 @@ export interface DirListing {
   loaded: boolean; // at least one page has arrived
   loading: boolean;
   error?: string;
+  // appliedFilters is the runtime's echo of the filters it applied to this
+  // listing (RFC HA) — present only when it really filtered, which is how a
+  // runtime that ignores the filters is told apart. typeExpandedTo lists the
+  // subtypes a `type` filter took in.
+  appliedFilters?: PathLsFilters;
+  typeExpandedTo?: string[];
+}
+
+// ListingOptions are what every one-level listing of a tree asks for (RFC HA):
+// counts on the entries, and the filters a filtered tree is listed with.
+export interface ListingOptions {
+  withCounts?: boolean;
+  filters?: PathLsFilters;
 }
 
 // DirMap keys a listing by directory path, spelled like PathNode.fullPath:
@@ -63,12 +76,15 @@ function errMessage(e: unknown): string {
 }
 
 function listingOf(resp: PathLsResult, before: PathEntry[]): DirListing {
-  return {
+  const l: DirListing = {
     entries: [...before, ...(resp.entries ?? [])],
     nextCursor: resp.next_cursor || undefined,
     loaded: true,
     loading: false,
   };
+  if (resp.filters && typeof resp.filters === "object") l.appliedFilters = resp.filters;
+  if (Array.isArray(resp.type_expanded_to)) l.typeExpandedTo = resp.type_expanded_to;
+  return l;
 }
 
 // LazyPathTree is the per-(scope, browse) cache of directory listings. It is a
@@ -94,6 +110,7 @@ export class LazyPathTree {
     private readonly scope: PathScope,
     private readonly browse?: BrowseScope,
     private readonly pageLimit: number = LS_PAGE_LIMIT,
+    private readonly listing: ListingOptions = {},
   ) {}
 
   getSnapshot = (): DirMap => this.snapshot;
@@ -150,13 +167,15 @@ export class LazyPathTree {
     const prev = this.dirs.get(dir);
     // Keep showing what was there while the new listing is in flight.
     this.set(dir, {
+      ...prev,
       entries: prev?.entries ?? [],
       nextCursor: prev?.nextCursor,
       loaded: prev?.loaded ?? false,
       loading: true,
+      error: undefined,
     });
     const p = this.data
-      .pathLs(lsTarget(dir), this.scope, false, this.browse, { limit })
+      .pathLs(lsTarget(dir), this.scope, false, this.browse, { ...this.listing, limit })
       .then(
         (resp) => {
           if (this.epoch.get(dir) === ep) this.set(dir, listingOf(resp, []));
@@ -164,6 +183,7 @@ export class LazyPathTree {
         (e: unknown) => {
           if (this.epoch.get(dir) === ep) {
             this.set(dir, {
+              ...prev,
               entries: prev?.entries ?? [],
               nextCursor: prev?.nextCursor,
               loaded: prev?.loaded ?? false,
@@ -187,6 +207,7 @@ export class LazyPathTree {
     this.set(dir, { ...cur, loading: true, error: undefined });
     const p = this.data
       .pathLs(lsTarget(dir), this.scope, false, this.browse, {
+        ...this.listing,
         limit: this.pageLimit,
         cursor: cur.nextCursor,
       })

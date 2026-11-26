@@ -63,6 +63,7 @@ export type {
   ExplorerDataLayer,
   ChunkPatch,
   DocEdgesPage,
+  PathLsFilters,
   PathLsPage,
   PathLsResult,
   DocRulingFilter,

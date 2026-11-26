@@ -403,4 +403,43 @@ describe("docLink", () => {
     expect(docLink("x", "user")).toBe("loom:doc/x");
     expect(docLink("x", "agent")).toBe("loom:doc/x?scope=agent");
   });
+
+});
+
+describe("DocumentViewerBody outline briefs (RFC HA)", () => {
+  it("TestOutline_CardServesTheListedBriefWithoutAFetch", async () => {
+    // query_chunks with_summary puts each chunk's own brief on its row: the
+    // outline's card shows it, stale mark and all, and reads nothing — nor for
+    // a row with no brief, which then has no annotation of its own.
+    const f = fakeData();
+    const documentGetAnnotation = vi.fn().mockResolvedValue({ annotations: [] });
+    const withBriefs = rows.map((r) =>
+      r.id === INTRO ? { ...r, summary: { level: "branch", brief: "Why the store is one.", stale: true } } : r,
+    );
+    const data = {
+      ...f.data,
+      documentQueryChunks: vi.fn(() => Promise.resolve({ chunks: [...withBriefs] })),
+      documentGetAnnotation,
+    } as unknown as ExplorerDataLayer;
+    const el = await mount(data);
+    const item = (title: string) =>
+      Array.from(el.querySelectorAll<HTMLElement>(".chunk-tree [role=treeitem]")).find(
+        (li) => li.querySelector(":scope > .etree-row .etree-name")!.textContent === title,
+      )!;
+    act(() => item("Intro").focus());
+    const card = () => document.querySelector<HTMLElement>(".ex-card");
+    expect(card()!.querySelector(".ex-card-brief")!.textContent).toBe("Why the store is one.");
+    expect(card()!.querySelector(".ex-card-stale")!.textContent).toContain("annotation out of date");
+    act(() => item("Intro").blur());
+    act(() => item("Detail").focus());
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(card()!.querySelector(".ex-card-title")!.textContent).toBe("Detail");
+    expect(card()!.querySelector(".ex-card-brief")).toBeNull();
+    // (The viewer reads the root's annotation for its header; the cards read none.)
+    const read = documentGetAnnotation.mock.calls.map((c) => c[0]);
+    expect(read).not.toContain(INTRO);
+    expect(read).not.toContain(DETAIL);
+  });
 });
