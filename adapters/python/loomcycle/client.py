@@ -2463,7 +2463,7 @@ class LoomcycleClient:
             "job": _ontology_job(resp.job) if resp.HasField("job") else None,
         }
 
-    async def resume_ontology_job(self, *, id: str = "", tenant: str = "") -> Mapping[str, Any]:
+    async def resume_ontology_job(self, *, id: str, tenant: str = "") -> Mapping[str, Any]:
         """Give the tenant's unfinished ontology job one slice of work
         (about 20 seconds) under the ontology rename lease, from the scope
         and step it is at, as the next class rename or concept move would; a
@@ -2471,14 +2471,16 @@ class LoomcycleClient:
         Mirrors ``POST /v1/_ontology/job/resume`` over the
         ``ResumeOntologyJob`` RPC.
 
-        *id* (from :meth:`get_ontology_job`) refuses the resume unless that
-        job is still the unfinished one. Returns ``{tenant, job}`` as
+        *id* (from :meth:`get_ontology_job`) is required: the resume is
+        refused unless that job is still the unfinished one, so a resume aimed
+        at a job that has since finished cannot carry on a newer one (an empty
+        id is refused ``invalid_request``). Returns ``{tenant, job}`` as
         :meth:`get_ontology_job` does, the job as the slice left it; call
         again while it is unfinished.
 
         Operator only, as :meth:`get_ontology_job`. A refusal raises with the
-        code (``job_not_found``, ``job_busy``, ``forbidden``,
-        ``unavailable``) on its ``.reason``."""
+        code (``job_not_found``, ``job_busy``, ``invalid_request``,
+        ``forbidden``, ``unavailable``) on its ``.reason``."""
         req = pb.ResumeOntologyJobRequest(tenant=tenant, id=id)
         try:
             resp = await self._stub.ResumeOntologyJob(req, metadata=self._auth_metadata())

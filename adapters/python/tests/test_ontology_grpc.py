@@ -531,12 +531,22 @@ async def test_plan_ontology_carries_a_concept_retag_job_block():
 
 
 @pytest.mark.asyncio
+async def test_resume_ontology_job_requires_the_id():
+    # A resume names the job it carries on: without an id the call is not made.
+    stub = _JobStub()
+    with pytest.raises(TypeError):
+        await _client(stub).resume_ontology_job()  # type: ignore[call-arg]
+    assert stub.req is None
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("rpc", "code", "status", "reason"),
     [
         ("GetOntologyJob", grpc.StatusCode.PERMISSION_DENIED, 7, "forbidden"),
         ("ResumeOntologyJob", grpc.StatusCode.NOT_FOUND, 5, "job_not_found"),
-        ("ResumeOntologyJob", grpc.StatusCode.ABORTED, 10, "job_busy"),
+        ("ResumeOntologyJob", grpc.StatusCode.FAILED_PRECONDITION, 9, "job_busy"),
+        ("ResumeOntologyJob", grpc.StatusCode.INVALID_ARGUMENT, 3, "invalid_request"),
         ("ResumeOntologyJob", grpc.StatusCode.UNAVAILABLE, 14, "unavailable"),
     ],
 )
@@ -557,7 +567,7 @@ async def test_ontology_job_refusal_carries_the_code_as_reason(rpc, code, status
     stub = type("_Refusing", (), {})()
     setattr(stub, rpc, _raise)
     client = _client(stub)
-    call = client.get_ontology_job() if rpc == "GetOntologyJob" else client.resume_ontology_job()
+    call = client.get_ontology_job() if rpc == "GetOntologyJob" else client.resume_ontology_job(id="j1")
     with pytest.raises(LoomcycleError) as ei:
         await call
     assert ei.value.reason == reason
@@ -647,7 +657,7 @@ def _status_with_metadata(code: int, message: str, reason: str, meta: dict) -> b
         (grpc.StatusCode.FAILED_PRECONDITION, 9, "plan_stale", {"fingerprint": "e" * 64}, "e" * 64, []),
         (grpc.StatusCode.FAILED_PRECONDITION, 9, "plan_required", {"fingerprint": "e" * 64}, "e" * 64, []),
         (
-            grpc.StatusCode.ABORTED, 10, "partially_applied",
+            grpc.StatusCode.FAILED_PRECONDITION, 9, "partially_applied",
             {"applied": '[{"op":"retire","entry":"c1","name":"Memo"}]'}, "",
             [{"op": "retire", "entry": "c1", "name": "Memo"}],
         ),

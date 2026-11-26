@@ -82,9 +82,11 @@ func renameJobPlanToProto(p *connector.OntologyRenameJobPlan) *loomcyclepb.Ontol
 }
 
 // ontologyJobErrToStatus maps a job refusal onto the gRPC code matching HTTP's
-// status (403/404/409/503), with the shared code as the ErrorInfo reason. HTTP's 409
-// job_busy is ABORTED: the lease was held by another call, and the client retries
-// the whole call later. An internal failure's text is not returned, as on HTTP.
+// status (400/403/404/409/503), with the shared code as the ErrorInfo reason. HTTP's
+// 409 job_busy is FAILED_PRECONDITION, as this API's other 409s are: the state the
+// call needs (a free rename lease) is not there yet. A resume without an id is
+// INVALID_ARGUMENT invalid_request. An internal failure's text is not returned, as on
+// HTTP.
 func ontologyJobErrToStatus(err error) error {
 	reason := connector.OntologyJobCode(err)
 	switch {
@@ -93,7 +95,9 @@ func ontologyJobErrToStatus(err error) error {
 	case errors.Is(err, connector.ErrOntologyJobNotFound):
 		return statusWithReason(codes.NotFound, reason, err.Error())
 	case errors.Is(err, connector.ErrOntologyJobBusy):
-		return statusWithReason(codes.Aborted, reason, err.Error())
+		return statusWithReason(codes.FailedPrecondition, reason, err.Error())
+	case errors.Is(err, connector.ErrOntologyJobIDRequired):
+		return statusWithReason(codes.InvalidArgument, reason, err.Error())
 	case errors.Is(err, connector.ErrOntologyJobUnavailable):
 		return statusWithReason(codes.Unavailable, reason, err.Error())
 	}

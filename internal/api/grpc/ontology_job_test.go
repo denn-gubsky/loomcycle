@@ -102,13 +102,13 @@ func TestOntologyJobRPCs_DelegateToTheConnector(t *testing.T) {
 	}{
 		{connector.WithMessage(connector.ErrOntologyJobForbidden, "for an operator"), codes.PermissionDenied, "forbidden"},
 		{connector.WithMessage(connector.ErrOntologyJobNotFound, "no unfinished job"), codes.NotFound, "job_not_found"},
-		{connector.WithMessage(connector.ErrOntologyJobBusy, "a rename is running"), codes.Aborted, "job_busy"},
+		{connector.WithMessage(connector.ErrOntologyJobBusy, "a rename is running"), codes.FailedPrecondition, "job_busy"},
 		{connector.WithMessage(connector.ErrOntologyJobUnavailable, "no SQL Memory"), codes.Unavailable, "unavailable"},
 		{errors.New("open /var/lib/secret.db: denied"), codes.Internal, "job_failed"},
 	} {
 		mc.jobErr = tc.err
 		_, gerr := client.GetOntologyJob(context.Background(), &loomcyclepb.GetOntologyJobRequest{})
-		_, rerr := client.ResumeOntologyJob(context.Background(), &loomcyclepb.ResumeOntologyJobRequest{})
+		_, rerr := client.ResumeOntologyJob(context.Background(), &loomcyclepb.ResumeOntologyJobRequest{Id: "j1"})
 		for _, err := range []error{gerr, rerr} {
 			code, reason, msg := reasonOf(err)
 			if code != tc.code || reason != tc.reason {

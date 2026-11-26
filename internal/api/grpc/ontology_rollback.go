@@ -68,7 +68,8 @@ func ontologyRollbackErrToStatus(err error) error {
 	meta := map[string]string{}
 	switch ref.Code {
 	case connector.RollbackPartiallyApplied:
-		code = codes.Aborted
+		// FAILED_PRECONDITION like the other 409s: the ontology is no longer in the
+		// state the plan was made for; metadata.applied says what was written.
 		b, _ := json.Marshal(ref.Applied)
 		meta["applied"] = string(b)
 	case connector.RollbackInvalid:

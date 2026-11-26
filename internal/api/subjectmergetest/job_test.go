@@ -13,8 +13,11 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 
 	"github.com/denn-gubsky/loomcycle/internal/api/grpc/loomcyclepb"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
@@ -170,7 +173,7 @@ var jobSurfaces = []jobSurface{
 // TestOntologyJob_SameAnswerOnEveryTransport: before any job the status is no job on
 // every transport; after a class rename, the finished job reads the same on all three,
 // every field; a job left running is resumed to done by each transport alike (the
-// row's update time aside), and once nothing is unfinished every resume is
+// row's update time aside), and once nothing is unfinished a resume of that job is
 // job_not_found.
 func TestOntologyJob_SameAnswerOnEveryTransport(t *testing.T) {
 	e := newEnv(t)
@@ -221,7 +224,7 @@ func TestOntologyJob_SameAnswerOnEveryTransport(t *testing.T) {
 		} else if !reflect.DeepEqual(j, *resumed) {
 			t.Errorf("%s resume = %+v\nhttp = %+v", s.name, j, *resumed)
 		}
-		if _, o := s.resume(e, operator, ""); o.ok || o.code != "job_not_found" {
+		if _, o := s.resume(e, operator, id); o.ok || o.code != "job_not_found" {
 			t.Errorf("%s: resume with nothing unfinished: ok=%v code %q (%.200s), want job_not_found", s.name, o.ok, o.code, o.raw)
 		}
 	}
@@ -247,6 +250,62 @@ func TestOntologyJob_SameRefusalOnEveryTransport(t *testing.T) {
 	}
 	if res, _ := e.jobHTTP(operator); res.Job == nil || res.Job.State != "running" {
 		t.Errorf("after the refused resumes the job = %+v, want still running", res.Job)
+	}
+}
+
+// TestOntologyJob_ResumeWithoutAnIDIsRefusedOnEveryTransport: a resume names the job it
+// carries on. Without one it is refused as a malformed request on every transport —
+// HTTP's 400 invalid_body (an empty body and {"id": ""} alike), gRPC's INVALID_ARGUMENT
+// invalid_request, MCP's invalid_request — and the job is left where it was.
+func TestOntologyJob_ResumeWithoutAnIDIsRefusedOnEveryTransport(t *testing.T) {
+	e := newEnv(t)
+	f := e.seedPlanOntology()
+	e.renameProvision(f, "Clause")
+	e.setJobState("running")
+	want := map[string]string{"http": "invalid_body", "grpc": "invalid_request", "mcp": "invalid_request"}
+	for _, s := range jobSurfaces {
+		if _, o := s.resume(e, operator, ""); o.ok || o.code != want[s.name] {
+			t.Errorf("%s: resume without an id: ok=%v code %q (%.200s), want %s", s.name, o.ok, o.code, o.raw, want[s.name])
+		}
+	}
+	if resp, raw := e.do(http.MethodPost, "/v1/_ontology/job/resume", operator, `{"id":""}`, nil); resp.StatusCode != http.StatusBadRequest ||
+		!strings.Contains(string(raw), "invalid_body") {
+		t.Errorf(`http: resume with {"id":""} = %d %s, want 400 invalid_body`, resp.StatusCode, raw)
+	}
+	ctx := metadata.AppendToOutgoingContext(context.Background(), "authorization", "Bearer "+operator)
+	if _, err := e.grpc.ResumeOntologyJob(ctx, &loomcyclepb.ResumeOntologyJobRequest{}); status.Code(err) != codes.InvalidArgument {
+		t.Errorf("grpc: resume without an id = %v, want INVALID_ARGUMENT", err)
+	}
+	if res, _ := e.jobHTTP(operator); res.Job == nil || res.Job.State != "running" {
+		t.Errorf("after the resumes without an id the job = %+v, want still running", res.Job)
+	}
+}
+
+// TestOntologyJob_BusyIsTheSameOnEveryTransport: while another call holds the ontology
+// rename lease a resume is job_busy on every transport, and on gRPC it is
+// FAILED_PRECONDITION (the state the call needs is not there yet), not ABORTED.
+func TestOntologyJob_BusyIsTheSameOnEveryTransport(t *testing.T) {
+	e := newEnv(t)
+	f := e.seedPlanOntology()
+	id := e.renameProvision(f, "Clause")
+	e.setJobState("running")
+	key := sqlmem.ScopeKey{Tenant: tenant, Scope: "tenant", ScopeID: tenant}
+	if _, err := e.doc.SqlMem.DocPlane().Exec(context.Background(), key,
+		`UPDATE document_leases SET owner = 'runtime:other', expires_at = ? WHERE name = 'ontology-rename'`,
+		[]any{time.Now().Add(10 * time.Minute).UnixNano()}, 0); err != nil {
+		t.Fatalf("hold the lease: %v", err)
+	}
+	for _, s := range jobSurfaces {
+		if _, o := s.resume(e, operator, id); o.ok || o.code != "job_busy" {
+			t.Errorf("%s: resume while the lease is held: ok=%v code %q (%.200s), want job_busy", s.name, o.ok, o.code, o.raw)
+		}
+	}
+	ctx := metadata.AppendToOutgoingContext(context.Background(), "authorization", "Bearer "+operator)
+	if _, err := e.grpc.ResumeOntologyJob(ctx, &loomcyclepb.ResumeOntologyJobRequest{Id: id}); status.Code(err) != codes.FailedPrecondition {
+		t.Errorf("grpc: resume while the lease is held = %v, want FAILED_PRECONDITION", err)
+	}
+	if res, _ := e.jobHTTP(operator); res.Job == nil || res.Job.State != "running" {
+		t.Errorf("after the busy resumes the job = %+v, want still running", res.Job)
 	}
 }
 

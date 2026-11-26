@@ -46,14 +46,14 @@ const ontologyToolDescription = "Operator actions on the tenant ontology. " +
 	"Returns {tenant, job: {id, kind (class_rename or concept_retag), entry, from, to, to_tags, state (pending, running, blocked, done, abandoned), step, done (rows rewritten per step), error (why a blocked job cannot go on), remaining (rows still under an old name in the scope it is at), scope, scopes_done, scopes_total, created_at, updated_at}}. " +
 	"op=rollback applies the plan of {op: release, seq}: pass seq and plan_fingerprint, the fingerprint of that plan. It plans again and is refused unless the fingerprint is still the ontology's; the writes go through the ontology's own guards (an entry added since is deleted only when nothing rests on it, else retired; an entry removed since is added back under a new chunk id; a class rename is carried by the rename job), and a write by anyone else stops it. Never automatic. " +
 	"Returns {tenant, rollback: {release, release_content_version, content_version, matches, risk, applied: [{op, entry, name, new_id}], rename_jobs, rollback_release, notes, warnings}}; matches says whether the ontology in force now declares the release's content version. " +
-	"op=resume_job gives the unfinished job one slice of work (about 20 seconds) under the ontology rename lease, from the scope and step it is at, as the next class rename or concept move would; a job whose change never reached the ontology is marked abandoned. Pass id (from op=job) to refuse the resume unless that job is still the unfinished one. Returns the same shape, as the slice left the job; call again while it is unfinished. " +
+	"op=resume_job gives the unfinished job one slice of work (about 20 seconds) under the ontology rename lease, from the scope and step it is at, as the next class rename or concept move would; a job whose change never reached the ontology is marked abandoned. It needs id (from op=job): the resume is refused unless that job is still the unfinished one. Returns the same shape, as the slice left the job; call again while it is unfinished. " +
 	"For an admin or a tenant operator only, holding write on the subject's document for merge_subjects (both documents) and bind_principal; plan reads the whole tenant. The tenant is your own unless you are an admin and pass another. " +
 	"A refusal is {code, error}. merge_subjects: same_subject, not_a_subject, subject_not_in_scope, already_merged, principal_conflict, forbidden, merge_conflict. " +
 	"bind_principal: subject_not_found, not_a_subject, binding_conflict (names the subject that holds the binding), principal_not_found, forbidden, invalid_request, unavailable. " +
 	"plan: invalid_request (also a proposal accepting would refuse as it stands), invalid_body (over 64 KiB), entry_not_found (no in-force entry by that id, no open proposal by that id, or no ontology), forbidden, unavailable. " +
 	"releases and release_diff: invalid_request (a from or to that is not a release's number), release_not_found (no such release, or no ontology to compare with), forbidden, unavailable. " +
 	"rollback: plan_required and plan_stale (each with fingerprint, the ontology's current one; nothing was written), rename_job_pending, entry_locked, partially_applied (with applied, the writes made before one was refused), invalid_request (a seq that is not a release's number, or a write refused before anything was written), entry_not_found (no such release, or no ontology), forbidden, unavailable, ontology_write_failed. " +
-	"job and resume_job: job_not_found (resume: no unfinished job, or not the one id names), job_busy (resume: a class rename or concept move is being checked or carried out right now), invalid_request (an id that is not a string), forbidden, unavailable. " +
+	"job and resume_job: job_not_found (resume: no unfinished job, or not the one id names), job_busy (resume: a class rename or concept move is being checked or carried out right now), invalid_request (resume: no id, or an id that is not a string), forbidden, unavailable. " +
 	"Do NOT use it to rename a subject or change its type — edit the subject's document with the document tool."
 
 // ontologyToolSchema is the `ontology` tool's input schema.
@@ -61,7 +61,7 @@ const ontologyToolSchema = `{
 	"type": "object",
 	"required": ["op"],
 	"properties": {
-		"op":        {"type": "string", "enum": ["merge_subjects", "bind_principal", "plan", "rollback", "releases", "release_diff", "job", "resume_job"], "description": "merge_subjects (needs duplicate and survivor), bind_principal (needs subject and principal), plan (needs changes), rollback (needs seq and plan_fingerprint), releases, release_diff (needs from), job, or resume_job."},
+		"op":        {"type": "string", "enum": ["merge_subjects", "bind_principal", "plan", "rollback", "releases", "release_diff", "job", "resume_job"], "description": "merge_subjects (needs duplicate and survivor), bind_principal (needs subject and principal), plan (needs changes), rollback (needs seq and plan_fingerprint), releases, release_diff (needs from), job, or resume_job (needs id)."},
 		"duplicate": {"type": "string", "description": "merge_subjects: the subject that goes: its document id or natural key."},
 		"survivor":  {"type": "string", "description": "merge_subjects: the subject that stays and receives the duplicate's facts and statements: its document id or natural key."},
 		"subject":   {"type": "string", "description": "bind_principal: the subject to bind or clear: its document id, root chunk id or natural key."},
@@ -83,7 +83,7 @@ const ontologyToolSchema = `{
 		"to":        {"type": "integer", "minimum": 1, "description": "release_diff: the later release's sequence number. Omit it to compare with the ontology as it stands now."},
 		"seq":       {"type": "integer", "minimum": 1, "description": "rollback (required): the release to roll back to."},
 		"plan_fingerprint": {"type": "string", "description": "rollback (required): the fingerprint of the plan of {op: release, seq} (op=plan)."},
-		"id":        {"type": "string", "description": "resume_job: the job's id from op=job; the resume is refused unless that job is still the unfinished one. Omit it to resume whichever job is unfinished."},
+		"id":        {"type": "string", "description": "resume_job (required): the job's id from op=job; the resume is refused unless that job is still the unfinished one."},
 		"tenant":    {"type": "string", "description": "Admin only: whose ontology. Ignored for a tenant operator, which always acts on its own tenant."}
 	}
 }`
@@ -216,6 +216,10 @@ func handleOntology(ctx context.Context, env *handlerEnv, args json.RawMessage) 
 			if err := json.Unmarshal(p.ID, &id); err != nil {
 				return ontologyRefusal("resume_job", "invalid_request", errors.New("id must be a job's id, a string")), nil
 			}
+		}
+		if id == "" {
+			// The connector refuses it too; refused here, as a non-string id is.
+			return ontologyRefusal("resume_job", "invalid_request", errors.New("id is required: the job's id from op=job")), nil
 		}
 		res, err := env.connector.ResumeOntologyJob(ctx, connector.ResumeOntologyJobRequest{Tenant: p.Tenant, ID: id})
 		if err != nil {

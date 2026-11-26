@@ -70,6 +70,10 @@ func (s *Server) erasureService() *erasure.Service {
 		dir := c.WorkspaceTemplateDir()
 		svc.TemplateArchive = func(id string) (string, error) { return lifecycle.TemplateArchivePath(dir, id) }
 	}
+	// A durable workspace goes with its user's erasure (RFC GW P12 Q2).
+	if s.workspaces != nil {
+		svc.EraseDurableWorkspaces = s.workspaces.EraseDurable
+	}
 	s.wireErasureSubjects(svc)
 	return svc
 }

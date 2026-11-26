@@ -464,7 +464,7 @@ type LoomcycleClient interface {
 	// beside the code is in the ErrorInfo's metadata: `fingerprint` (the
 	// ontology's current one) on plan_required and plan_stale
 	// (FAILED_PRECONDITION), and `applied` (the writes made, as HTTP's JSON
-	// array) on partially_applied (ABORTED). rename_job_pending and
+	// array) on partially_applied (FAILED_PRECONDITION). rename_job_pending and
 	// entry_locked are FAILED_PRECONDITION, invalid_request INVALID_ARGUMENT;
 	// the plan's own refusals map as PlanOntology's.
 	//
@@ -509,11 +509,12 @@ type LoomcycleClient interface {
 	// work under the ontology rename lease, from the scope and step it is at,
 	// as the next class rename or concept move would; a job whose change never
 	// reached the ontology is marked abandoned. Answers with the job as the
-	// slice left it.
+	// slice left it. id is required.
 	//
 	// Operator-only, as GetOntologyJob. A refusal carries a google.rpc.ErrorInfo
-	// whose reason is the code HTTP returns (job_not_found, job_busy,
-	// forbidden, unavailable).
+	// whose reason is the code HTTP returns: job_not_found (NOT_FOUND), job_busy
+	// (FAILED_PRECONDITION: another call holds the lease), invalid_request
+	// (INVALID_ARGUMENT: no id), forbidden, unavailable.
 	//
 	// Mirrors POST /v1/_ontology/job/resume.
 	ResumeOntologyJob(ctx context.Context, in *ResumeOntologyJobRequest, opts ...grpc.CallOption) (*OntologyJobResponse, error)
@@ -2332,7 +2333,7 @@ type LoomcycleServer interface {
 	// beside the code is in the ErrorInfo's metadata: `fingerprint` (the
 	// ontology's current one) on plan_required and plan_stale
 	// (FAILED_PRECONDITION), and `applied` (the writes made, as HTTP's JSON
-	// array) on partially_applied (ABORTED). rename_job_pending and
+	// array) on partially_applied (FAILED_PRECONDITION). rename_job_pending and
 	// entry_locked are FAILED_PRECONDITION, invalid_request INVALID_ARGUMENT;
 	// the plan's own refusals map as PlanOntology's.
 	//
@@ -2377,11 +2378,12 @@ type LoomcycleServer interface {
 	// work under the ontology rename lease, from the scope and step it is at,
 	// as the next class rename or concept move would; a job whose change never
 	// reached the ontology is marked abandoned. Answers with the job as the
-	// slice left it.
+	// slice left it. id is required.
 	//
 	// Operator-only, as GetOntologyJob. A refusal carries a google.rpc.ErrorInfo
-	// whose reason is the code HTTP returns (job_not_found, job_busy,
-	// forbidden, unavailable).
+	// whose reason is the code HTTP returns: job_not_found (NOT_FOUND), job_busy
+	// (FAILED_PRECONDITION: another call holds the lease), invalid_request
+	// (INVALID_ARGUMENT: no id), forbidden, unavailable.
 	//
 	// Mirrors POST /v1/_ontology/job/resume.
 	ResumeOntologyJob(context.Context, *ResumeOntologyJobRequest) (*OntologyJobResponse, error)

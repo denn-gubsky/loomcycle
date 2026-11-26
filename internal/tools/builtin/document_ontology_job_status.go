@@ -46,8 +46,14 @@ func (d *Document) OntologyJob(ctx context.Context) (*connector.OntologyJobStatu
 // ResumeOntologyJob gives ctx's tenant's unfinished ontology job one slice, as the gate of
 // the next rename would (classRenameGate): under the ontology-rename lease, through
 // continueOntologyJob, so a pending job whose write never landed is abandoned and any
-// other is carried on from its scope and step. id, when not "", must be that job's.
+// other is carried on from its scope and step. id is required and must be that job's,
+// so a resume aimed at a job that has since finished cannot carry on a newer one; an
+// empty id is refused before the lease is asked for.
 func (d *Document) ResumeOntologyJob(ctx context.Context, id string) (*connector.OntologyJobStatus, error) {
+	if id == "" {
+		return nil, connector.WithMessage(connector.ErrOntologyJobIDRequired,
+			"a resume needs the job's id (read it with the job status); none was given")
+	}
 	key, mscope, err := d.ontologyJobKey(ctx)
 	if err != nil {
 		return nil, err
@@ -69,7 +75,7 @@ func (d *Document) ResumeOntologyJob(ctx context.Context, id string) (*connector
 	if j == nil {
 		return nil, connector.WithMessage(connector.ErrOntologyJobNotFound, "this tenant has no unfinished ontology job")
 	}
-	if id != "" && id != j.ID {
+	if id != j.ID {
 		return nil, connector.WithMessage(connector.ErrOntologyJobNotFound,
 			"job "+id+" is not this tenant's unfinished ontology job (that is "+j.ID+"); read the job again")
 	}

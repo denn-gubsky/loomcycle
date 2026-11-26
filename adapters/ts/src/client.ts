@@ -1326,21 +1326,23 @@ export class LoomcycleClient {
    * the slice left it; call again while it is unfinished. Mirrors POST
    * /v1/_ontology/job/resume.
    *
-   * `id` (from {@link getOntologyJob}) refuses the resume unless that job is
-   * still the unfinished one. Operator only, as {@link getOntologyJob}. A
-   * refusal throws with the server's code: `job_not_found`, `job_busy`,
-   * `invalid_body`, `forbidden`, `unavailable`.
+   * `id` (from {@link getOntologyJob}) is required: the resume is refused
+   * unless that job is still the unfinished one, so a resume aimed at a job
+   * that has since finished cannot carry on a newer one. Operator only, as
+   * {@link getOntologyJob}. A refusal throws with the server's code:
+   * `job_not_found`, `job_busy`, `invalid_body` (also an empty `id`),
+   * `forbidden`, `unavailable`.
    */
   async resumeOntologyJob(
-    opts?: { id?: string; tenant?: string; signal?: AbortSignal },
+    opts: { id: string; tenant?: string; signal?: AbortSignal },
   ): Promise<OntologyJobResult> {
-    const q = opts?.tenant !== undefined
+    const q = opts.tenant !== undefined
       ? `?tenant=${encodeURIComponent(opts.tenant)}`
       : "";
     return postJSON<OntologyJobResult>(
       this.ctx,
       `/v1/_ontology/job/resume${q}`,
-      opts?.id !== undefined ? { id: opts.id } : {},
+      { id: opts.id },
       opts,
     );
   }
