@@ -65,9 +65,39 @@ type ReleaseErasure struct {
 	// InForce counts the bound subjects' instance entries still in the ontology in
 	// force, which an erasure does not edit; a later release copies them again.
 	InForce int `json:"in_force"`
-	// SummariesNaming counts the releases whose plan_summary names an erased entry,
-	// which are not rewritten.
-	SummariesNaming int `json:"summaries_naming"`
+	// Summaries counts the releases whose plan_summary named the subjects and was
+	// scrubbed (or would be).
+	Summaries int `json:"summaries"`
+}
+
+// migrateReleaseRedacted adds ontology_releases.redacted: 1 once a subject erasure
+// changed the release (an entry or its plan summary), NULL otherwise. Not declared in
+// the CREATE TABLE, so a scope has one shape whichever release created it; probe then
+// ALTER, like migrateOntologyContent.
+func (d *Document) migrateReleaseRedacted(ctx context.Context, key sqlmem.ScopeKey) error {
+	if d.releaseHasRedacted(ctx, key) {
+		return nil
+	}
+	if err := d.exec(ctx, key, `ALTER TABLE ontology_releases ADD COLUMN redacted INTEGER`); err != nil {
+		return fmt.Errorf("add ontology_releases.redacted: %w", err)
+	}
+	return nil
+}
+
+// releaseHasRedacted reports whether the scope's ontology_releases has the column. A
+// read runs under noWrites and never adds it: a scope without it has no redacted release.
+func (d *Document) releaseHasRedacted(ctx context.Context, key sqlmem.ScopeKey) bool {
+	_, err := d.query(ctx, key, `SELECT redacted FROM ontology_releases WHERE 1=0`)
+	return err == nil
+}
+
+// redactedCol is the select expression for a release's flag: the column where the
+// scope has it, else 0.
+func (d *Document) redactedCol(ctx context.Context, key sqlmem.ScopeKey) string {
+	if d.releaseHasRedacted(ctx, key) {
+		return `coalesce(redacted, 0)`
+	}
+	return `0`
 }
 
 // releaseMatch is one release entry an erasure redacts.
@@ -115,14 +145,24 @@ func (d *Document) EraseSubjectsFromReleases(ctx context.Context, subjects []Sub
 		chunks[m.chunkID] = true
 	}
 	out.Entries, out.Releases = len(matches), len(bySeq)
-	if out.InForce, err = d.inForceOf(ctx, chunks); err != nil {
+	inForce := d.inForceOf(ctx, chunks)
+	out.InForce = len(inForce)
+	summaries, err := d.summariesNaming(ctx, key, summaryNeedles(keys, matches, inForce))
+	if err != nil {
 		return out, err
 	}
-	if out.SummariesNaming, err = d.summariesNaming(ctx, key, matches, keys); err != nil {
-		return out, err
-	}
-	if dryRun || len(matches) == 0 {
+	out.Summaries = len(summaries)
+	if dryRun || (len(matches) == 0 && len(summaries) == 0) {
 		return out, nil
+	}
+	// A scope from before the flag gains it here: provisioning runs once per process.
+	if err := d.migrateReleaseRedacted(ctx, key); err != nil {
+		return out, err
+	}
+	for _, s := range summaries {
+		if err := d.exec(ctx, key, `UPDATE ontology_releases SET plan_summary = ?, redacted = 1 WHERE seq = ?`, s.summary, s.seq); err != nil {
+			return out, fmt.Errorf("scrub release %d's plan summary: %w", s.seq, err)
+		}
 	}
 	seqs := make([]int64, 0, len(bySeq))
 	for seq := range bySeq {
@@ -280,52 +320,140 @@ func (d *Document) instanceEntriesOnly(ctx context.Context, key sqlmem.ScopeKey,
 	return out, nil
 }
 
-// inForceOf counts the instance entries of the ontology in force among chunks.
-func (d *Document) inForceOf(ctx context.Context, chunks map[string]bool) (int, error) {
+// inForceOf lists the instance entries of the ontology in force among chunks.
+func (d *Document) inForceOf(ctx context.Context, chunks map[string]bool) []string {
 	read, ok := d.tenantOntologyRead(ctx)
 	if !ok {
-		return 0, nil
+		return nil
 	}
-	var n int
+	var out []string
 	for _, in := range read.Instances {
 		if chunks[in.ChunkID] {
-			n++
+			out = append(out, in.ChunkID)
 		}
 	}
-	return n, nil
+	return out
 }
 
-// summariesNaming counts the releases whose plan_summary holds an erased entry's chunk
-// id or title, or a subject's key.
-func (d *Document) summariesNaming(ctx context.Context, key sqlmem.ScopeKey, matches []releaseMatch, keys map[string]bool) (int, error) {
-	var needles []string
+// summaryNeedles are the names a plan summary may carry of the subjects, by the rule the
+// entries are matched by: the subjects' keys, and the chunk ids and titles of their
+// instance entries as the releases copied them, or as the ontology in force holds them.
+// A chunk id a subject records but no release or the ontology in force shows to be an
+// instance is not one: it may name anything. Longest first, so a name inside another is
+// not cut out of it first.
+func summaryNeedles(keys map[string]bool, matches []releaseMatch, inForce []string) []string {
+	set := map[string]bool{}
 	for k := range keys {
-		needles = append(needles, k)
+		set[k] = true
 	}
 	for _, m := range matches {
-		needles = append(needles, m.chunkID)
-		if t, err := json.Marshal(m.title); err == nil {
-			needles = append(needles, string(t)) // as a JSON string, quotes included
-		}
+		set[m.chunkID], set[m.title] = true, true
 	}
+	for _, id := range inForce {
+		set[id] = true
+	}
+	delete(set, "")
+	delete(set, releaseErasedTitle)
+	out := make([]string, 0, len(set))
+	for n := range set {
+		out = append(out, n)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if len(out[i]) != len(out[j]) {
+			return len(out[i]) > len(out[j])
+		}
+		return out[i] < out[j]
+	})
+	return out
+}
+
+// scrubbedSummary is one release's plan_summary with the subjects' names erased.
+type scrubbedSummary struct {
+	seq     int64
+	summary string
+}
+
+// summariesNaming scrubs needles out of every release's plan_summary and returns the
+// ones that changed, unwritten.
+func (d *Document) summariesNaming(ctx context.Context, key sqlmem.ScopeKey, needles []string) ([]scrubbedSummary, error) {
 	if len(needles) == 0 {
-		return 0, nil
+		return nil, nil
 	}
-	res, err := d.query(ctx, key, `SELECT plan_summary FROM ontology_releases WHERE plan_summary IS NOT NULL`)
+	res, err := d.query(ctx, key, `SELECT seq, plan_summary FROM ontology_releases WHERE plan_summary IS NOT NULL ORDER BY seq`)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	var n int
+	var out []scrubbedSummary
 	for _, r := range res.Rows {
-		s := asStr(r[0])
-		for _, needle := range needles {
-			if strings.Contains(s, needle) {
-				n++
-				break
-			}
+		if len(r) < 2 {
+			continue
+		}
+		if s, changed := scrubSummary(asStr(r[1]), needles); changed {
+			out = append(out, scrubbedSummary{seq: asInt64Val(r[0]), summary: s})
 		}
 	}
-	return n, nil
+	return out, nil
+}
+
+// scrubSummary replaces each needle with the erased marker. A JSON summary is rewritten
+// value by value (strings, and object keys, which can be names too), so it stays JSON and
+// its numbers keep their text; anything else is rewritten as text.
+func scrubSummary(s string, needles []string) (string, bool) {
+	dec := json.NewDecoder(strings.NewReader(s))
+	dec.UseNumber()
+	var v any
+	if err := dec.Decode(&v); err != nil || dec.More() {
+		out := scrubText(s, needles)
+		return out, out != s
+	}
+	changed := false
+	v = scrubValue(v, needles, &changed)
+	if !changed {
+		return s, false
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		out := scrubText(s, needles)
+		return out, out != s
+	}
+	return string(b), true
+}
+
+func scrubValue(v any, needles []string, changed *bool) any {
+	switch t := v.(type) {
+	case string:
+		out := scrubText(t, needles)
+		if out != t {
+			*changed = true
+		}
+		return out
+	case []any:
+		for i := range t {
+			t[i] = scrubValue(t[i], needles, changed)
+		}
+		return t
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for k, val := range t {
+			nk := scrubText(k, needles)
+			if nk != k {
+				*changed = true
+			}
+			out[nk] = scrubValue(val, needles, changed)
+		}
+		return out
+	}
+	return v
+}
+
+// scrubText replaces the needles in one pass (a later needle never matches inside the
+// marker an earlier one wrote), the longest at a position first.
+func scrubText(s string, needles []string) string {
+	pairs := make([]string, 0, 2*len(needles))
+	for _, n := range needles {
+		pairs = append(pairs, n, releaseErasedTitle)
+	}
+	return strings.NewReplacer(pairs...).Replace(s)
 }
 
 // redactRelease redacts the entries ms of release seq, and its export_md, in one
@@ -357,7 +485,7 @@ func (d *Document) redactRelease(ctx context.Context, key sqlmem.ScopeKey, seq i
 				return err
 			}
 		}
-		return d.execTxn(ctx, txnID, `UPDATE ontology_releases SET export_md = ? WHERE seq = ?`, md, seq)
+		return d.execTxn(ctx, txnID, `UPDATE ontology_releases SET export_md = ?, redacted = 1 WHERE seq = ?`, md, seq)
 	})
 }
 

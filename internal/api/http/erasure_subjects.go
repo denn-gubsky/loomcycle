@@ -41,7 +41,7 @@ func (s *Server) wireErasureSubjects(svc *erasure.Service) {
 	svc.ReleaseCopies = func(ctx context.Context, tenant string, subjects []erasure.BoundSubject, dryRun bool) (erasure.ReleaseRedaction, error) {
 		r, err := s.ontologyDocument().EraseSubjectsFromReleases(dctx(ctx, tenant), toSubjectBindings(subjects), dryRun)
 		return erasure.ReleaseRedaction{Entries: r.Entries, Releases: r.Releases, InForce: r.InForce,
-			SummariesNaming: r.SummariesNaming}, err
+			Summaries: r.Summaries}, err
 	}
 }
 

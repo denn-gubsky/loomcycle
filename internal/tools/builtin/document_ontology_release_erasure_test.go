@@ -2,6 +2,7 @@ package builtin
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -115,8 +116,10 @@ func TestReleaseErasure_RedactsTheBoundSubjectsInstanceAndKeepsAnother(t *testin
 		}
 		after := listedReleases(t, d, f.ctx)
 		for i := range before {
-			if after[i] != before[i] {
-				t.Errorf("header %d = %+v, want it kept as %+v", i, after[i], before[i])
+			want := before[i]
+			want.Redacted = true // the one change: flagged
+			if after[i] != want {
+				t.Errorf("header %d = %+v, want it kept as %+v", i, after[i], want)
 			}
 		}
 		if again, err := d.EraseSubjectsFromReleases(f.ctx, bound, false); err != nil || again.Entries != 0 {
@@ -238,6 +241,126 @@ func TestReleaseErasure_OnlyInstanceEntriesAreRedacted(t *testing.T) {
 		}
 		if n := releaseCount(t, d, f.ctx, `SELECT count(*) FROM ontology_release_entries WHERE chunk_id = ? AND body_sha = ?`, acme, releaseErasedSHA); n != 3 {
 			t.Errorf("%d of Acme's copies erased, want 3", n)
+		}
+	})
+}
+
+// planSummaryOf reads a release's stored plan_summary.
+func planSummaryOf(t *testing.T, d *Document, ctx context.Context, seq int64) string {
+	t.Helper()
+	res, err := d.query(ctx, mustTenantKey(t, d, ctx), `SELECT coalesce(plan_summary, '') FROM ontology_releases WHERE seq = ?`, seq)
+	if err != nil || len(res.Rows) != 1 {
+		t.Fatalf("read release %d's summary: %v", seq, err)
+	}
+	return asStr(res.Rows[0][0])
+}
+
+// TestReleaseErasure_ScrubsThePlanSummariesAndFlagsTheReleases: a release taken with a
+// plan summary naming Acme (its title, chunk id and key) and Globex. The dry run counts
+// the summary and changes nothing; the erasure replaces each of Acme's names with the
+// erased marker in the summary's string values, keeps it valid JSON with Globex (minimal
+// pair) and its other values as they were, and flags every release it changed as
+// redacted, on the list, the read and the diff, keeping the recorded content version.
+func TestReleaseErasure_ScrubsThePlanSummariesAndFlagsTheReleases(t *testing.T) {
+	statementsBothTiers(t, func(t *testing.T, d *Document, base context.Context) {
+		f, bound := releaseErasureFixture(t, d, base)
+		acme, globex, acmeKey := f.chunk("Acme"), f.chunk("Globex"), bound[0].NaturalKey
+		summary := map[string]any{
+			"applied": []any{
+				map[string]any{"op": "edit", "entry": acme, "name": "Acme", "note": "Acme renamed; Globex kept"},
+				map[string]any{"op": "edit", "entry": globex, "name": "Globex"},
+			},
+			"subject": acmeKey, "count": 2,
+		}
+		rel, err := d.TakeOntologyRelease(f.ctx, OntologyReleaseApply, summary)
+		if err != nil {
+			t.Fatalf("take: %v", err)
+		}
+		before := planSummaryOf(t, d, f.ctx, rel.Seq)
+		versions := map[int64]string{}
+		for _, r := range listedReleases(t, d, f.ctx) {
+			versions[r.Seq] = r.ContentVersion
+		}
+
+		dry, err := d.EraseSubjectsFromReleases(f.ctx, bound, true)
+		if err != nil || dry.Summaries != 1 {
+			t.Errorf("dry run = %+v %v, want 1 summary", dry, err)
+		}
+		if planSummaryOf(t, d, f.ctx, rel.Seq) != before {
+			t.Fatal("the dry run changed the summary")
+		}
+		rels, err := d.ListOntologyReleases(f.ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, r := range rels {
+			if r.Redacted {
+				t.Fatalf("release %d is flagged redacted before any erasure", r.Seq)
+			}
+		}
+
+		got, err := d.EraseSubjectsFromReleases(f.ctx, bound, false)
+		if err != nil || got.Summaries != 1 {
+			t.Fatalf("erasure = %+v %v, want 1 summary", got, err)
+		}
+		after := planSummaryOf(t, d, f.ctx, rel.Seq)
+		var parsed struct {
+			Applied []struct {
+				Entry, Name, Note string
+			} `json:"applied"`
+			Subject string `json:"subject"`
+			Count   int    `json:"count"`
+		}
+		if err := json.Unmarshal([]byte(after), &parsed); err != nil {
+			t.Fatalf("the scrubbed summary is not JSON: %v (%s)", err, after)
+		}
+		for _, name := range []string{"Acme", acme, acmeKey} {
+			if strings.Contains(after, name) {
+				t.Errorf("the summary still names %q: %s", name, after)
+			}
+		}
+		if len(parsed.Applied) != 2 || parsed.Applied[0].Name != releaseErasedTitle || parsed.Applied[0].Entry != releaseErasedTitle ||
+			parsed.Applied[0].Note != releaseErasedTitle+" renamed; Globex kept" || parsed.Applied[1].Name != "Globex" ||
+			parsed.Applied[1].Entry != globex || parsed.Subject != releaseErasedTitle || parsed.Count != 2 {
+			t.Errorf("scrubbed summary = %+v, want Acme's names erased and Globex's kept", parsed)
+		}
+
+		rels, err = d.ListOntologyReleases(f.ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, r := range rels {
+			if !r.Redacted || r.ContentVersion != versions[r.Seq] {
+				t.Errorf("release %d = %+v, want flagged redacted with its content version %s", r.Seq, r, versions[r.Seq])
+			}
+		}
+		if g, err := d.GetOntologyRelease(f.ctx, rel.Seq); err != nil || !g.Release.Redacted {
+			t.Errorf("get = %+v %v, want redacted", g.Release, err)
+		}
+		if diff, err := d.DiffOntologyReleases(f.ctx, rel.Seq, 0); err != nil || !diff.From.Redacted || diff.To.Redacted {
+			t.Errorf("diff sides = %+v / %+v %v, want the release redacted and current not", diff.From, diff.To, err)
+		}
+	})
+}
+
+// TestReleaseErasure_AScopeWithoutTheRedactedColumnReadsAndGainsIt starts from a tenant
+// scope made before the column: its releases read as not redacted, and an erasure adds
+// the column and flags them.
+func TestReleaseErasure_AScopeWithoutTheRedactedColumnReadsAndGainsIt(t *testing.T) {
+	statementsBothTiers(t, func(t *testing.T, d *Document, base context.Context) {
+		f, bound := releaseErasureFixture(t, d, base)
+		if err := d.exec(f.ctx, mustTenantKey(t, d, f.ctx), `ALTER TABLE ontology_releases DROP COLUMN redacted`); err != nil {
+			t.Fatalf("drop the column: %v", err)
+		}
+		rels, err := d.ListOntologyReleases(f.ctx)
+		if err != nil || len(rels) != 3 || rels[0].Redacted {
+			t.Fatalf("list on an old scope = %+v %v, want 3 releases, none redacted", rels, err)
+		}
+		if _, err := d.EraseSubjectsFromReleases(f.ctx, bound, false); err != nil {
+			t.Fatalf("erase: %v", err)
+		}
+		if rels, err = d.ListOntologyReleases(f.ctx); err != nil || len(rels) != 3 || !rels[0].Redacted {
+			t.Errorf("list after the erasure = %+v %v, want 3 releases, redacted", rels, err)
 		}
 	})
 }

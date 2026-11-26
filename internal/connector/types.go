@@ -1786,6 +1786,9 @@ type OntologyRelease struct {
 	CreatedAt int64  `json:"created_at"` // unix nanoseconds
 	// Entries is how many chunks of the ontology document it copied.
 	Entries int `json:"entries"`
+	// Redacted: a subject erasure changed the release (an entry or its plan
+	// summary). ContentVersion stays as recorded, so the copy no longer hashes to it.
+	Redacted bool `json:"redacted,omitempty"`
 }
 
 // ListOntologyReleasesRequest lists a tenant's releases. Tenant: only an admin
@@ -1852,6 +1855,8 @@ type OntologyDiffSide struct {
 	Seq            int64  `json:"seq,omitempty"`
 	Current        bool   `json:"current,omitempty"`
 	ContentVersion string `json:"content_version"`
+	// Redacted: the release on this side was changed by a subject erasure.
+	Redacted bool `json:"redacted,omitempty"`
 }
 
 // OntologyEntryState is an entry as one side declares it. Parent is the chunk

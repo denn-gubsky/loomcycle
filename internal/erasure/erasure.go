@@ -150,13 +150,17 @@ type ReleaseRedaction struct {
 	// InForce counts the bound subjects' instance entries still in the ontology in
 	// force, which an erasure does not edit and a later release copies again.
 	InForce int
-	// SummariesNaming counts the releases whose plan summary names a redacted entry
-	// or a bound subject's key; summaries are not rewritten.
-	SummariesNaming int
+	// Summaries counts the releases whose plan summary named the bound subjects and
+	// was scrubbed (or would be).
+	Summaries int
 }
 
-// releaseCopiesPlane names the release entries in Tier2 and Deleted.
-const releaseCopiesPlane = "ontology_release_entries"
+// releaseCopiesPlane and releaseSummariesPlane name the release entries and the
+// release plan summaries in Tier2 and Deleted.
+const (
+	releaseCopiesPlane    = "ontology_release_entries"
+	releaseSummariesPlane = "ontology_release_summaries"
+)
 
 // errReleaseCopiesUnread stands in for the release plane's error, as
 // errBoundSubjectsUnread does for the bound subjects'.
@@ -170,21 +174,21 @@ func (s *Service) releaseCopiesWired() bool {
 // retainedReleaseCopies is the Retained entry for the release plane; "" when it holds
 // nothing to say.
 func retainedReleaseCopies(r ReleaseRedaction, dryRun bool) string {
-	if r.Entries == 0 && r.InForce == 0 && r.SummariesNaming == 0 {
+	if r.Entries == 0 && r.InForce == 0 && r.Summaries == 0 {
 		return ""
 	}
 	verb := "were redacted"
 	if dryRun {
 		verb = "would be redacted"
 	}
-	return fmt.Sprintf("ontology releases: %d copied instance entr(ies) of the bound subjects in %d release(s) %s "+
-		"(name, text and fields replaced by an erased marker; the release header, its seq and the content "+
-		"version it recorded stay, so a redacted release no longer hashes to that version). Not rewritten: "+
-		"%d instance entr(ies) still declared in the ontology in force, which an erasure never edits and "+
-		"the next release copies again — retire or delete them with a plan of the change; %d release plan "+
-		"summar(ies) naming them; and any other entry whose own text names the subject. A subject deleted "+
-		"before the erasure is no longer bound, so its release copies cannot be found.",
-		r.Entries, r.Releases, verb, r.InForce, r.SummariesNaming)
+	return fmt.Sprintf("ontology releases: %d copied instance entr(ies) of the bound subjects in %d release(s), "+
+		"and %d release plan summar(ies) naming them, %s (names, text and fields replaced by an erased marker; "+
+		"each release changed is flagged redacted, and keeps its header, seq and the content version it recorded, "+
+		"so its copy no longer hashes to that version). Not rewritten: %d instance entr(ies) still declared in "+
+		"the ontology in force, which an erasure never edits and the next release copies again — retire or "+
+		"delete them with a plan of the change; and any other entry whose own text names the subject. A subject "+
+		"deleted before the erasure is no longer bound, so its release copies cannot be found.",
+		r.Entries, r.Releases, r.Summaries, verb, r.InForce)
 }
 
 // eraseSubjectBindings unbinds the subjects bound to subject (a dry run lists them),
@@ -231,7 +235,7 @@ func (s *Service) eraseReleaseCopies(ctx context.Context, tenant string, bound [
 	}
 	r, err := s.ReleaseCopies(ctx, tenant, bound, dryRun)
 	// A redaction that faulted part-way still redacted what it reports.
-	res.Deleted[releaseCopiesPlane] = r.Entries
+	res.Deleted[releaseCopiesPlane], res.Deleted[releaseSummariesPlane] = r.Entries, r.Summaries
 	if err != nil {
 		fail("ontology_releases", errReleaseCopiesUnread)
 		return false
@@ -766,6 +770,7 @@ func (s *Service) Report(ctx context.Context, tenant, subject string) (Report, e
 					fail("ontology_releases", errReleaseCopiesUnread)
 				} else {
 					rep.Tier2.set(releaseCopiesPlane, int64(r.Entries))
+					rep.Tier2.set(releaseSummariesPlane, int64(r.Summaries))
 					if n := retainedReleaseCopies(r, true); n != "" {
 						aclNotes = append(aclNotes, n)
 					}
@@ -915,7 +920,7 @@ func (s *Service) Execute(ctx context.Context, req ExecuteRequest) (Result, erro
 		res.Deleted["subject_bindings"] = 0
 	}
 	if s.releaseCopiesWired() {
-		res.Deleted[releaseCopiesPlane] = 0
+		res.Deleted[releaseCopiesPlane], res.Deleted[releaseSummariesPlane] = 0, 0
 	}
 	fail := func(plane string, err error) { res.Errors = append(res.Errors, plane+": "+err.Error()) }
 

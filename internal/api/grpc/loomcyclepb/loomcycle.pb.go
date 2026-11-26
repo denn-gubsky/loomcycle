@@ -11989,7 +11989,10 @@ type OntologyRelease struct {
 	// Unix nanoseconds.
 	CreatedAt int64 `protobuf:"varint,6,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
 	// How many chunks of the ontology document it copied.
-	Entries       int32 `protobuf:"varint,7,opt,name=entries,proto3" json:"entries,omitempty"`
+	Entries int32 `protobuf:"varint,7,opt,name=entries,proto3" json:"entries,omitempty"`
+	// A subject erasure changed the release (an entry or its plan summary).
+	// content_version stays as recorded, so its copy no longer hashes to it.
+	Redacted      bool `protobuf:"varint,8,opt,name=redacted,proto3" json:"redacted,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -12071,6 +12074,13 @@ func (x *OntologyRelease) GetEntries() int32 {
 		return x.Entries
 	}
 	return 0
+}
+
+func (x *OntologyRelease) GetRedacted() bool {
+	if x != nil {
+		return x.Redacted
+	}
+	return false
 }
 
 type ListOntologyReleasesRequest struct {
@@ -12243,8 +12253,10 @@ type OntologyDiffSide struct {
 	Seq            int64                  `protobuf:"varint,1,opt,name=seq,proto3" json:"seq,omitempty"`
 	Current        bool                   `protobuf:"varint,2,opt,name=current,proto3" json:"current,omitempty"`
 	ContentVersion string                 `protobuf:"bytes,3,opt,name=content_version,json=contentVersion,proto3" json:"content_version,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// The release on this side was changed by a subject erasure.
+	Redacted      bool `protobuf:"varint,4,opt,name=redacted,proto3" json:"redacted,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *OntologyDiffSide) Reset() {
@@ -12296,6 +12308,13 @@ func (x *OntologyDiffSide) GetContentVersion() string {
 		return x.ContentVersion
 	}
 	return ""
+}
+
+func (x *OntologyDiffSide) GetRedacted() bool {
+	if x != nil {
+		return x.Redacted
+	}
+	return false
 }
 
 // OntologyEntryState is an entry as one side declares it. parent is the chunk
@@ -12394,7 +12413,8 @@ type OntologyEntryDiff struct {
 	ChunkId string                 `protobuf:"bytes,1,opt,name=chunk_id,json=chunkId,proto3" json:"chunk_id,omitempty"`
 	// class | relation | scheme | concept | instance | grammar
 	Kind string `protobuf:"bytes,2,opt,name=kind,proto3" json:"kind,omitempty"`
-	// added | removed | changed
+	// added | removed | changed | erased (a subject erasure redacted the entry from
+	// a release on either side; no before or after)
 	Change string `protobuf:"bytes,3,opt,name=change,proto3" json:"change,omitempty"`
 	// On a changed entry: renamed, moved, kind, status, meaning, directives.
 	Changed []string `protobuf:"bytes,4,rep,name=changed,proto3" json:"changed,omitempty"`
@@ -20272,7 +20292,7 @@ const file_loomcycle_proto_rawDesc = "" +
 	"\x0escopes_counted\x18\x06 \x01(\x05R\rscopesCounted\x12%\n" +
 	"\x0escopes_skipped\x18\a \x01(\x05R\rscopesSkipped\x12\x1a\n" +
 	"\bcomplete\x18\b \x01(\bR\bcomplete\x12'\n" +
-	"\x0fcontent_version\x18\t \x01(\tR\x0econtentVersion\"\xd5\x01\n" +
+	"\x0fcontent_version\x18\t \x01(\tR\x0econtentVersion\"\xf1\x01\n" +
 	"\x0fOntologyRelease\x12\x10\n" +
 	"\x03seq\x18\x01 \x01(\x03R\x03seq\x12'\n" +
 	"\x0fcontent_version\x18\x02 \x01(\tR\x0econtentVersion\x12 \n" +
@@ -20281,7 +20301,8 @@ const file_loomcycle_proto_rawDesc = "" +
 	"\x05actor\x18\x05 \x01(\tR\x05actor\x12\x1d\n" +
 	"\n" +
 	"created_at\x18\x06 \x01(\x03R\tcreatedAt\x12\x18\n" +
-	"\aentries\x18\a \x01(\x05R\aentries\"5\n" +
+	"\aentries\x18\a \x01(\x05R\aentries\x12\x1a\n" +
+	"\bredacted\x18\b \x01(\bR\bredacted\"5\n" +
 	"\x1bListOntologyReleasesRequest\x12\x16\n" +
 	"\x06tenant\x18\x01 \x01(\tR\x06tenant\"q\n" +
 	"\x1cListOntologyReleasesResponse\x12\x16\n" +
@@ -20290,11 +20311,12 @@ const file_loomcycle_proto_rawDesc = "" +
 	"\x1bDiffOntologyReleasesRequest\x12\x16\n" +
 	"\x06tenant\x18\x01 \x01(\tR\x06tenant\x12\x12\n" +
 	"\x04from\x18\x02 \x01(\x03R\x04from\x12\x0e\n" +
-	"\x02to\x18\x03 \x01(\x03R\x02to\"g\n" +
+	"\x02to\x18\x03 \x01(\x03R\x02to\"\x83\x01\n" +
 	"\x10OntologyDiffSide\x12\x10\n" +
 	"\x03seq\x18\x01 \x01(\x03R\x03seq\x12\x18\n" +
 	"\acurrent\x18\x02 \x01(\bR\acurrent\x12'\n" +
-	"\x0fcontent_version\x18\x03 \x01(\tR\x0econtentVersion\"\xbc\x01\n" +
+	"\x0fcontent_version\x18\x03 \x01(\tR\x0econtentVersion\x12\x1a\n" +
+	"\bredacted\x18\x04 \x01(\bR\bredacted\"\xbc\x01\n" +
 	"\x12OntologyEntryState\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x16\n" +
 	"\x06parent\x18\x02 \x01(\tR\x06parent\x12\x1f\n" +

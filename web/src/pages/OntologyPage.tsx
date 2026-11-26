@@ -1162,6 +1162,17 @@ function OntologyReleasesTab({
                       {currentVersion && r.content_version === currentVersion && (
                         <span className="settings-flash"> in force</span>
                       )}
+                      {r.redacted && (
+                        <>
+                          {" "}
+                          <span
+                            className="chunk-badge"
+                            title="A subject erasure redacted this release: its copy no longer hashes to the content version it records."
+                          >
+                            redacted
+                          </span>
+                        </>
+                      )}
                     </td>
                     <td>{r.actor || <span className="settings-muted">—</span>}</td>
                     <td>{r.entries}</td>

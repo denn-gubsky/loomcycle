@@ -3089,6 +3089,7 @@ components:
         actor: { type: string }
         created_at: { type: integer, description: Unix nanoseconds. }
         entries: { type: integer, description: How many chunks of the ontology document it copied. }
+        redacted: { type: boolean, description: "true once a subject erasure changed the release (an entry or its plan summary); content_version stays as recorded, so its copy no longer hashes to it. Absent otherwise." }
     OntologyJob:
       description: |
         A job carrying an ontology change through stored rows (RFC GQ P5): a class
@@ -3163,6 +3164,7 @@ components:
         seq: { type: integer, description: The release; absent for the ontology in force. }
         current: { type: boolean, description: true for the ontology in force. }
         content_version: { type: string }
+        redacted: { type: boolean, description: "true when the release on this side was changed by a subject erasure." }
     OntologyEntryState:
       description: An entry as one side of a diff declares it.
       type: object

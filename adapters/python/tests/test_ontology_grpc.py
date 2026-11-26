@@ -285,7 +285,7 @@ class _ReleasesStub:
             releases=[
                 pb.OntologyRelease(
                     seq=2, content_version="0123456789abcdef", fingerprint="f" * 64,
-                    reason="confirm", actor="u-op", created_at=1764000000000000000, entries=12,
+                    reason="confirm", actor="u-op", created_at=1764000000000000000, entries=12, redacted=True,
                 ),
                 pb.OntologyRelease(seq=1, content_version="0", fingerprint="e", reason="catch_up", entries=10),
             ],
@@ -311,7 +311,7 @@ class _ReleasesStub:
                 ),
             ],
             issues=["i"],
-            **{"from": pb.OntologyDiffSide(seq=2, content_version="0123456789abcdef")},
+            **{"from": pb.OntologyDiffSide(seq=2, content_version="0123456789abcdef", redacted=True)},
         )
 
 
@@ -326,10 +326,12 @@ async def test_list_ontology_releases_returns_every_header_field():
             {
                 "seq": 2, "content_version": "0123456789abcdef", "fingerprint": "f" * 64,
                 "reason": "confirm", "actor": "u-op", "created_at": 1764000000000000000, "entries": 12,
+                "redacted": True,
             },
             {
                 "seq": 1, "content_version": "0", "fingerprint": "e",
                 "reason": "catch_up", "actor": "", "created_at": 0, "entries": 10,
+                "redacted": False,
             },
         ],
     }
@@ -342,8 +344,8 @@ async def test_diff_ontology_releases_sends_from_and_to_and_keeps_an_absent_side
     assert (getattr(stub.req, "from"), stub.req.to, stub.req.tenant) == (2, 0, "globex")
     assert got == {
         "tenant": "acme",
-        "from": {"seq": 2, "current": False, "content_version": "0123456789abcdef"},
-        "to": {"seq": 0, "current": True, "content_version": "fedcba9876543210"},
+        "from": {"seq": 2, "current": False, "content_version": "0123456789abcdef", "redacted": True},
+        "to": {"seq": 0, "current": True, "content_version": "fedcba9876543210", "redacted": False},
         "changes": [
             {
                 "chunk_id": "c1", "kind": "class", "change": "changed", "changed": ["renamed", "directives"],

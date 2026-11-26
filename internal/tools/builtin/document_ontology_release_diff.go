@@ -50,7 +50,7 @@ func noReleaseTables(err error) bool {
 
 func connectorRelease(r OntologyRelease) connector.OntologyRelease {
 	return connector.OntologyRelease{Seq: r.Seq, ContentVersion: r.ContentVersion, Fingerprint: r.Fingerprint,
-		Reason: r.Reason, Actor: r.Actor, CreatedAt: r.CreatedAt, Entries: r.Entries}
+		Reason: r.Reason, Actor: r.Actor, CreatedAt: r.CreatedAt, Entries: r.Entries, Redacted: r.Redacted}
 }
 
 // ListOntologyReleases lists the complete releases of ctx's tenant, newest first.
@@ -85,18 +85,19 @@ func (d *Document) GetOntologyRelease(ctx context.Context, seq int64) (connector
 		return connector.GetOntologyReleaseResult{}, err
 	}
 	res, err := d.query(ctx, key, `SELECT seq, content_version, fingerprint, reason, coalesce(actor, ''), created_at, entries,
-		coalesce(plan_summary, ''), coalesce(export_md, '')
+		coalesce(plan_summary, ''), coalesce(export_md, ''), `+d.redactedCol(ctx, key)+`
 		FROM ontology_releases WHERE seq = ? AND complete = 1`, seq)
 	if err != nil && !noReleaseTables(err) {
 		return connector.GetOntologyReleaseResult{}, fmt.Errorf("read ontology release %d: %w", seq, err)
 	}
-	if err != nil || len(res.Rows) == 0 || len(res.Rows[0]) < 9 {
+	if err != nil || len(res.Rows) == 0 || len(res.Rows[0]) < 10 {
 		return connector.GetOntologyReleaseResult{}, releaseNotFound(seq)
 	}
 	r := res.Rows[0]
 	out := connector.GetOntologyReleaseResult{
 		Release: connector.OntologyRelease{Seq: asInt64Val(r[0]), ContentVersion: asStr(r[1]), Fingerprint: asStr(r[2]),
-			Reason: asStr(r[3]), Actor: asStr(r[4]), CreatedAt: asInt64Val(r[5]), Entries: asInt(r[6])},
+			Reason: asStr(r[3]), Actor: asStr(r[4]), CreatedAt: asInt64Val(r[5]), Entries: asInt(r[6]),
+			Redacted: asInt(r[9]) == 1},
 		ExportMD: asStr(r[8]),
 	}
 	if s := asStr(r[7]); s != "" && json.Valid([]byte(s)) {
@@ -158,7 +159,7 @@ func (d *Document) releaseSide(ctx context.Context, key sqlmem.ScopeKey, seq int
 	if err != nil {
 		return nil, side, err
 	}
-	side.ContentVersion = rel.contentVersion
+	side.ContentVersion, side.Redacted = rel.contentVersion, rel.redacted
 	for id := range rel.erased {
 		erased[id] = true
 	}
@@ -177,6 +178,8 @@ func (d *Document) releaseSide(ctx context.Context, key sqlmem.ScopeKey, seq int
 // loadedRelease is one complete release as stored and as the reader reads it.
 type loadedRelease struct {
 	contentVersion string
+	// redacted: a subject erasure changed the release.
+	redacted bool
 	// rows are the release's chunks by chunk id, as copied.
 	rows map[string]releaseRow
 	// items are its in-force entries, as diffItems lists them; partial says some
@@ -204,14 +207,14 @@ type releaseRow struct {
 // the reader every other caller uses. releaseNotFound for a release that is not
 // complete or does not exist.
 func (d *Document) loadRelease(ctx context.Context, key sqlmem.ScopeKey, seq int64) (*loadedRelease, error) {
-	hdr, err := d.query(ctx, key, `SELECT content_version FROM ontology_releases WHERE seq = ? AND complete = 1`, seq)
+	hdr, err := d.query(ctx, key, `SELECT content_version, `+d.redactedCol(ctx, key)+` FROM ontology_releases WHERE seq = ? AND complete = 1`, seq)
 	if err != nil && !noReleaseTables(err) {
 		return nil, fmt.Errorf("read ontology release %d: %w", seq, err)
 	}
-	if err != nil || len(hdr.Rows) == 0 || len(hdr.Rows[0]) < 1 {
+	if err != nil || len(hdr.Rows) == 0 || len(hdr.Rows[0]) < 2 {
 		return nil, releaseNotFound(seq)
 	}
-	rel := &loadedRelease{contentVersion: asStr(hdr.Rows[0][0]), erased: map[string]bool{}}
+	rel := &loadedRelease{contentVersion: asStr(hdr.Rows[0][0]), redacted: asInt(hdr.Rows[0][1]) == 1, erased: map[string]bool{}}
 
 	res, err := d.query(ctx, key, `SELECT chunk_id, coalesce(parent_id, ''), title, position, coalesce(status, ''), body_sha,
 		coalesce(type, '')

@@ -22,11 +22,11 @@ import (
 func TestOntologyReleasesRPCs_DelegateToTheConnector(t *testing.T) {
 	mc := &mockConnector{
 		relListRes: connector.ListOntologyReleasesResult{Tenant: "acme", Releases: []connector.OntologyRelease{
-			{Seq: 2, ContentVersion: "0123456789abcdef", Fingerprint: "fp2", Reason: "apply", Actor: "ops", CreatedAt: 20, Entries: 9},
+			{Seq: 2, ContentVersion: "0123456789abcdef", Fingerprint: "fp2", Reason: "apply", Actor: "ops", CreatedAt: 20, Entries: 9, Redacted: true},
 		}},
 		relDiffRes: connector.DiffOntologyReleasesResult{
 			Tenant: "acme",
-			From:   connector.OntologyDiffSide{Seq: 1, ContentVersion: "fedcba9876543210"},
+			From:   connector.OntologyDiffSide{Seq: 1, ContentVersion: "fedcba9876543210", Redacted: true},
 			To:     connector.OntologyDiffSide{Current: true, ContentVersion: "0123456789abcdef"},
 			Changes: []connector.OntologyEntryDiff{{
 				ChunkID: "c1", Kind: "class", Change: connector.OntologyDiffAdded,
@@ -48,7 +48,7 @@ func TestOntologyReleasesRPCs_DelegateToTheConnector(t *testing.T) {
 	}
 	r := list.GetReleases()[0]
 	if got := (connector.OntologyRelease{Seq: r.GetSeq(), ContentVersion: r.GetContentVersion(), Fingerprint: r.GetFingerprint(),
-		Reason: r.GetReason(), Actor: r.GetActor(), CreatedAt: r.GetCreatedAt(), Entries: int(r.GetEntries())}); got != mc.relListRes.Releases[0] {
+		Reason: r.GetReason(), Actor: r.GetActor(), CreatedAt: r.GetCreatedAt(), Entries: int(r.GetEntries()), Redacted: r.GetRedacted()}); got != mc.relListRes.Releases[0] {
 		t.Errorf("release = %+v, want %+v", got, mc.relListRes.Releases[0])
 	}
 
@@ -61,7 +61,7 @@ func TestOntologyReleasesRPCs_DelegateToTheConnector(t *testing.T) {
 	}
 	c := diff.GetChanges()[0]
 	a := c.GetAfter()
-	if diff.GetTenant() != "acme" || diff.GetFrom().GetSeq() != 1 || !diff.GetTo().GetCurrent() ||
+	if diff.GetTenant() != "acme" || diff.GetFrom().GetSeq() != 1 || !diff.GetFrom().GetRedacted() || diff.GetTo().GetRedacted() || !diff.GetTo().GetCurrent() ||
 		diff.GetTo().GetContentVersion() != "0123456789abcdef" || !reflect.DeepEqual(diff.GetIssues(), []string{"i1"}) ||
 		c.GetChunkId() != "c1" || c.GetKind() != "class" || c.GetChange() != "added" || c.GetBefore() != nil ||
 		a.GetName() != "Clause" || a.GetParent() != "c0" || a.GetParentName() != "Provision" || a.GetStatus() != "retired" ||

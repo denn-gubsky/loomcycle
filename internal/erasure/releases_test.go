@@ -52,7 +52,7 @@ func TestService_BindingsStayWhenTheReleaseCopiesCannotBeRedacted(t *testing.T) 
 			var clearedFirst bool
 			s.ReleaseCopies = func(_ context.Context, _ string, subjects []erasure.BoundSubject, dryRun bool) (erasure.ReleaseRedaction, error) {
 				redacted, clearedFirst = !dryRun && len(subjects) == 2, f.cleared
-				return erasure.ReleaseRedaction{Entries: 4, Releases: 2}, tc.releaseErr
+				return erasure.ReleaseRedaction{Entries: 4, Releases: 2, Summaries: 1}, tc.releaseErr
 			}
 			res, err := s.Execute(ctx, live)
 			if err != nil {
@@ -67,7 +67,8 @@ func TestService_BindingsStayWhenTheReleaseCopiesCannotBeRedacted(t *testing.T) 
 			if failed := hasError(res.Errors, "ontology_releases"); failed == tc.wantCleared {
 				t.Errorf("errors = %v, want the release plane failed only when the bindings stay", res.Errors)
 			}
-			if tc.wantCleared && (res.Deleted["ontology_release_entries"] != 4 || res.Retained["ontology_releases"] == "") {
+			if tc.wantCleared && (res.Deleted["ontology_release_entries"] != 4 || res.Deleted["ontology_release_summaries"] != 1 ||
+				res.Retained["ontology_releases"] == "" || strings.Contains(res.Retained["ontology_releases"][strings.Index(res.Retained["ontology_releases"], "Not rewritten"):], "summar")) {
 				t.Errorf("deleted %v retained %q", res.Deleted, res.Retained["ontology_releases"])
 			}
 		})

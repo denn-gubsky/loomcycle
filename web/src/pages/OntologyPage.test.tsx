@@ -289,7 +289,7 @@ describe("OntologySection releases (RFC GQ P3.7)", () => {
 
   const releases = [
     { seq: 3, content_version: "cccccccccccccccc", fingerprint: "f3", reason: "apply", actor: "ops", created_at: 1764000000000000000, entries: 12 },
-    { seq: 2, content_version: "bbbbbbbbbbbbbbbb", fingerprint: "f2", reason: "confirm", created_at: 1763990000000000000, entries: 11 },
+    { seq: 2, content_version: "bbbbbbbbbbbbbbbb", fingerprint: "f2", reason: "confirm", created_at: 1763990000000000000, entries: 11, redacted: true },
   ];
   const diffAnswer = {
     tenant: "t",
@@ -355,6 +355,15 @@ describe("OntologySection releases (RFC GQ P3.7)", () => {
     expect(rows[0].textContent).toContain("ops");
     expect(rows[1].textContent).toContain("confirmed");
     expect(rows[1].textContent).not.toContain("in force");
+  });
+
+  it("marks a release a subject erasure redacted, and no other", async () => {
+    const calls: string[] = [];
+    stubReleases(calls);
+    mounted = await mount(operator, "/?section=releases");
+    const rows = Array.from(mounted.el.querySelectorAll("table.ontology-releases tbody tr"));
+    expect(rows[1].querySelector(".chunk-badge")?.textContent).toBe("redacted");
+    expect(rows[0].querySelector(".chunk-badge")).toBeNull();
   });
 
   it("diffs a release from the one before it and shows each changed field before and after", async () => {
