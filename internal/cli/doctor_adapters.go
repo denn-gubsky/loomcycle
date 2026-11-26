@@ -106,7 +106,7 @@ func (r *realConfig) EdgeGateProbes() []DoctorEdgeProbe {
 
 func (r *realConfig) Workspaces() DoctorWorkspaces {
 	ws := r.cfg.Workspace.Resolved()
-	out := DoctorWorkspaces{Mode: ws.Mode, InertGrants: r.cfg.InertWorkspaceGrants()}
+	out := DoctorWorkspaces{Mode: ws.Mode, InertGrants: r.cfg.InertWorkspaceGrants(), PersonalWorkers: r.cfg.Workspace.PersonalWorkers}
 	if ws.LocalWorker() {
 		out.LocalTenant, out.LocalTenantWhy = r.cfg.WorkspaceLocalTenant()
 		out.LocalRoot = r.cfg.WorkspaceLocalRoot()

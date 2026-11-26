@@ -121,6 +121,8 @@ A worker is known by its token's grant and its own name (`--id`, by default the 
 
 **A workspace's way out.** A workspace reaches the network only through named egress routes (RFC GW §6.3), and only through the runtime: the worker carries each request a session sends to `http://egress/<route>/<path>` to the runtime on an `Egress` stream over its own connection, and the runtime decides from the workspace's record which routes it holds, builds the upstream request, adds any credential and streams the answer back. The worker holds no route's URL and never a credential. The runtime accepts such a stream only from the token that attached the worker, for a workspace that is ready on that worker. [WORKSPACES.md](WORKSPACES.md) describes the routes.
 
+**A personal worker** (RFC GW P13) is a user's own machine as a workspace worker: `loomcycle worker --role workspace --personal --root code=~/code`, attached with a token a tenant operator mints for that user (`POST /v1/_users/{subject}/tokens` with `{"purpose": "personal_worker"}`). It serves that user's runs only, and only workspaces opened on one of its roots, which are the user's folders themselves, never copies. The runtime takes one only with `workspace.personal_workers: true` and its worker endpoint on loopback. Its id is `user:<tenant>/<hash of the user>/<name>`. [WORKSPACES.md](WORKSPACES.md#a-personal-workers-roots) is the guide.
+
 **The `host` engine has no isolation.** A command runs as the worker's user and can read anything that user can, the worker's own token included. Run it only on a machine you trust with every agent that may use it; for anything else use the `container` engine.
 
 ### The container engine
