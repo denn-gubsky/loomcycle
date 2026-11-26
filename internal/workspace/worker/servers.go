@@ -37,6 +37,9 @@ type servers struct {
 	// next numbers each workspace's servers; it never goes back, so an id
 	// names one server for the workspace's life.
 	next map[string]int
+	// inboxes are each workspace's updates (updates.go); they go with the
+	// servers.
+	inboxes map[string]*inbox
 }
 
 type server struct {
@@ -57,6 +60,9 @@ func (s *servers) init() {
 	if s.by == nil {
 		s.by = map[string]map[string]*server{}
 		s.next = map[string]int{}
+	}
+	if s.inboxes == nil {
+		s.inboxes = map[string]*inbox{}
 	}
 }
 
@@ -121,6 +127,9 @@ func (s *servers) Drop(id string) {
 	delete(s.next, id)
 	s.mu.Unlock()
 	stopAll(gone)
+	// Its update address closes with its servers: a restore or a removal
+	// leaves nothing to post into.
+	s.dropInbox(id)
 }
 
 // stopAll stops every server of m at once and returns when each is reaped
@@ -140,11 +149,14 @@ func stopAll(m map[string]*server) {
 // Close kills every server: the worker is stopping.
 func (s *servers) Close() {
 	s.mu.Lock()
-	all := s.by
-	s.by, s.next = nil, nil
+	all, inboxes := s.by, s.inboxes
+	s.by, s.next, s.inboxes = nil, nil, nil
 	s.mu.Unlock()
 	for _, m := range all {
 		stopAll(m)
+	}
+	for _, b := range inboxes {
+		b.close()
 	}
 }
 
@@ -277,6 +289,9 @@ func (w *worker) serverOp(ctx context.Context, id, real, op string, raw []byte) 
 		out, _ := json.Marshal(ans)
 		return answer{output: out}
 	}
+	if op == workspace.OpAwait {
+		return w.awaitOp(ctx, id, raw)
+	}
 	return refuse(workspace.ClassUnsupportedOp, "this worker does not run %q", op)
 }
 
@@ -315,7 +330,16 @@ func (w *worker) startServer(ctx context.Context, id, real string, in workspace.
 	if err := w.servers.add(id, srv); err != nil {
 		return refuse(workspace.ClassServerLimit, "this workspace runs %d servers, the most it may; stop one first", workspace.MaxServers)
 	}
-	p, err := w.engine.Start(ctx, engine.StartRequest{Workspace: id, Root: real, Dir: dir, Command: in.Command})
+	// Where it posts updates (await). A feed that cannot be made leaves the
+	// server without one, never without its start; the address is never
+	// logged.
+	var env []string
+	if u, err := w.updateURL(ctx, id, real); err == nil {
+		env = []string{workspace.UpdateURLEnv + "=" + u}
+	} else if w.log != nil {
+		w.log.Warn("workspace updates unavailable for a server", "workspace_id", id, "err", err)
+	}
+	p, err := w.engine.Start(ctx, engine.StartRequest{Workspace: id, Root: real, Dir: dir, Command: in.Command, Env: env})
 	if err != nil {
 		w.servers.remove(id, srv.info.Server)
 		if errors.Is(err, engine.ErrRefused) {
