@@ -94,6 +94,9 @@ import type {
   BindSubjectPrincipalResult,
   OntologyChange,
   PlanOntologyResult,
+  ListOntologyReleasesResult,
+  GetOntologyReleaseResult,
+  DiffOntologyReleasesResult,
   Agent,
   AgentEvent,
   AgentList,
@@ -1184,6 +1187,81 @@ export class LoomcycleClient {
       this.ctx,
       `/v1/_ontology/plan${q}`,
       { changes },
+      opts,
+    );
+  }
+
+  /**
+   * List the tenant ontology's releases — the copies taken when it was
+   * confirmed and on each applied or rolled-back change, the newest 50 kept —
+   * newest first. Writes nothing. Mirrors GET /v1/_ontology/releases.
+   *
+   * For an admin or a tenant operator only: a release keeps the ontology's
+   * text after an edit or an erasure removed it. `tenant` is honored only for
+   * an admin token. A refusal throws with the server's code: `forbidden`,
+   * `unavailable`.
+   */
+  async listOntologyReleases(
+    opts?: { tenant?: string; signal?: AbortSignal },
+  ): Promise<ListOntologyReleasesResult> {
+    const q = opts?.tenant !== undefined
+      ? `?tenant=${encodeURIComponent(opts.tenant)}`
+      : "";
+    return jsonFetch<ListOntologyReleasesResult>(
+      this.ctx,
+      `/v1/_ontology/releases${q}`,
+      opts,
+    );
+  }
+
+  /**
+   * Read one release of the tenant ontology by its sequence number: its
+   * header, the plan summary of the change it applied (an `apply` release)
+   * and the ontology it copied, rendered as Markdown (`export_md`). Mirrors
+   * GET /v1/_ontology/releases/{seq}.
+   *
+   * Operator only, as {@link listOntologyReleases}. A refusal throws with the
+   * server's code: `invalid_request` (not a positive integer), `forbidden`,
+   * `release_not_found`, `unavailable`.
+   */
+  async getOntologyRelease(
+    seq: number,
+    opts?: { tenant?: string; signal?: AbortSignal },
+  ): Promise<GetOntologyReleaseResult> {
+    const q = opts?.tenant !== undefined
+      ? `?tenant=${encodeURIComponent(opts.tenant)}`
+      : "";
+    return jsonFetch<GetOntologyReleaseResult>(
+      this.ctx,
+      `/v1/_ontology/releases/${encodeURIComponent(String(seq))}${q}`,
+      opts,
+    );
+  }
+
+  /**
+   * Compare two releases of the tenant ontology, or a release with the
+   * ontology in force, entry by entry: what was added, removed, renamed,
+   * moved, retired, or had its meaning or directives changed. Writes nothing.
+   * Mirrors GET /v1/_ontology/releases/diff.
+   *
+   * `from` is a release's sequence number; `to` another's, or `"current"`
+   * (the default) for the ontology as it stands now. A rename is one changed
+   * entry, never an add and a remove.
+   *
+   * Operator only, as {@link listOntologyReleases}. A refusal throws with the
+   * server's code: `invalid_request`, `forbidden`, `release_not_found`,
+   * `unavailable`.
+   */
+  async diffOntologyReleases(
+    from: number,
+    to: number | "current" = "current",
+    opts?: { tenant?: string; signal?: AbortSignal },
+  ): Promise<DiffOntologyReleasesResult> {
+    const q = new URLSearchParams({ from: String(from), to: String(to) });
+    if (opts?.tenant !== undefined) q.set("tenant", opts.tenant);
+    return jsonFetch<DiffOntologyReleasesResult>(
+      this.ctx,
+      `/v1/_ontology/releases/diff?${q.toString()}`,
       opts,
     );
   }

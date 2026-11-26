@@ -189,3 +189,108 @@ describe("a plan's refusal of a destructive ontology change", () => {
     expect((err as LoomcycleError).status).toBe(409);
   });
 });
+
+describe("ontology releases", () => {
+  const release = {
+    seq: 2,
+    content_version: "0123456789abcdef",
+    fingerprint: "f".repeat(64),
+    reason: "confirm",
+    actor: "u-op",
+    created_at: 1764000000000000000,
+    entries: 12,
+  };
+
+  it("listOntologyReleases GETs the list and returns it typed", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({ tenant: "acme", releases: [release, { ...release, seq: 1, reason: "catch_up" }] }),
+    ]);
+    const res = await client.listOntologyReleases();
+    expect(res.releases.map((r) => [r.seq, r.reason])).toEqual([[2, "confirm"], [1, "catch_up"]]);
+
+    const call = fetchMock.mock.calls[0]!;
+    expect(call[0]).toBe("http://test-loomcycle:8787/v1/_ontology/releases");
+    expect(call[1]!.method).toBe("GET");
+  });
+
+  it("listOntologyReleases passes an admin's tenant focus as ?tenant=", async () => {
+    const { client, fetchMock } = makeClient([jsonResponse({ tenant: "globex", releases: [] })]);
+    await client.listOntologyReleases({ tenant: "globex" });
+    expect(fetchMock.mock.calls[0]![0]).toBe("http://test-loomcycle:8787/v1/_ontology/releases?tenant=globex");
+  });
+
+  it("listOntologyReleases throws forbidden with its status", async () => {
+    const { client } = makeClient([
+      jsonResponse({ code: "forbidden", error: "reading ontology releases is for an admin or a tenant operator" }, 403),
+    ]);
+    const err = await client.listOntologyReleases().catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(LoomcycleError);
+    expect((err as LoomcycleError).status).toBe(403);
+    expect((err as LoomcycleError).code).toBe("forbidden");
+  });
+
+  it("getOntologyRelease GETs one release with its export_md", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({ tenant: "acme", release, export_md: "# Ontology\n" }),
+    ]);
+    const res = await client.getOntologyRelease(2, { tenant: "globex" });
+    expect(res.release.seq).toBe(2);
+    expect(res.export_md).toBe("# Ontology\n");
+    expect(res.plan_summary).toBeUndefined();
+    expect(fetchMock.mock.calls[0]![0]).toBe("http://test-loomcycle:8787/v1/_ontology/releases/2?tenant=globex");
+    expect(fetchMock.mock.calls[0]![1]!.method).toBe("GET");
+  });
+
+  it("getOntologyRelease throws release_not_found with its status", async () => {
+    const { client } = makeClient([
+      jsonResponse({ code: "release_not_found", error: "no complete release 9" }, 404),
+    ]);
+    const err = await client.getOntologyRelease(9).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(LoomcycleError);
+    expect((err as LoomcycleError).status).toBe(404);
+    expect((err as LoomcycleError).code).toBe("release_not_found");
+  });
+
+  const diff = {
+    tenant: "acme",
+    from: { seq: 2, content_version: "0123456789abcdef" },
+    to: { current: true, content_version: "fedcba9876543210" },
+    changes: [{
+      chunk_id: "c1",
+      kind: "class",
+      change: "changed",
+      changed: ["renamed", "meaning"],
+      before: { name: "event", meaning: "a thing that happened", directives: {} },
+      after: { name: "incident", meaning: "an unplanned event", directives: {} },
+    }],
+    issues: [],
+  };
+
+  it("diffOntologyReleases defaults to=current and returns the changes typed", async () => {
+    const { client, fetchMock } = makeClient([jsonResponse(diff)]);
+    const res = await client.diffOntologyReleases(2);
+    expect(res.to.current).toBe(true);
+    expect(res.changes[0]!.changed).toEqual(["renamed", "meaning"]);
+    expect(res.changes[0]!.after?.name).toBe("incident");
+    expect(fetchMock.mock.calls[0]![0]).toBe("http://test-loomcycle:8787/v1/_ontology/releases/diff?from=2&to=current");
+    expect(fetchMock.mock.calls[0]![1]!.method).toBe("GET");
+  });
+
+  it("diffOntologyReleases sends a release number as to and an admin's tenant focus", async () => {
+    const { client, fetchMock } = makeClient([jsonResponse(diff)]);
+    await client.diffOntologyReleases(1, 3, { tenant: "globex" });
+    expect(fetchMock.mock.calls[0]![0]).toBe(
+      "http://test-loomcycle:8787/v1/_ontology/releases/diff?from=1&to=3&tenant=globex",
+    );
+  });
+
+  it("diffOntologyReleases throws invalid_request with its status", async () => {
+    const { client } = makeClient([
+      jsonResponse({ code: "invalid_request", error: "from must be a release's sequence number, a positive integer" }, 400),
+    ]);
+    const err = await client.diffOntologyReleases(0).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(LoomcycleError);
+    expect((err as LoomcycleError).status).toBe(400);
+    expect((err as LoomcycleError).code).toBe("invalid_request");
+  });
+});
