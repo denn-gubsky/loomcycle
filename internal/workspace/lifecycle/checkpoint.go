@@ -117,6 +117,11 @@ func (m *Manager) fork(ctx context.Context, dst Owner, src store.WorkspaceRow, a
 	if src.Root != "" {
 		return store.WorkspaceRow{}, out, ErrRootRefused
 	}
+	// A plain copy would carry the git directory and its alternates to the
+	// mirror, with no pin of its own (P11 PR 9 makes a git fork).
+	if src.Kind == store.WorkspaceKindGit {
+		return store.WorkspaceRow{}, out, fmt.Errorf("%w: fork", ErrGitUnsupported)
+	}
 	if src.State != store.WorkspaceReady {
 		return store.WorkspaceRow{}, out, fmt.Errorf("%w: %q is %s", ErrNotReady, src.Name, src.State)
 	}
@@ -130,8 +135,8 @@ func (m *Manager) fork(ctx context.Context, dst Owner, src store.WorkspaceRow, a
 		return store.WorkspaceRow{}, out, err
 	}
 	// A fork is a new ephemeral workspace, whatever its source's lifetime.
-	row, err := m.makeOn(ctx, dst, as, store.WorkspaceLifetimeEphemeral, "", egress, src.WorkerID, src.Engine, func(id string) error {
-		res, err := m.disp.Do(ctx, src.WorkerID, dispatch.Request{TenantID: dst.TenantID, UserID: dst.UserID, WorkspaceID: id, Op: workspace.OpFork, Args: args, MaxOutput: maxCheckpointAnswer})
+	row, err := m.makeOn(ctx, dst, as, store.WorkspaceLifetimeEphemeral, "", egress, src.WorkerID, src.Engine, nil, func(r *store.WorkspaceRow) error {
+		res, err := m.disp.Do(ctx, src.WorkerID, dispatch.Request{TenantID: dst.TenantID, UserID: dst.UserID, WorkspaceID: r.ID, Op: workspace.OpFork, Args: args, MaxOutput: maxCheckpointAnswer})
 		if err != nil {
 			return err
 		}

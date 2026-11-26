@@ -105,6 +105,8 @@ func TestRootOpen_RefusesWhatARootDoesNotTake(t *testing.T) {
 		"durable":          {Name: "b", Root: "code", Lifetime: store.WorkspaceLifetimeDurable},
 		"with a template":  {Name: "c", Root: "code", Template: &store.WorkspaceTemplateRow{TenantID: "acme"}},
 		"a bad root name":  {Name: "d", Root: "../x"},
+		// A root is the user's folder as it is, never a clone (RFC GW P11).
+		"a git workspace": {Name: "e", Root: "code", Git: &GitOpen{URL: "https://example.com/r.git"}},
 	} {
 		if _, err := f.m.Open(ctx, alice, req); !errors.Is(err, ErrInvalidName) {
 			t.Errorf("%s: %v, want ErrInvalidName", name, err)

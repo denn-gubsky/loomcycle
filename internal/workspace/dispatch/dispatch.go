@@ -976,6 +976,9 @@ type PlaceRequest struct {
 	Toolchains []string
 	// Engine is the least isolating engine accepted; "" accepts any.
 	Engine string
+	// Labels are the labels the worker must have reported, all of them.
+	// workspace.GitLabel also needs workspace.GitProtocolVersion.
+	Labels []string
 }
 
 // Place returns the attached workers a workspace may be opened on, least
@@ -1007,6 +1010,9 @@ func (d *Dispatcher) Place(ctx context.Context, req PlaceRequest) ([]string, err
 		ok := true
 		for _, t := range req.Toolchains {
 			ok = ok && w.tools[t]
+		}
+		for _, l := range req.Labels {
+			ok = ok && slices.Contains(w.labels, l) && (l != workspace.GitLabel || w.protocol >= workspace.GitProtocolVersion)
 		}
 		if ok {
 			matched = append(matched, cand{id: w.id, cap: w.capacity})

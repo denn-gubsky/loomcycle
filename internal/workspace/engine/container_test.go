@@ -42,7 +42,7 @@ func TestContainer_RunArgsConfineTheSession(t *testing.T) {
 		o.Pids = 64
 		o.TmpMB = 32
 	})
-	a := c.runArgs("ws1", "/data/ws1")
+	a := c.runArgs("ws1", "/data/ws1", "")
 	for _, p := range [][2]string{
 		{"--network", "none"}, {"--cap-drop", "ALL"}, {"--security-opt", "no-new-privileges"}, {"--user", "1000:1000"},
 		{"--pids-limit", "64"}, {"--memory", "512m"}, {"--memory-swap", "512m"}, {"--cpus", "1.5"}, {"--runtime", "runsc"},
@@ -74,7 +74,7 @@ func TestContainer_RunArgsConfineTheSession(t *testing.T) {
 // Every --env names its value: a bare `--env NAME` would copy the worker's
 // own variable (its token) into the session.
 func TestContainer_TheSessionEnvironmentIsTheEnginesOwn(t *testing.T) {
-	a := testContainer(t, nil).runArgs("ws1", "/d")
+	a := testContainer(t, nil).runArgs("ws1", "/d", "")
 	for i, x := range a {
 		if (x == "--env" || x == "-e") && (i+1 >= len(a) || !strings.Contains(a[i+1], "=")) {
 			t.Errorf("an --env without a value: %v", a)
@@ -136,5 +136,27 @@ func TestWorkerKey_DiffersByWorkerAndRoot(t *testing.T) {
 	a, b, c := WorkerKey("w1", "/r1"), WorkerKey("w2", "/r1"), WorkerKey("w1", "/r2")
 	if a == b || a == c || !plainName(a) {
 		t.Errorf("keys %q %q %q", a, b, c)
+	}
+}
+
+// A git workspace's session sees its mirror's objects read-only, at the one
+// fixed path (RFC GW §4.2); any other workspace has no such mount.
+func TestContainer_AGitWorkspacesMirrorIsMountedReadOnly(t *testing.T) {
+	c := testContainer(t, func(o *ContainerOptions) {
+		o.MirrorKeyFor = func(ws string) string {
+			if ws == "ws_git" {
+				return "0123456789abcdef0123456789abcdef"
+			}
+			return ""
+		}
+	})
+	a := c.runArgs("ws_git", "/w/ws_git", "/w/.loomcycle-mirrors/0123456789abcdef0123456789abcdef/objects")
+	if !hasPair(a, "-v", "/w/.loomcycle-mirrors/0123456789abcdef0123456789abcdef/objects:"+MirrorObjectsMount+":ro") {
+		t.Fatalf("no read-only mirror mount: %q", a)
+	}
+	for _, s := range c.runArgs("ws_plain", "/w/ws_plain", "") {
+		if strings.Contains(s, MirrorObjectsMount) {
+			t.Fatalf("a general workspace mounts a mirror: %q", s)
+		}
 	}
 }

@@ -60,6 +60,10 @@ func TestRootOpen_NeedsTheRootsGrant(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(user, "notes.txt")); err != nil {
 		t.Fatalf("the user's file after release: %v", err)
 	}
+	// repo or root, never both: a root is never a git workspace.
+	if res := f.call(t, ctx, `{"op":"open","name":"g","root":"code","repo":"https://example.com/r.git"}`); refusalClass(res) != "invalid_argument" || !strings.Contains(res.Text, "repo or root") {
+		t.Errorf("repo and root together: %s", res.Text)
+	}
 	if res := f.call(t, ctx, `{"op":"open","name":"x","root":"code","toolchain":"python"}`); refusalClass(res) != "invalid_argument" {
 		t.Errorf("root with a toolchain: %s", res.Text)
 	}

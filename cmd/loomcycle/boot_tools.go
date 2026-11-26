@@ -458,6 +458,7 @@ func (b *boot) buildToolsFiles(httpTool *builtin.HTTP) {
 		ExecDefault: time.Duration(ws.Exec.DefaultTimeoutS) * time.Second,
 		ExecMax:     time.Duration(ws.Exec.MaxTimeoutS) * time.Second,
 		KernelGrace: time.Duration(ws.Kernel.InterruptGraceSeconds) * time.Second,
+		GitPush:     ws.Push,
 	}
 	b.allTools = append(b.allTools, b.workspaceTool)
 
