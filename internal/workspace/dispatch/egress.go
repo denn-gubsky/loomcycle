@@ -253,7 +253,7 @@ func (d *Dispatcher) egressRow(ctx context.Context, w *worker, id string, states
 		// A parked durable workspace (RFC GW P12) is ready but held by no
 		// run: whatever is left running in it sends nothing out, git
 		// included.
-		if r.ID == id && r.WorkerID == w.id && slices.Contains(states, r.State) && r.OwnerKind != store.WorkspaceOwnerParked && w.servesTenant(r.TenantID) {
+		if r.ID == id && r.WorkerID == w.id && slices.Contains(states, r.State) && r.OwnerKind != store.WorkspaceOwnerParked && w.servesUser(r.TenantID, r.UserID) {
 			return r, nil
 		}
 	}

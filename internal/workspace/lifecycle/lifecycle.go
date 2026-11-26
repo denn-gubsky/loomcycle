@@ -347,7 +347,7 @@ func (m *Manager) openOn(ctx context.Context, o Owner, req OpenRequest, workerID
 		if req.Template != nil {
 			return m.openFromTemplate(ctx, o, *req.Template, workerID, id)
 		}
-		return m.disp.OpenWith(ctx, o.TenantID, workerID, id, workspace.OpenArgs{DiskQuotaBytes: m.limits.DiskQuotaBytes})
+		return m.disp.OpenWith(ctx, o.TenantID, o.UserID, workerID, id, workspace.OpenArgs{DiskQuotaBytes: m.limits.DiskQuotaBytes})
 	})
 }
 
@@ -494,13 +494,13 @@ func (m *Manager) Do(ctx context.Context, r store.WorkspaceRow, req dispatch.Req
 	if r.State != store.WorkspaceReady {
 		return dispatch.Result{}, fmt.Errorf("%w: %q is %s", ErrNotReady, r.Name, r.State)
 	}
-	req.TenantID, req.WorkspaceID = r.TenantID, r.ID
+	req.TenantID, req.UserID, req.WorkspaceID = r.TenantID, r.UserID, r.ID
 	return m.disp.Do(ctx, r.WorkerID, req)
 }
 
 // Status reports whether the workspace's directory is on its worker.
 func (m *Manager) Status(ctx context.Context, r store.WorkspaceRow) (bool, error) {
-	return m.disp.Status(ctx, r.TenantID, r.WorkerID, r.ID)
+	return m.disp.Status(ctx, r.TenantID, r.UserID, r.WorkerID, r.ID)
 }
 
 // Release ends a workspace's pin: a durable one is parked, its files kept
@@ -549,10 +549,10 @@ func (m *Manager) remove(ctx context.Context, r store.WorkspaceRow) error {
 			}
 		}
 	}
-	if !m.disp.Attached(r.WorkerID, r.TenantID) {
+	if !m.disp.Attached(r.WorkerID, r.TenantID, r.UserID) {
 		return nil
 	}
-	if err := m.disp.Remove(ctx, r.TenantID, r.WorkerID, r.ID); err != nil {
+	if err := m.disp.Remove(ctx, r.TenantID, r.UserID, r.WorkerID, r.ID); err != nil {
 		m.log.Warn("cannot remove a released workspace; its worker's next attach removes it", "workspace_id", r.ID, "err", err)
 		return nil
 	}
@@ -598,7 +598,7 @@ func (m *Manager) Sweep(ctx context.Context) (int, error) {
 	}
 	n := 0
 	for _, r := range rows {
-		if r.State == store.WorkspaceReleasing && !m.disp.Attached(r.WorkerID, r.TenantID) {
+		if r.State == store.WorkspaceReleasing && !m.disp.Attached(r.WorkerID, r.TenantID, r.UserID) {
 			continue // the worker's next attach finishes it
 		}
 		if err := m.Release(ctx, r); err != nil {
@@ -628,7 +628,7 @@ func (m *Manager) MarkLost(ctx context.Context) (int, error) {
 	}
 	n := 0
 	for _, r := range rows {
-		if m.disp.Attached(r.WorkerID, r.TenantID) {
+		if m.disp.Attached(r.WorkerID, r.TenantID, r.UserID) {
 			continue
 		}
 		ok, err := m.store.WorkspaceSetState(ctx, r.TenantID, r.ID, r.State, store.WorkspaceLost)
@@ -650,7 +650,7 @@ func (m *Manager) MarkLost(ctx context.Context) (int, error) {
 func (m *Manager) removeQuietly(r store.WorkspaceRow) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if err := m.disp.Remove(ctx, r.TenantID, r.WorkerID, r.ID); err != nil {
+	if err := m.disp.Remove(ctx, r.TenantID, r.UserID, r.WorkerID, r.ID); err != nil {
 		m.log.Warn("cannot remove a workspace that failed to open; its worker's next attach removes it", "workspace_id", r.ID, "err", err)
 	}
 }

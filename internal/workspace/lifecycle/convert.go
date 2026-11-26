@@ -141,7 +141,7 @@ func (m *Manager) Convert(ctx context.Context, o Owner, req ConvertRequest, out 
 	if req.To != "" || w == nil {
 		w, limit = &buf, maxAnswer
 	}
-	_, err = m.disp.Stream(ctx, src.WorkerID, dispatch.Request{TenantID: src.TenantID, WorkspaceID: src.ID, Op: req.Op, Args: raw, MaxOutput: limit}, nil, w)
+	_, err = m.disp.Stream(ctx, src.WorkerID, dispatch.Request{TenantID: src.TenantID, UserID: src.UserID, WorkspaceID: src.ID, Op: req.Op, Args: raw, MaxOutput: limit}, nil, w)
 	if dispatch.ClassOf(err) == workspace.ClassConversionCrashed {
 		ttl := m.limits.ConvertQuarantine
 		m.quarantine.add(key, m.now().Add(ttl))
@@ -183,7 +183,7 @@ func (m *Manager) SpliceMarkdown(ctx context.Context, o Owner, name string, args
 	if len(body) > maxSpliceInput {
 		return out, ErrSpliceTooLarge
 	}
-	res, err := m.disp.Do(ctx, r.WorkerID, dispatch.Request{TenantID: r.TenantID, WorkspaceID: r.ID, Op: workspace.OpMDSplice, Args: raw,
+	res, err := m.disp.Do(ctx, r.WorkerID, dispatch.Request{TenantID: r.TenantID, UserID: r.UserID, WorkspaceID: r.ID, Op: workspace.OpMDSplice, Args: raw,
 		Input: bytes.NewReader(body), MaxOutput: maxAnswer})
 	if err != nil {
 		return out, err

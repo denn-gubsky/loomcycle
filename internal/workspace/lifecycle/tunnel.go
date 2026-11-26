@@ -22,5 +22,5 @@ func (m *Manager) Tunnel(ctx context.Context, r store.WorkspaceRow, port int, ma
 	if err != nil {
 		return nil, err
 	}
-	return m.disp.Tunnel(ctx, r.WorkerID, dispatch.Request{TenantID: r.TenantID, WorkspaceID: r.ID, Op: workspace.OpTunnel, Args: args, MaxInput: maxIn, MaxOutput: maxOut})
+	return m.disp.Tunnel(ctx, r.WorkerID, dispatch.Request{TenantID: r.TenantID, UserID: r.UserID, WorkspaceID: r.ID, Op: workspace.OpTunnel, Args: args, MaxInput: maxIn, MaxOutput: maxOut})
 }
