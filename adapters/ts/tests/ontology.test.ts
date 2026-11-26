@@ -294,3 +294,95 @@ describe("ontology releases", () => {
     expect((err as LoomcycleError).code).toBe("invalid_request");
   });
 });
+
+describe("ontology job", () => {
+  const job = {
+    id: "j1",
+    kind: "concept_retag",
+    entry: "c1",
+    from: ["topics/risk"],
+    to: "topics/reporting/risk",
+    to_tags: ["topics/reporting/risk"],
+    state: "running",
+    step: "document_tags",
+    done: { chunk_tags: 4 },
+    remaining: 7,
+    scope: "user",
+    scopes_done: 1,
+    scopes_total: 3,
+    created_at: 1764000000000000000,
+    updated_at: 1764000000000000001,
+  };
+
+  it("getOntologyJob GETs the job and returns it typed", async () => {
+    const { client, fetchMock } = makeClient([jsonResponse({ tenant: "acme", job })]);
+    const res = await client.getOntologyJob();
+    expect(res.job?.state).toBe("running");
+    expect(res.job?.to_tags).toEqual(["topics/reporting/risk"]);
+    expect(res.job?.scopes_total).toBe(3);
+    expect(fetchMock.mock.calls[0]![0]).toBe("http://test-loomcycle:8787/v1/_ontology/job");
+    expect(fetchMock.mock.calls[0]![1]!.method).toBe("GET");
+  });
+
+  it("getOntologyJob passes an admin's tenant focus and reads no job as null", async () => {
+    const { client, fetchMock } = makeClient([jsonResponse({ tenant: "globex", job: null })]);
+    const res = await client.getOntologyJob({ tenant: "globex" });
+    expect(res.job).toBeNull();
+    expect(fetchMock.mock.calls[0]![0]).toBe("http://test-loomcycle:8787/v1/_ontology/job?tenant=globex");
+  });
+
+  it("resumeOntologyJob POSTs the job's id and returns the job as the slice left it", async () => {
+    const { client, fetchMock } = makeClient([jsonResponse({ tenant: "acme", job: { ...job, state: "done" } })]);
+    const res = await client.resumeOntologyJob({ id: "j1", tenant: "globex" });
+    expect(res.job?.state).toBe("done");
+    const call = fetchMock.mock.calls[0]!;
+    expect(call[0]).toBe("http://test-loomcycle:8787/v1/_ontology/job/resume?tenant=globex");
+    expect(call[1]!.method).toBe("POST");
+    expect(JSON.parse(call[1]!.body as string)).toEqual({ id: "j1" });
+  });
+
+  it("resumeOntologyJob without an id sends an empty body", async () => {
+    const { client, fetchMock } = makeClient([jsonResponse({ tenant: "acme", job })]);
+    await client.resumeOntologyJob();
+    expect(JSON.parse(fetchMock.mock.calls[0]![1]!.body as string)).toEqual({});
+  });
+
+  it("resumeOntologyJob throws job_busy with its status", async () => {
+    const { client } = makeClient([
+      jsonResponse({ code: "job_busy", error: "a class rename or concept move is being checked or carried out right now" }, 409),
+    ]);
+    const err = await client.resumeOntologyJob().catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(LoomcycleError);
+    expect((err as LoomcycleError).status).toBe(409);
+    expect((err as LoomcycleError).code).toBe("job_busy");
+  });
+
+  it("planOntology carries a planned class rename's job block", async () => {
+    const plan = {
+      tenant: "acme",
+      fingerprint: "f".repeat(64),
+      changes: [{
+        op: "rename",
+        entry: { chunk_id: "c1", name: "Bulletin", section: "classes", kind: "class" },
+        risk: "stales",
+        counts: {},
+        job: {
+          steps: [{ name: "documents_type", tenant_scope: 2, other_scopes: 5 }],
+          runnable: true,
+          collisions_total: 0,
+          scopes_not_counted: 0,
+          running: job,
+        },
+      }],
+      issues: [],
+      new_issues: [],
+      scopes_counted: 2,
+      scopes_skipped: 0,
+      complete: true,
+    };
+    const { client } = makeClient([jsonResponse(plan)]);
+    const res = await client.planOntology([{ op: "rename", entry: "c1", name: "Circular" }]);
+    expect(res.changes[0]!.job?.steps[0]!.other_scopes).toBe(5);
+    expect(res.changes[0]!.job?.running?.kind).toBe("concept_retag");
+  });
+});
