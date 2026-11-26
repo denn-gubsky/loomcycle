@@ -3650,6 +3650,11 @@ func (s *Server) ontologyPlanRoutes(mux *http.ServeMux) *http.ServeMux {
 	// vocabulary: gated as the accept is and carved out of the member path; the handler
 	// checks the caller again.
 	mux.Handle("POST /v1/_ontology/rollback", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleOntologyRollback))))
+	// RFC GQ P5.6: the class-rename or re-tag job's status, and a slice of it on the
+	// operator's word. Gated and carved out of the member path as the plan is; the
+	// connector checks again.
+	mux.Handle("GET /v1/_ontology/job", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleOntologyJob))))
+	mux.Handle("POST /v1/_ontology/job/resume", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleOntologyJobResume))))
 	return mux
 }
 

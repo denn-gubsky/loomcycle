@@ -600,6 +600,14 @@ func (m *parityMock) DiffOntologyReleases(context.Context, connector.DiffOntolog
 	return connector.DiffOntologyReleasesResult{}, nil
 }
 
+func (m *parityMock) GetOntologyJob(context.Context, connector.GetOntologyJobRequest) (connector.OntologyJobResult, error) {
+	return connector.OntologyJobResult{}, nil
+}
+
+func (m *parityMock) ResumeOntologyJob(context.Context, connector.ResumeOntologyJobRequest) (connector.OntologyJobResult, error) {
+	return connector.OntologyJobResult{}, nil
+}
+
 func (m *parityMock) ListReviewQueue(context.Context, connector.ListReviewQueueRequest) (connector.ListReviewQueueResult, error) {
 	return connector.ListReviewQueueResult{}, nil
 }
