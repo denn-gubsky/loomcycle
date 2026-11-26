@@ -20,6 +20,7 @@ func TestWorkspaceConfig_AbsentIsOffAtTheDefaults(t *testing.T) {
 		Kernel: WorkspaceKernelConfig{InterruptGraceSeconds: 5}, Checkpoint: WorkspaceCheckpointConfig{MaxPerWorkspace: 8},
 		Template: WorkspaceTemplateConfig{MaxMB: 1024, MaxPerTenant: 20, MaxPerUser: 5},
 		Push:     WorkspacePushConfig{RefPrefixes: []string{"refs/heads/"}, MaxBytes: 64 << 20},
+		Git:      WorkspaceGitConfig{MirrorMaxMB: 4096, MirrorIdleS: 3600},
 		Egress:   WorkspaceEgressConfig{Limits: WorkspaceEgressLimits{RatePerMinute: 600, MaxBytes: 4 << 30}},
 		MCP:      WorkspaceMCPConfig{Ops: []string{"read", "write"}, IdleReleaseS: 3600, MaxLifetimeS: 86400},
 		Expose: WorkspaceExposeConfig{MaxPerWorkspace: 2, MaxConnections: 32, IdleTimeoutS: 900, RequestsPerSecond: 20, BytesPerSecond: 8 << 20,
@@ -39,7 +40,8 @@ func TestWorkspaceConfig_RemoteKeepsWhatIsWritten(t *testing.T) {
 		"  disk_quota_mb: 16777216\n  copy:\n    max_files: 50\n    max_bytes: 4096\n  checkout:\n    max_documents: 20\n    max_bytes: 9000\n  convert:\n    memory_limit_mb: 512\n"+
 		"  kernel:\n    interrupt_grace_seconds: 12\n  checkpoint:\n    max_per_workspace: 3\n  template:\n    max_mb: 512\n    max_per_tenant: 5\n    max_per_user: 2\n  mcp:\n    enabled: true\n    ops: [read, exec]\n    idle_release_s: 600\n    max_lifetime_s: 7200\n"+
 		"  expose:\n    enabled: true\n    max_per_workspace: 4\n    max_connections: 8\n    idle_timeout_s: 60\n    requests_per_second: 5\n    bytes_per_second: 1024\n"+
-		"    max_message_bytes: 4096\n    socket_lifetime_s: 600\n  durable:\n    enabled: true\n    max_per_user: 3\n")
+		"    max_message_bytes: 4096\n    socket_lifetime_s: 600\n  durable:\n    enabled: true\n    max_per_user: 3\n"+
+		"  git:\n    mirror_max_mb: 512\n    mirror_idle_s: 60\n")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,6 +55,7 @@ func TestWorkspaceConfig_RemoteKeepsWhatIsWritten(t *testing.T) {
 		Expose: WorkspaceExposeConfig{Enabled: true, MaxPerWorkspace: 4, MaxConnections: 8, IdleTimeoutS: 60, RequestsPerSecond: 5, BytesPerSecond: 1024,
 			MaxMessageBytes: 4096, SocketLifetimeS: 600},
 		Push:    WorkspacePushConfig{RefPrefixes: []string{"refs/heads/"}, MaxBytes: 64 << 20},
+		Git:     WorkspaceGitConfig{MirrorMaxMB: 512, MirrorIdleS: 60},
 		Durable: WorkspaceDurableConfig{Enabled: true, MaxPerUser: 3}}
 	if got := cfg.Workspace.Resolved(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("resolved = %+v, want %+v", got, want)
@@ -238,6 +241,22 @@ func TestWorkspaceConfig_PersonalWorkersNeedALoopbackWorkerEndpoint(t *testing.T
 		}
 		if !cfg.Workspace.Resolved().PersonalWorkers {
 			t.Errorf("%s: personal_workers not kept", listen)
+		}
+	}
+}
+
+// workspace.git (RFC GW P11): a mirror's cap and idle end, refused out of
+// range and as unknown keys.
+func TestWorkspaceGitConfig_RefusesOutOfRangeAndUnknownKeys(t *testing.T) {
+	for _, body := range []string{
+		"workspace:\n  git:\n    mirror_max_mb: -1\n",
+		"workspace:\n  git:\n    mirror_max_mb: 2000000\n",
+		"workspace:\n  git:\n    mirror_idle_s: -5\n",
+		"workspace:\n  git:\n    mirror_idle_s: 9999999\n",
+		"workspace:\n  git:\n    mirror_mb: 10\n",
+	} {
+		if _, err := loadConversion(t, body); err == nil {
+			t.Errorf("accepted: %q", body)
 		}
 	}
 }
