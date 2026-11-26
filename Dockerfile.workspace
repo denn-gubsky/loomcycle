@@ -23,7 +23,7 @@
 # and Debian's signatures (RFC GW P3 plan, O11). Anything else an agent
 # installs goes into its workspace (a venv, node_modules) through egress
 # routes (P4), never into this image.
-FROM debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2
+FROM debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2 AS session
 
 # Typst is a pinned release, its archive checked against the sha256 GitHub
 # publishes for it, one per architecture (as in Dockerfile.worker).
@@ -85,3 +85,24 @@ ENV MPLBACKEND=Agg \
 USER 65532:65532
 WORKDIR /workspace
 CMD ["sleep", "infinity"]
+
+# The browser session image (RFC GW §5.8; P10 plan §10, owner ruling of
+# 2026-11-26): this session image plus Chromium, for Workspace
+# op=screenshot. A second image, so a general workspace stays the size it
+# is: build it with --target browser. A container-engine worker running it
+# finds chromium at its start (engine.Container.ProbeBrowser) and reports
+# the browser label; the worker runs the browser with its own switches,
+# never this image's defaults. Chromium comes from Debian's archive, pinned
+# by the base digest and Debian's signatures like everything above.
+FROM session AS browser
+USER root
+RUN set -eux; \
+    apt-get update; \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends chromium; \
+    apt-get clean; \
+    rm -rf /var/lib/apt/lists/*; \
+    command -v chromium
+USER 65532:65532
+
+# The default target stays the plain session image.
+FROM session

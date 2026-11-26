@@ -5,7 +5,9 @@
 // internal/workspace/worker.
 package workspace
 
-import "strings"
+import (
+	"strings"
+)
 
 // ProtocolVersion is the workspace worker protocol this build speaks (RFC GW
 // §8). 2 added the worker-to-core Egress stream (RFC GW P4): an older worker
@@ -116,6 +118,7 @@ var KnownWorkerClasses = map[string]bool{
 	ClassKernelUnavailable: true, ClassCheckpointLimit: true, ClassCheckpointNotFound: true,
 	ClassServerLimit: true, ClassServerNotFound: true, ClassPortNotServed: true, ClassPortUnreachable: true,
 	ClassTemplateMissing: true, ClassNotOnRoot: true, ClassRootBusy: true,
+	ClassBrowserUnavailable: true, ClassBrowserBusy: true, ClassBrowserTimedOut: true,
 	// A git op's (RFC GW P11): gitrepo's and gitsource's classes, with
 	// not_found as ClassRepositoryNotFound. The worker's drift test holds
 	// this to gitrepo.Classes.

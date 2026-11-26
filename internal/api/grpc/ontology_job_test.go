@@ -121,9 +121,9 @@ func TestOntologyJobRPCs_DelegateToTheConnector(t *testing.T) {
 	}
 }
 
-// PlanOntology renders the class-rename job block of a planned change — its steps,
-// collisions, the unfinished job it waits for — and keeps it absent on a change with
-// none.
+// PlanOntology renders the job block of a planned change — a class rename's steps,
+// collisions and the unfinished job it waits for, a concept re-tag's kind and tag
+// moves — and keeps it absent on a change with none.
 func TestPlanOntology_RenameJobBlockRoundTrips(t *testing.T) {
 	plan := &connector.OntologyRenameJobPlan{
 		Steps:    []connector.OntologyRenameJobStep{{Name: "documents_type", TenantScope: 2, OtherScopes: 5}},
@@ -132,11 +132,18 @@ func TestPlanOntology_RenameJobBlockRoundTrips(t *testing.T) {
 		CollisionsTotal: 3, CollisionsOtherScopes: 2, ScopesNotCounted: 1,
 		Running: &connector.OntologyJobStatus{ID: "j0", Kind: "class_rename", From: []string{"Memo"}, To: "Note", State: "running",
 			Step: "chunks_type", Done: map[string]int{"documents_type": 1}},
-		Notes: []string{"definitions outside the ontology are not rewritten"},
+		Notes: []string{"definitions outside the ontology are not rewritten"}, Kind: "class_rename",
+	}
+	retag := &connector.OntologyRenameJobPlan{
+		Kind:     "concept_retag",
+		TagMoves: []connector.OntologyTagMove{{From: "topics/risk", To: "topics/reporting/risk"}, {From: "topics/a", To: "topics/b"}},
+		Steps:    []connector.OntologyRenameJobStep{{Name: "chunk_tags", TenantScope: 1, OtherScopes: 2}, {Name: "classification_tags"}},
+		Runnable: true, ScopesNotCounted: 1, Notes: []string{"the job rewrites the tenant scope, then every user and agent scope"},
 	}
 	mc := &mockConnector{planRes: connector.PlanOntologyResult{Tenant: "acme", Changes: []connector.OntologyPlannedChange{
 		{Op: "rename", Entry: connector.OntologyPlanEntry{ChunkID: "c1"}, Job: plan},
 		{Op: "retire", Entry: connector.OntologyPlanEntry{ChunkID: "c2"}},
+		{Op: "move", Entry: connector.OntologyPlanEntry{ChunkID: "c3"}, Job: retag},
 	}}}
 	client, cleanup := startTestServerWithConnector(t, mc)
 	defer cleanup()
@@ -144,22 +151,30 @@ func TestPlanOntology_RenameJobBlockRoundTrips(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PlanOntology: %v", err)
 	}
-	j := res.GetChanges()[0].GetJob()
-	got := &connector.OntologyRenameJobPlan{Runnable: j.GetRunnable(), Blocked: j.GetBlocked(), CollisionsTotal: int(j.GetCollisionsTotal()),
-		CollisionsOtherScopes: int(j.GetCollisionsOtherScopes()), ScopesNotCounted: int(j.GetScopesNotCounted()),
-		Running: jobFromProto(j.GetRunning()), Notes: j.GetNotes()}
-	for _, s := range j.GetSteps() {
-		got.Steps = append(got.Steps, connector.OntologyRenameJobStep{Name: s.GetName(), TenantScope: int(s.GetTenantScope()), OtherScopes: int(s.GetOtherScopes())})
-	}
-	for _, c := range j.GetCollisions() {
-		got.Collisions = append(got.Collisions, connector.OntologyRenameCollision{Column: c.GetColumn(), Key: c.GetKey(), Into: c.GetInto(), Holder: c.GetHolder()})
+	read := func(j *loomcyclepb.OntologyRenameJobPlan) *connector.OntologyRenameJobPlan {
+		got := &connector.OntologyRenameJobPlan{Runnable: j.GetRunnable(), Blocked: j.GetBlocked(), CollisionsTotal: int(j.GetCollisionsTotal()),
+			CollisionsOtherScopes: int(j.GetCollisionsOtherScopes()), ScopesNotCounted: int(j.GetScopesNotCounted()),
+			Running: jobFromProto(j.GetRunning()), Notes: j.GetNotes(), Kind: j.GetKind()}
+		for _, s := range j.GetSteps() {
+			got.Steps = append(got.Steps, connector.OntologyRenameJobStep{Name: s.GetName(), TenantScope: int(s.GetTenantScope()), OtherScopes: int(s.GetOtherScopes())})
+		}
+		for _, c := range j.GetCollisions() {
+			got.Collisions = append(got.Collisions, connector.OntologyRenameCollision{Column: c.GetColumn(), Key: c.GetKey(), Into: c.GetInto(), Holder: c.GetHolder()})
+		}
+		for _, m := range j.GetTagMoves() {
+			got.TagMoves = append(got.TagMoves, connector.OntologyTagMove{From: m.GetFrom(), To: m.GetTo()})
+		}
+		return got
 	}
 	// The running job's unset fields read back as their zero values.
 	plan.Running.ToTags = nil
-	if !reflect.DeepEqual(got, plan) {
+	if got := read(res.GetChanges()[0].GetJob()); !reflect.DeepEqual(got, plan) {
 		t.Errorf("job block = %+v\nwant %+v", got, plan)
 	}
 	if res.GetChanges()[1].GetJob() != nil {
 		t.Errorf("a change with no job carries %v", res.GetChanges()[1].GetJob())
+	}
+	if got := read(res.GetChanges()[2].GetJob()); !reflect.DeepEqual(got, retag) {
+		t.Errorf("re-tag job block = %+v\nwant %+v", got, retag)
 	}
 }

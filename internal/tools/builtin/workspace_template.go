@@ -8,6 +8,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
+	"github.com/denn-gubsky/loomcycle/internal/workspace"
 	"github.com/denn-gubsky/loomcycle/internal/workspace/lifecycle"
 )
 
@@ -194,6 +195,8 @@ func templateView(t store.WorkspaceTemplateRow) map[string]any {
 // workspace's.
 func templateError(err error) tools.Result {
 	switch {
+	case errors.Is(err, lifecycle.ErrRootRefused):
+		return workspaceRefusal(workspace.ClassNotOnRoot, err.Error())
 	case errors.Is(err, lifecycle.ErrTemplateNotFound):
 		return workspaceRefusal("template_not_found", "no template of that name you may use (templates lists them)")
 	case errors.Is(err, lifecycle.ErrTemplateLimit):

@@ -115,6 +115,12 @@ func (m *Manager) Share(ctx context.Context, o Owner, name string, p Peer, acces
 	if p.RunID == "" || p.RunID == o.RunID {
 		return store.WorkspaceRow{}, fmt.Errorf("%w (a run does not share with itself)", ErrShareTarget)
 	}
+	// A root is the user's own folder; it is handed to no other run, even
+	// of the same user (D-P13-14, deny by default). The root never changes
+	// on a row, so the read here decides for the write below.
+	if r, err := m.Get(ctx, o, name); err == nil && r.Root != "" {
+		return store.WorkspaceRow{}, ErrRootRefused
+	}
 	row, err := m.updateShares(ctx, o, name, func(cur []store.WorkspaceShare) ([]store.WorkspaceShare, error) {
 		next := slices.DeleteFunc(slices.Clone(cur), func(s store.WorkspaceShare) bool { return s.RunID == p.RunID })
 		if len(next) >= MaxSharesPerWorkspace {

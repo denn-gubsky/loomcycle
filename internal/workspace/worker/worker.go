@@ -87,6 +87,9 @@ type Options struct {
 	// GW P4 plan O13). Not a boundary: the port takes a per-workspace
 	// secret, which this user's own processes can read (engine.Host).
 	HostEgress bool
+	// browser is whether the container engine's session image carries the
+	// browser, probed at the start; it adds the browser label.
+	browser bool
 	// hostEgress is the handler a host workspace's port serves, set by
 	// wireEgress.
 	hostEgress func(workspace string) http.Handler
@@ -247,6 +250,12 @@ func Run(ctx context.Context, opt Options) error {
 	if opt.Convert == nil {
 		opt.Labels = nil
 	}
+	// After the conversion labels, which the line above may clear: the
+	// browser is the session image's, not the conversion child's.
+	if opt.browser {
+		opt.Labels = append(opt.Labels, workspace.LabelBrowser)
+		log.Info("the session image carries a browser; this worker takes screenshots")
+	}
 	// The checkpoint mechanism is the disk's, probed once and reported as a
 	// label (RFC GW §5.4).
 	mech := probeMechanism(root)
@@ -310,6 +319,13 @@ func newEngine(ctx context.Context, opt *Options, log *slog.Logger) (engine.Engi
 	if opt.Toolchains == nil {
 		opt.Toolchains = tc
 	}
+	// A failed probe is no browser: the worker then never offers a
+	// screenshot (fail closed), and says why.
+	if ok, err := c.ProbeBrowser(ctx); err != nil {
+		log.Warn("cannot tell whether the session image carries a browser; this worker takes no screenshot", "err", err)
+	} else {
+		opt.browser = ok
+	}
 	if err := c.Reconcile(ctx); err != nil {
 		return nil, fmt.Errorf("workspace worker: %w", err)
 	}
@@ -371,6 +387,11 @@ type worker struct {
 	// tplMu serialises the template cache: a copy out of it, a tree put
 	// into it, and an eviction (RFC GW §5.5).
 	tplMu sync.Mutex
+	// shots holds the workspaces a screenshot is being taken of: one
+	// browser per workspace at a time (P10 plan §10).
+	shots sync.Map
+	// shotTimeout is one shot's bound; zero is workspace.ScreenshotTimeout.
+	shotTimeout time.Duration
 }
 
 func (w *worker) outgoing(ctx context.Context) context.Context {

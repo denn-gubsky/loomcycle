@@ -23,7 +23,7 @@ import (
 // Authority, not content: not part of content_sha256.
 //
 // Only the keys built so far exist (P1's, P8's share, P4's egress, P9's
-// expose and P6's templates). The key a later phase adds (connect) is refused as unknown,
+// expose, P6's templates, P12's durable and P13's roots). The key a later phase adds (connect) is refused as unknown,
 // in yaml and in JSON, so no stored grant can name something that does
 // nothing yet.
 type AgentWorkspace struct {
@@ -51,6 +51,11 @@ type AgentWorkspace struct {
 	// under its user and a name (RFC GW §4.2, P12). It needs
 	// workspace.durable on.
 	Durable bool `json:"durable,omitempty" yaml:"durable,omitempty"`
+	// Roots lets the agent open a workspace on a root: a folder of its
+	// user's own machine, offered by that user's personal worker (RFC GW
+	// §4.5, P13, owner ruling Q1). Such a workspace is the user's real
+	// files, not a copy, so it is a grant of its own beside open.
+	Roots bool `json:"roots,omitempty" yaml:"roots,omitempty"`
 	// Egress names the routes (workspace.egress.routes, or a tenant's) a
 	// workspace this agent opens may reach the network through (RFC GW
 	// §6.3). A sub-agent holds only the names both it and its parent list.

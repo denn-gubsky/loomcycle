@@ -2877,6 +2877,19 @@ message OntologyRenameJobPlan {
   // it.
   OntologyJobStatus running = 8;
   repeated string notes = 9;
+  // The job's kind: class_rename, or concept_retag for a concept rename or
+  // move or a scheme rename that moves a tag.
+  string kind = 10;
+  // concept_retag: the tags the change moves, the topmost only (a narrower
+  // concept's tag follows as a prefix).
+  repeated OntologyTagMove tag_moves = 11;
+}
+
+// OntologyTagMove is one tag a concept re-tag job moves: every tag equal to
+// from, or under it, becomes to with the same rest.
+message OntologyTagMove {
+  string from = 1;
+  string to = 2;
 }
 
 // OntologyRenameJobStep is one step of the rename job: the stored rows under
