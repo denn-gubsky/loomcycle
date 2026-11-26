@@ -12,7 +12,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/snapshot/migrations"
 	"github.com/denn-gubsky/loomcycle/internal/store"
-	"github.com/denn-gubsky/loomcycle/internal/workspace"
+	"github.com/denn-gubsky/loomcycle/internal/workerid"
 )
 
 // The workspaces section (RFC GW P12 plan §3.6, §5): a workspace's row, its
@@ -244,7 +244,7 @@ func workerOfOwner(workerID, tenant, user string) bool {
 		return false
 	}
 	// The row's own key and a declared id after it, nothing else.
-	key := workspace.PersonalGrantKey(tenant, user) + "/"
+	key := workerid.PersonalGrantKey(tenant, user) + "/"
 	if len(workerID) <= len(key) {
 		return false
 	}

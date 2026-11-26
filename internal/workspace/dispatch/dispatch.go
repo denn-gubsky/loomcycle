@@ -38,6 +38,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/safego"
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/workerid"
 	"github.com/denn-gubsky/loomcycle/internal/workerlink"
 	"github.com/denn-gubsky/loomcycle/internal/workspace"
 	"github.com/denn-gubsky/loomcycle/internal/workspace/workspacepb"
@@ -409,7 +410,7 @@ func grantKey(att auth.WorkerAttach) string {
 		// (D-P13-5): a subject may hold bytes an id may not, and the id
 		// names the grant, never the token, so a rotated token keeps its
 		// worker's rows. No other prefix starts "user:".
-		return workspace.PersonalGrantKey(att.TenantID, att.UserID)
+		return workerid.PersonalGrantKey(att.TenantID, att.UserID)
 	}
 	return "tenant:" + att.TenantID
 }
