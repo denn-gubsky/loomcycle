@@ -72,8 +72,8 @@ carries `rename_job` — `{id, state, step, scope, scopes_done, done, ...}`;
 `state` is `done` when no scope holds the old name, `running` when the slice
 ran out of time (the next class rename carries it on first, from the scope it
 was in; an operator can also read where it is with `GET /v1/_ontology/job` and
-give it a slice with `POST /v1/_ontology/job/resume`, or the `ontology` tool's
-`job` and `resume_job` over MCP), `blocked` when a key could not move. A finished job takes an `apply`
+give it a slice with `POST /v1/_ontology/job/resume` and the job's `id`, or the
+`ontology` tool's `job` and `resume_job` over MCP), `blocked` when a key could not move. A finished job takes an `apply`
 release of the ontology. The plan of the rename shows the same as `job`: the
 rows per step, what keeps it from running (`blocked`) and the keys that would
 collide.
@@ -165,7 +165,7 @@ subject re-type that was not announced).
   first (the plan names them).
 - `update_chunk: rename_job_running: ...` — another class rename is still
   being carried through stored rows; rename again once it has finished (an
-  operator's `POST /v1/_ontology/job/resume` carries it on).
+  operator's `POST /v1/_ontology/job/resume` with the job's `id` carries it on).
 - `principal_binding_operator_only: update_chunk: the principal field is
   reserved ...` — resend `fields` without `principal` (or with exactly the
   stored value).

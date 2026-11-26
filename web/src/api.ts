@@ -4160,10 +4160,10 @@ export function getOntologyJob(): Promise<OntologyJobResult> {
   return jsonFetch<OntologyJobResult>("/v1/_ontology/job");
 }
 
-/** Give the unfinished job one slice of work; `id` refuses the resume unless that
- *  job is still the unfinished one. */
-export function resumeOntologyJob(id?: string): Promise<OntologyJobResult> {
-  return postJSON<OntologyJobResult>("/v1/_ontology/job/resume", JSON.stringify(id ? { id } : {}));
+/** Give the unfinished job one slice of work. `id` is required: the resume is
+ *  refused unless that job is still the unfinished one. */
+export function resumeOntologyJob(id: string): Promise<OntologyJobResult> {
+  return postJSON<OntologyJobResult>("/v1/_ontology/job/resume", JSON.stringify({ id }));
 }
 
 // ---- Ontology rollback (RFC GQ P5.7: POST /v1/_ontology/rollback) ----

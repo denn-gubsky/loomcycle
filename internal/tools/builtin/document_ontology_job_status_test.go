@@ -55,7 +55,7 @@ func TestOntologyJob_StatusReadsTheUnfinishedJobElseTheLastOne(t *testing.T) {
 		t.Errorf("reading the status moved rows:\n got %v\nwant %v", got, before)
 	}
 
-	if _, err := f.d.ResumeOntologyJob(f.ctx, ""); err != nil {
+	if _, err := f.d.ResumeOntologyJob(f.ctx, st.ID); err != nil {
 		t.Fatalf("resume: %v", err)
 	}
 	st, err = f.d.OntologyJob(f.ctx)
@@ -91,7 +91,11 @@ func TestOntologyJob_ResumeCarriesTheJobToWhereAnUninterruptedRunEnds(t *testing
 	if err := p.d.createRenameJob(p.ctx, p.key, s); err != nil {
 		t.Fatal(err)
 	}
-	if st, err := p.d.ResumeOntologyJob(p.ctx, ""); err != nil || st.State != jobStateAbandoned {
+	pending, _ := p.d.unfinishedOntologyJob(p.ctx, p.key)
+	if pending == nil {
+		t.Fatal("no pending job recorded")
+	}
+	if st, err := p.d.ResumeOntologyJob(p.ctx, pending.ID); err != nil || st.State != jobStateAbandoned {
 		t.Errorf("resume of a pending job that never landed = %+v, %v; want abandoned", st, err)
 	}
 	if got := p.state(); !reflect.DeepEqual(got, before) {
@@ -105,10 +109,11 @@ func TestOntologyJob_ResumeCarriesTheJobToWhereAnUninterruptedRunEnds(t *testing
 // job_busy and moves nothing; once the lease is free the same resume goes through.
 func TestOntologyJob_ResumeIsRefusedWithoutItsJobOrWhileTheLeaseIsHeld(t *testing.T) {
 	f := newRenameFixture(t)
-	if _, err := f.d.ResumeOntologyJob(f.ctx, ""); !errors.Is(err, connector.ErrOntologyJobNotFound) {
+	if _, err := f.d.ResumeOntologyJob(f.ctx, "some-job"); !errors.Is(err, connector.ErrOntologyJobNotFound) {
 		t.Errorf("resume with no job = %v, want job_not_found", err)
 	}
 	stoppedRename(t, f)
+	job, _ := f.d.unfinishedOntologyJob(f.ctx, f.key)
 	before := f.state()
 	if _, err := f.d.ResumeOntologyJob(f.ctx, "another-job"); !errors.Is(err, connector.ErrOntologyJobNotFound) {
 		t.Errorf("resume of another id = %v, want job_not_found", err)
@@ -117,7 +122,7 @@ func TestOntologyJob_ResumeIsRefusedWithoutItsJobOrWhileTheLeaseIsHeld(t *testin
 	if err != nil || !lease.Acquired {
 		t.Fatalf("take the lease: %+v, %v", lease, err)
 	}
-	if _, err := f.d.ResumeOntologyJob(f.ctx, ""); !errors.Is(err, connector.ErrOntologyJobBusy) {
+	if _, err := f.d.ResumeOntologyJob(f.ctx, job.ID); !errors.Is(err, connector.ErrOntologyJobBusy) {
 		t.Errorf("resume while the lease is held = %v, want job_busy", err)
 	}
 	if got := f.state(); !reflect.DeepEqual(got, before) {
@@ -126,7 +131,33 @@ func TestOntologyJob_ResumeIsRefusedWithoutItsJobOrWhileTheLeaseIsHeld(t *testin
 	if _, err := f.d.releaseDocumentLease(f.ctx, f.key, ontologyRenameLeaseName, "runtime:other"); err != nil {
 		t.Fatal(err)
 	}
-	if st, err := f.d.ResumeOntologyJob(f.ctx, ""); err != nil || st.State != jobStateDone {
+	if st, err := f.d.ResumeOntologyJob(f.ctx, job.ID); err != nil || st.State != jobStateDone {
 		t.Errorf("resume once the lease is free = %+v, %v; want done", st, err)
+	}
+}
+
+// TestOntologyJob_ResumeIsRefusedWithoutAnID: a resume names the job it carries on, so
+// one aimed at a job that has since finished cannot carry on a newer one. Without an id
+// it is invalid_request, before the lease is asked for: it is refused while another call
+// holds the lease too, and it moves nothing.
+func TestOntologyJob_ResumeIsRefusedWithoutAnID(t *testing.T) {
+	f := newRenameFixture(t)
+	stoppedRename(t, f)
+	before := f.state()
+	if st, err := f.d.ResumeOntologyJob(f.ctx, ""); connector.OntologyJobCode(err) != "invalid_request" {
+		t.Errorf("resume without an id = %+v, %v (code %q); want invalid_request", st, err, connector.OntologyJobCode(err))
+	}
+	lease, err := f.d.acquireDocumentLease(f.ctx, f.key, ontologyRenameLeaseName, "runtime:other", time.Now(), time.Minute)
+	if err != nil || !lease.Acquired {
+		t.Fatalf("take the lease: %+v, %v", lease, err)
+	}
+	if _, err := f.d.ResumeOntologyJob(f.ctx, ""); connector.OntologyJobCode(err) != "invalid_request" {
+		t.Errorf("resume without an id while the lease is held = %v, want invalid_request", err)
+	}
+	if got := f.state(); !reflect.DeepEqual(got, before) {
+		t.Errorf("a resume without an id moved rows:\n got %v\nwant %v", got, before)
+	}
+	if j, _ := f.d.unfinishedOntologyJob(f.ctx, f.key); j == nil || j.State != jobStateRunning {
+		t.Errorf("after a resume without an id the job = %+v, want still running", j)
 	}
 }

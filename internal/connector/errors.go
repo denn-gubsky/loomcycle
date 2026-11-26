@@ -536,6 +536,9 @@ var (
 	ErrOntologyJobBusy = errors.New("connector: the ontology job is busy")
 	// ErrOntologyJobUnavailable — this deployment has no SQL Memory.
 	ErrOntologyJobUnavailable = errors.New("connector: ontology jobs need SQL Memory")
+	// ErrOntologyJobIDRequired — a resume named no job. It must: a resume aimed at a
+	// job that has since finished would otherwise carry on a newer one.
+	ErrOntologyJobIDRequired = errors.New("connector: a resume needs the job's id")
 )
 
 // OntologyJobCode is the stable wire code for a job refusal. "" for an error that
@@ -549,6 +552,7 @@ func OntologyJobCode(err error) string {
 		{ErrOntologyJobNotFound, "job_not_found"},
 		{ErrOntologyJobBusy, "job_busy"},
 		{ErrOntologyJobUnavailable, "unavailable"},
+		{ErrOntologyJobIDRequired, "invalid_request"},
 	} {
 		if errors.Is(err, c.sentinel) {
 			return c.code

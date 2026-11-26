@@ -107,7 +107,7 @@ func TestApplyOntologyRollbackRPC_DelegatesToTheConnector(t *testing.T) {
 		{&connector.OntologyRollbackRefusal{Code: "plan_required", Message: "m", Fingerprint: "fp-now"}, codes.FailedPrecondition, "plan_required", map[string]string{"fingerprint": "fp-now"}},
 		{&connector.OntologyRollbackRefusal{Code: "plan_stale", Message: "m", Fingerprint: "fp-now"}, codes.FailedPrecondition, "plan_stale", map[string]string{"fingerprint": "fp-now"}},
 		{&connector.OntologyRollbackRefusal{Code: "partially_applied", Message: "m", Applied: []connector.OntologyRollbackStep{{Op: "retire", Entry: "c1", Name: "Memo"}}},
-			codes.Aborted, "partially_applied", map[string]string{"applied": string(applied)}},
+			codes.FailedPrecondition, "partially_applied", map[string]string{"applied": string(applied)}},
 		{&connector.OntologyRollbackRefusal{Code: "rename_job_pending", Message: "m"}, codes.FailedPrecondition, "rename_job_pending", nil},
 		{&connector.OntologyRollbackRefusal{Code: "entry_locked", Message: "m"}, codes.FailedPrecondition, "entry_locked", nil},
 		{&connector.OntologyRollbackRefusal{Code: "invalid_request", Message: "m"}, codes.InvalidArgument, "invalid_request", nil},
