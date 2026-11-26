@@ -77,6 +77,7 @@ func planOntologyToProto(res connector.PlanOntologyResult) *loomcyclepb.PlanOnto
 	for _, c := range res.Changes {
 		pc := &loomcyclepb.OntologyPlannedChange{
 			Op: c.Op, Entry: planEntryToProto(c.Entry), Risk: c.Risk, Notes: c.Notes, Proposal: c.Proposal,
+			Job: renameJobPlanToProto(c.Job),
 		}
 		if len(c.Counts) > 0 {
 			pc.Counts = make(map[string]*loomcyclepb.OntologyPlanCount, len(c.Counts))
