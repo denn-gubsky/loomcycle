@@ -187,6 +187,42 @@ func retainedReleaseCopies(r ReleaseRedaction, dryRun bool) string {
 		r.Entries, r.Releases, verb, r.InForce, r.SummariesNaming)
 }
 
+// eraseSubjectBindings unbinds the subjects bound to subject (a dry run lists them),
+// after their ontology release copies are redacted, and records both in res. It
+// returns the subjects it unbound, for the announcement.
+func (s *Service) eraseSubjectBindings(ctx context.Context, req ExecuteRequest, tenant, subject string, res *Result, fail func(string, error)) []BoundSubject {
+	var unbound []BoundSubject
+	var bound []BoundSubject
+	var err error
+	if req.DryRun {
+		bound, err = s.BoundSubjects(ctx, tenant, subject)
+		if err == nil {
+			s.eraseReleaseCopies(ctx, tenant, bound, true, res, fail)
+		}
+	} else if s.releaseCopiesWired() && !s.eraseReleaseCopiesFirst(ctx, tenant, subject, res, fail) {
+		// The binding is what ties the subjects to the principal: cleared, a re-run
+		// could not find their release copies again. Kept until they are redacted.
+		fail("subject_bindings", errors.New("the bindings were left in place because the ontology releases "+
+			"could not be redacted; re-run the erasure"))
+	} else {
+		bound, err = s.ClearBoundSubjects(ctx, tenant, subject)
+		unbound = bound
+	}
+	switch {
+	case err != nil && req.DryRun:
+		fail("subject_bindings", errBoundSubjectsUnread)
+	case err != nil:
+		fail("subject_bindings", fmt.Errorf("%d subject(s) were unbound; others could not be and are "+
+			"still bound to this principal — re-run the erasure", len(bound)))
+	}
+	res.Deleted["subject_bindings"] = len(bound)
+	res.BoundSubjects, res.BoundSubjectsWithheld = nameBound(bound)
+	if len(bound) > 0 {
+		res.Retained["bound_subjects"] = retainedBoundSubjects(len(bound))
+	}
+	return unbound
+}
+
 // eraseReleaseCopies redacts (or with dryRun counts) the release copies of bound and
 // records it in res; it reports whether the release plane answered.
 func (s *Service) eraseReleaseCopies(ctx context.Context, tenant string, bound []BoundSubject, dryRun bool, res *Result, fail func(string, error)) bool {
@@ -975,34 +1011,7 @@ func (s *Service) Execute(ctx context.Context, req ExecuteRequest) (Result, erro
 	// id, and never deleted. Announced after everything else, below.
 	var unbound []BoundSubject
 	if s.subjectBindingsWired() {
-		var bound []BoundSubject
-		var err error
-		if req.DryRun {
-			bound, err = s.BoundSubjects(ctx, tenant, subject)
-			if err == nil {
-				s.eraseReleaseCopies(ctx, tenant, bound, true, &res, fail)
-			}
-		} else if s.releaseCopiesWired() && !s.eraseReleaseCopiesFirst(ctx, tenant, subject, &res, fail) {
-			// The binding is what ties the subjects to the principal: cleared, a re-run
-			// could not find their release copies again. Kept until they are redacted.
-			fail("subject_bindings", errors.New("the bindings were left in place because the ontology releases "+
-				"could not be redacted; re-run the erasure"))
-		} else {
-			bound, err = s.ClearBoundSubjects(ctx, tenant, subject)
-			unbound = bound
-		}
-		switch {
-		case err != nil && req.DryRun:
-			fail("subject_bindings", errBoundSubjectsUnread)
-		case err != nil:
-			fail("subject_bindings", fmt.Errorf("%d subject(s) were unbound; others could not be and are "+
-				"still bound to this principal — re-run the erasure", len(bound)))
-		}
-		res.Deleted["subject_bindings"] = len(bound)
-		res.BoundSubjects, res.BoundSubjectsWithheld = nameBound(bound)
-		if len(bound) > 0 {
-			res.Retained["bound_subjects"] = retainedBoundSubjects(len(bound))
-		}
+		unbound = s.eraseSubjectBindings(ctx, req, tenant, subject, &res, fail)
 	}
 	if creds, err := s.Store.CredentialDefList(ctx, tenant, "user", subject); err != nil {
 		fail("credentials", err)
