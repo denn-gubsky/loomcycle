@@ -210,7 +210,7 @@ class SurfaceInfo:
     kind: str = ""  # page | panel
     base_path: str = ""  # the exposure route's prefix
     expires_at: str = ""  # RFC 3339 idle deadline when told; moves with use
-    reason: str = ""  # surface_closed: unexposed | released | idle
+    reason: str = ""  # surface_closed: unexposed | released | idle | lost
 
 
 @dataclass(frozen=True)
