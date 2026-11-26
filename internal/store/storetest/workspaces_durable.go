@@ -178,3 +178,51 @@ func testWorkspaceParkedRowIsReachedByNoRun(t *testing.T, s store.Store) {
 		t.Errorf("touch reached %d rows, want the parked row too (a worker that leaves marks it lost)", n)
 	}
 }
+
+// The per-user durable count is the tenant's durable rows of that user,
+// pinned or parked, and nothing else.
+func testWorkspaceCountDurableByUser(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	createWorkspace(t, s, mkDurable("ws_a", "acme", "alice", "run-1", "one"))
+	createWorkspace(t, s, mkDurable("ws_b", "acme", "alice", "run-2", "two"))
+	createWorkspace(t, s, mkDurable("ws_c", "acme", "bob", "run-3", "one"))
+	createWorkspace(t, s, mkDurable("ws_d", "beta", "alice", "run-4", "one"))
+	createWorkspace(t, s, mkWorkspace("ws_e", "acme", "run-5", "eph", "w1"))
+	if ok, err := s.WorkspaceUnpin(ctx, "acme", "ws_b", "run-2"); err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	for _, c := range []struct {
+		tenant, user string
+		want         int
+	}{{"acme", "alice", 2}, {"acme", "bob", 1}, {"beta", "alice", 1}, {"acme", "carol", 0}} {
+		if n, err := s.WorkspaceCountDurableByUser(ctx, c.tenant, c.user); err != nil || n != c.want {
+			t.Errorf("durable of %s/%s = %d, %v; want %d", c.tenant, c.user, n, err, c.want)
+		}
+	}
+}
+
+// A parked durable row keeps its git record (RFC GW P11's column), and a
+// pin keeps it too: unpin and pin move the owner, nothing else.
+func testWorkspaceParkingKeepsTheGitRecord(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	d := mkDurable("ws_g", "acme", "alice", "run-1", "repo")
+	d.Kind = store.WorkspaceKindGit
+	createWorkspace(t, s, d)
+	git := store.WorkspaceGit{URL: "https://forge.example/acme/repo.git", Branch: "loom/repo-1", Credential: "$cred:forge", Mirror: "m1"}
+	if ok, err := s.WorkspaceSetGit(ctx, "acme", "ws_g", git); err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	if ok, err := s.WorkspaceUnpin(ctx, "acme", "ws_g", "run-1"); err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	p, _ := s.WorkspaceGet(ctx, "acme", "ws_g")
+	if p.Git == nil || *p.Git != git {
+		t.Errorf("parked git = %+v, want %+v", p.Git, git)
+	}
+	if ok, err := s.WorkspacePin(ctx, "acme", "ws_g", store.WorkspaceParkedKey("ws_g"), store.WorkspaceOwner{RunID: "run-2"}); err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	if r, _ := s.WorkspaceGet(ctx, "acme", "ws_g"); r.Git == nil || *r.Git != git {
+		t.Errorf("re-pinned git = %+v", r.Git)
+	}
+}

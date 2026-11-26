@@ -71,6 +71,10 @@ type WorkspaceConfig struct {
 	// Expose is `workspace.expose`: serving a workspace's port to its user
 	// through the API (RFC GW §5.3). Off unless enabled.
 	Expose WorkspaceExposeConfig `yaml:"expose,omitempty"`
+	// Durable is `workspace.durable`: workspaces kept past their run under
+	// the tenant, the user and a name (RFC GW §4.2, P12). Off unless
+	// enabled.
+	Durable WorkspaceDurableConfig `yaml:"durable,omitempty"`
 	// PersonalWorkers lets a user's own machine attach as a worker of that
 	// user's runs (RFC GW §4.5, D29). Off by default; on only for a local
 	// deployment: the worker endpoint must listen on loopback (D32).
@@ -128,6 +132,24 @@ const (
 	DefaultWorkspaceMCPIdleReleaseS = 3600
 	DefaultWorkspaceMCPMaxLifetimeS = 86400
 	maxWorkspaceMCPSeconds          = 30 * 86400
+)
+
+// WorkspaceDurableConfig is `workspace.durable` (RFC GW P12): a durable
+// workspace outlives its run and keeps a worker's disk, so it is off unless
+// the operator turns it on, and bounded per user.
+type WorkspaceDurableConfig struct {
+	// Enabled lets an agent with the durable grant open one. Off by
+	// default.
+	Enabled bool `yaml:"enabled,omitempty"`
+	// MaxPerUser is how many durable workspaces, pinned or parked, one
+	// user of a tenant may keep.
+	MaxPerUser int `yaml:"max_per_user,omitempty"`
+}
+
+// The durable bound's default and ceiling.
+const (
+	DefaultWorkspaceDurableMaxPerUser = 8
+	maxWorkspaceDurablePerUser        = 1024
 )
 
 // WorkspaceExposeConfig is `workspace.expose`: a workspace's server served
@@ -324,6 +346,9 @@ func (w WorkspaceConfig) Resolved() WorkspaceConfig {
 	if w.Expose.MaxPerWorkspace == 0 {
 		w.Expose.MaxPerWorkspace = DefaultWorkspaceExposeMaxPerWorkspace
 	}
+	if w.Durable.MaxPerUser == 0 {
+		w.Durable.MaxPerUser = DefaultWorkspaceDurableMaxPerUser
+	}
 	if w.Expose.MaxConnections == 0 {
 		w.Expose.MaxConnections = DefaultWorkspaceExposeMaxConnections
 	}
@@ -490,6 +515,9 @@ func validateWorkspace(c *Config) error {
 			return fmt.Errorf("workspace.mcp.ops: %q is not read, write or exec", op)
 		}
 	}
+	if d := w.Durable.MaxPerUser; d < 0 || d > maxWorkspaceDurablePerUser {
+		return fmt.Errorf("workspace.durable.max_per_user: %d is not from 1 to %d", d, maxWorkspaceDurablePerUser)
+	}
 	if err := validateWorkspaceExpose(w.Expose); err != nil {
 		return err
 	}
@@ -614,6 +642,9 @@ func (w *WorkspaceConfig) UnmarshalYAML(n *yaml.Node) error {
 		return err
 	}
 	if err := strictKeys(valueOf(n, "expose"), "workspace.expose", nil, reflect.TypeOf(WorkspaceExposeConfig{})); err != nil {
+		return err
+	}
+	if err := strictKeys(valueOf(n, "durable"), "workspace.durable", nil, reflect.TypeOf(WorkspaceDurableConfig{})); err != nil {
 		return err
 	}
 	type plain WorkspaceConfig

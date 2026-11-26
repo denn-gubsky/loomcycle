@@ -13,8 +13,8 @@ func TestParseAgent_WorkspaceReachesTheAgent(t *testing.T) {
 		want        *AgentWorkspace
 	}{
 		{"absent", "", nil},
-		{"full", "workspace:\n  ops: [read, exec]\n  open: true\n  share: true\n  connect: true\n  templates: true\n  egress: [pypi, npm]\n  engine: host\n",
-			&AgentWorkspace{Ops: []string{"read", "exec"}, Open: true, Share: true, Connect: true, Templates: true, Egress: []string{"pypi", "npm"}, Engine: "host"}},
+		{"full", "workspace:\n  ops: [read, exec]\n  open: true\n  share: true\n  connect: true\n  durable: true\n  templates: true\n  egress: [pypi, npm]\n  engine: host\n",
+			&AgentWorkspace{Ops: []string{"read", "exec"}, Open: true, Share: true, Connect: true, Durable: true, Templates: true, Egress: []string{"pypi", "npm"}, Engine: "host"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			a, err := parseAgent([]byte("---\nname: coder\ndescription: d\n" + tc.lines + "---\nbody\n"))

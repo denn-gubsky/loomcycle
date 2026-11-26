@@ -464,6 +464,16 @@ func WorkspaceUnpin(ctx context.Context, q Querier, tenantID, id, fromRunID stri
 	return n > 0, nil
 }
 
+func WorkspaceCountDurableByUser(ctx context.Context, q Querier, tenantID, userID string) (int, error) {
+	var n int
+	if err := q.QueryRow(ctx,
+		`SELECT COUNT(*) FROM workspaces WHERE tenant_id = ? AND user_id = ? AND lifetime = ?`,
+		tenantID, userID, store.WorkspaceLifetimeDurable).Scan(&n); err != nil {
+		return 0, fmt.Errorf("workspace count durable by user: %w", err)
+	}
+	return n, nil
+}
+
 // encodeWorkspaceGit is the git column's text: "" for a workspace that is not
 // a git one.
 func encodeWorkspaceGit(g *store.WorkspaceGit) string {
