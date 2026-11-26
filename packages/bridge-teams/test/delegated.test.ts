@@ -4,6 +4,7 @@
 // out. The whole bridge runs against a fake token service, a recording Bot
 // Connector, a fake Graph and a fake loomcycle.
 
+import { readFileSync } from "node:fs";
 import http from "node:http";
 import net from "node:net";
 
@@ -60,6 +61,19 @@ describe("the delegated settings", () => {
     expect(() =>
       loadConfig({ ...base, TEAMS_BRIDGE_FILES_GRAPH: "delegated", TEAMS_BRIDGE_GRAPH_CONNECTION: CONNECTION, TEAMS_BRIDGE_APP_ID: "x' or 1 eq 1" }),
     ).toThrow(/TEAMS_BRIDGE_APP_ID/);
+  });
+});
+
+describe("the app package", () => {
+  it("names the bot's app and its SSO resource, and lets the sign-in page open", () => {
+    const manifest = JSON.parse(readFileSync(new URL("../appPackage/manifest.json", import.meta.url), "utf8")) as {
+      webApplicationInfo?: { id?: string; resource?: string };
+      validDomains?: string[];
+    };
+    // The resource is the Application ID URI the OAuth connection's token
+    // exchange URL must equal, else SSO fails with resourcematchfailed.
+    expect(manifest.webApplicationInfo).toEqual({ id: "${{BOT_ID}}", resource: "api://botid-${{BOT_ID}}" });
+    expect(manifest.validDomains).toEqual(["token.botframework.com"]);
   });
 });
 
