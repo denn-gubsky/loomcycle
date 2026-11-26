@@ -484,6 +484,43 @@ func OntologyPlanCode(err error) string {
 	return ""
 }
 
+// Reading ontology releases (Connector.ListOntologyReleases,
+// GetOntologyRelease, DiffOntologyReleases). Returned wrapped WithMessage;
+// OntologyReleaseCode names them.
+var (
+	// ErrOntologyReleaseInvalid — a malformed request: a sequence number that
+	// is not a positive integer, a diff without its from side.
+	ErrOntologyReleaseInvalid = errors.New("connector: invalid ontology release request")
+	// ErrOntologyReleaseForbidden — the caller is not an admin or a tenant
+	// operator: a release keeps the ontology's text after it was edited or
+	// erased, so it is read by the operator only.
+	ErrOntologyReleaseForbidden = errors.New("connector: ontology releases not permitted")
+	// ErrOntologyReleaseNotFound — no complete release has that sequence
+	// number, or (diff to current) the tenant has no ontology document.
+	ErrOntologyReleaseNotFound = errors.New("connector: no such ontology release")
+	// ErrOntologyReleaseUnavailable — this deployment has no SQL Memory.
+	ErrOntologyReleaseUnavailable = errors.New("connector: ontology releases need SQL Memory")
+)
+
+// OntologyReleaseCode is the stable wire code for a release-read refusal. ""
+// for an error that is none of the sentinels (an internal failure).
+func OntologyReleaseCode(err error) string {
+	for _, c := range []struct {
+		sentinel error
+		code     string
+	}{
+		{ErrOntologyReleaseInvalid, "invalid_request"},
+		{ErrOntologyReleaseForbidden, "forbidden"},
+		{ErrOntologyReleaseNotFound, "release_not_found"},
+		{ErrOntologyReleaseUnavailable, "unavailable"},
+	} {
+		if errors.Is(err, c.sentinel) {
+			return c.code
+		}
+	}
+	return ""
+}
+
 // Reviewing statements in bulk (Connector.ListReviewQueue, RuleStatements,
 // RevertRuling). Each is returned wrapped WithMessage; StatementReviewCode
 // names the sentinel for the wire.

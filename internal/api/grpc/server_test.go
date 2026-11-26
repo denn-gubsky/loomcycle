@@ -1361,6 +1361,20 @@ func (m *mockConnector) PlanOntology(_ context.Context, req connector.PlanOntolo
 	return m.planRes, m.planErr
 }
 
+// The release reads answer empty (connector.Connector); no transport but HTTP
+// reaches them yet (RFC GQ P3.5 adds MCP and gRPC).
+func (m *mockConnector) ListOntologyReleases(context.Context, connector.ListOntologyReleasesRequest) (connector.ListOntologyReleasesResult, error) {
+	return connector.ListOntologyReleasesResult{}, nil
+}
+
+func (m *mockConnector) GetOntologyRelease(context.Context, connector.GetOntologyReleaseRequest) (connector.GetOntologyReleaseResult, error) {
+	return connector.GetOntologyReleaseResult{}, nil
+}
+
+func (m *mockConnector) DiffOntologyReleases(context.Context, connector.DiffOntologyReleasesRequest) (connector.DiffOntologyReleasesResult, error) {
+	return connector.DiffOntologyReleasesResult{}, nil
+}
+
 // ListReviewQueue, RuleStatements and RevertRuling record the request and answer
 // with the configured result (connector.Connector).
 func (m *mockConnector) ListReviewQueue(_ context.Context, req connector.ListReviewQueueRequest) (connector.ListReviewQueueResult, error) {
