@@ -54,10 +54,10 @@ func TestLocal_TokenAttachesOnThePrivateSocketForOneTenant(t *testing.T) {
 	if len(ws) != 1 || ws[0].TenantID != "default" || ws[0].Shared {
 		t.Fatalf("workers = %+v, want one serving tenant default, not shared", ws)
 	}
-	if !d.Attached("local:default/local", "default") {
+	if !d.Attached("local:default/local", "default", "") {
 		t.Fatal("the local worker does not serve its tenant")
 	}
-	if d.Attached("local:default/local", "acme") {
+	if d.Attached("local:default/local", "acme", "") {
 		t.Fatal("the local worker serves a tenant it was not configured for")
 	}
 	if _, err := d.Place(context.Background(), dispatch.PlaceRequest{TenantID: "acme"}); err == nil {
@@ -153,13 +153,13 @@ func TestLocal_TheLocalWorkerServesTheEmptyTenantOfAnOpenModeInstall(t *testing.
 	if err != nil || len(got) != 1 || got[0] != id {
 		t.Fatalf("Place(empty tenant) = %v, %v; want the local worker", got, err)
 	}
-	if !d.Attached(id, "") || d.Attached(id, "acme") {
+	if !d.Attached(id, "", "") || d.Attached(id, "acme", "") {
 		t.Fatal("the local worker of the empty tenant must serve it and no other")
 	}
-	if err := d.Open(ctx, "", id, "ws1"); err != nil {
+	if err := d.Open(ctx, "", "", id, "ws1"); err != nil {
 		t.Fatalf("Open for the empty tenant: %v", err)
 	}
-	if err := d.Open(ctx, "acme", id, "ws2"); err == nil {
+	if err := d.Open(ctx, "acme", "", id, "ws2"); err == nil {
 		t.Fatal("an op of another tenant ran on the local worker")
 	}
 }
@@ -174,10 +174,10 @@ func TestPlace_ANetworkWorkerIsNeverPlacedForTheEmptyTenant(t *testing.T) {
 	if got, err := d.Place(context.Background(), dispatch.PlaceRequest{TenantID: ""}); err == nil {
 		t.Fatalf("Place(empty tenant) = %v on a network worker", got)
 	}
-	if d.Attached(acmeID("w1"), "") {
+	if d.Attached(acmeID("w1"), "", "") {
 		t.Fatal("a network worker reports serving the empty tenant")
 	}
-	if err := d.Open(context.Background(), "", acmeID("w1"), "ws1"); err == nil {
+	if err := d.Open(context.Background(), "", "", acmeID("w1"), "ws1"); err == nil {
 		t.Fatal("an op of the empty tenant ran on a network worker")
 	}
 }

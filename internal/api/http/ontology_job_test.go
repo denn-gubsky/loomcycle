@@ -137,7 +137,8 @@ func TestOntologyJobRoute_MemberIsRefused(t *testing.T) {
 // TestOntologyJobRoute_StatusAndResumeOfTheTenantsJob — with no job the status is
 // {"job": null} and a resume is 404 job_not_found; a class rename's finished job is the
 // status; a job left unfinished is resumed to done, a resume naming another job is 404
-// and leaves it unfinished, and a malformed body is 400 invalid_body.
+// and leaves it unfinished, and a resume without an id or with a malformed body is 400
+// invalid_body.
 func TestOntologyJobRoute_StatusAndResumeOfTheTenantsJob(t *testing.T) {
 	s, mi := ontologyFixture(t)
 	provision := installPlanOntology(t, s, mi)
@@ -147,7 +148,7 @@ func TestOntologyJobRoute_StatusAndResumeOfTheTenantsJob(t *testing.T) {
 	if job, present := out["job"]; code != http.StatusOK || out["tenant"] != mi.Tenant || !present || job != nil {
 		t.Fatalf("status with no job = %d %v, want 200 job null", code, out)
 	}
-	if code, out := s.jobRoute(t, op, http.MethodPost, "/v1/_ontology/job/resume", ""); code != http.StatusNotFound || out["code"] != "job_not_found" {
+	if code, out := s.jobRoute(t, op, http.MethodPost, "/v1/_ontology/job/resume", `{"id":"some-job"}`); code != http.StatusNotFound || out["code"] != "job_not_found" {
 		t.Errorf("resume with no job = %d %v, want 404 job_not_found", code, out)
 	}
 
@@ -165,6 +166,14 @@ func TestOntologyJobRoute_StatusAndResumeOfTheTenantsJob(t *testing.T) {
 	}
 	if _, out := s.jobRoute(t, op, http.MethodGet, "/v1/_ontology/job", ""); dig(out, "job", "state") != "running" {
 		t.Errorf("after a refused resume the job = %v, want still running", out)
+	}
+	for _, body := range []string{"", "{}", `{"id":""}`, `{"id":null}`} {
+		if code, out := s.jobRoute(t, op, http.MethodPost, "/v1/_ontology/job/resume", body); code != http.StatusBadRequest || out["code"] != "invalid_body" {
+			t.Errorf("a resume without an id (%q) = %d %v, want 400 invalid_body", body, code, out)
+		}
+	}
+	if _, out := s.jobRoute(t, op, http.MethodGet, "/v1/_ontology/job", ""); dig(out, "job", "state") != "running" {
+		t.Errorf("after a resume without an id the job = %v, want still running", out)
 	}
 	if code, out := s.jobRoute(t, op, http.MethodPost, "/v1/_ontology/job/resume", `{"id":1}`); code != http.StatusBadRequest || out["code"] != "invalid_body" {
 		t.Errorf("a malformed body = %d %v, want 400 invalid_body", code, out)

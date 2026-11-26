@@ -66,7 +66,8 @@ func TestOntologyTool_JobOpsAreRefusedAMemberAndAnIsolatedUser(t *testing.T) {
 // ontology op=job and op=resume_job hand the tenant (and the resume's id) to the
 // connector as HTTP's routes do and return its answer unchanged, {"job": null}
 // included; a refusal comes back as HTTP's {code, error}, an internal failure without
-// its text, and an id that is not a string is invalid_request before the connector.
+// its text, and a missing id or one that is not a string is invalid_request before the
+// connector.
 func TestOntologyTool_JobOpsMatchTheConnector(t *testing.T) {
 	res := connector.OntologyJobResult{Tenant: "acme", Job: &connector.OntologyJobStatus{
 		ID: "j1", Kind: "concept_retag", Entry: "c1", From: []string{"topics/risk"}, To: "topics/reporting/risk",
@@ -120,6 +121,11 @@ func TestOntologyTool_JobOpsMatchTheConnector(t *testing.T) {
 	if code, msg := refusal(call(`{"op":"resume_job","id":7}`)); code != "invalid_request" || mc.jobResumeReq != (connector.ResumeOntologyJobRequest{}) {
 		t.Errorf("an id that is not a string = %s %q, connector got %+v; want invalid_request before the connector", code, msg, mc.jobResumeReq)
 	}
+	for _, args := range []string{`{"op":"resume_job"}`, `{"op":"resume_job","id":""}`, `{"op":"resume_job","id":null}`} {
+		if code, msg := refusal(call(args)); code != "invalid_request" || mc.jobResumeReq != (connector.ResumeOntologyJobRequest{}) {
+			t.Errorf("%s = %s %q, connector got %+v; want invalid_request before the connector (a resume names its job)", args, code, msg, mc.jobResumeReq)
+		}
+	}
 	for _, tc := range []struct {
 		err  error
 		code string
@@ -131,7 +137,7 @@ func TestOntologyTool_JobOpsMatchTheConnector(t *testing.T) {
 		{errors.New("open /var/lib/secret.db: denied"), "job_failed"},
 	} {
 		mc.jobErr = tc.err
-		for _, args := range []string{`{"op":"job"}`, `{"op":"resume_job"}`} {
+		for _, args := range []string{`{"op":"job"}`, `{"op":"resume_job","id":"j1"}`} {
 			code, msg := refusal(call(args))
 			if code != tc.code {
 				t.Errorf("%s with %v: code %q (%s), want %s", args, tc.err, code, msg, tc.code)

@@ -185,7 +185,7 @@ func (m *Manager) pin(ctx context.Context, o Owner, req OpenRequest, r store.Wor
 	if err := grantCovers(req.Engine, req.Egress, r); err != nil {
 		return store.WorkspaceRow{}, err
 	}
-	if !m.disp.Attached(r.WorkerID, r.TenantID) {
+	if !m.disp.Attached(r.WorkerID, r.TenantID, r.UserID) {
 		return store.WorkspaceRow{}, dispatch.ErrWorkerLost
 	}
 	// Nothing of the last run may still run in it (a park its worker never
@@ -279,7 +279,7 @@ func (m *Manager) unpin(ctx context.Context, r store.WorkspaceRow) error {
 		}
 		return fmt.Errorf("workspace %s moved during its release", r.ID)
 	}
-	if m.disp.Attached(r.WorkerID, r.TenantID) {
+	if m.disp.Attached(r.WorkerID, r.TenantID, r.UserID) {
 		if err := m.park(ctx, r); err != nil {
 			m.log.Warn("cannot end what runs in a parked workspace; its next pin ends it", "workspace_id", r.ID, "err", err)
 		}
@@ -289,7 +289,7 @@ func (m *Manager) unpin(ctx context.Context, r store.WorkspaceRow) error {
 
 // park asks r's worker to end what runs in it and keep its files.
 func (m *Manager) park(ctx context.Context, r store.WorkspaceRow) error {
-	_, err := m.disp.Do(ctx, r.WorkerID, dispatch.Request{TenantID: r.TenantID, WorkspaceID: r.ID, Op: workspace.OpPark})
+	_, err := m.disp.Do(ctx, r.WorkerID, dispatch.Request{TenantID: r.TenantID, UserID: r.UserID, WorkspaceID: r.ID, Op: workspace.OpPark})
 	return err
 }
 
@@ -334,4 +334,34 @@ func (m *Manager) DiscardParked(ctx context.Context, o Owner, name, engine strin
 		return err
 	}
 	return m.remove(ctx, r)
+}
+
+// EraseDurable removes every durable workspace of user in tenant, pinned or
+// parked, as a discard does (RFC GW P12 ruling Q2: a user's erasure), and
+// returns how many it removed. A worker away removes the directory at its
+// next attach. It is the erasure's: no grant is asked, the operator's
+// erasure is.
+func (m *Manager) EraseDurable(ctx context.Context, tenantID, userID string) (int, error) {
+	if tenantID == "" && userID == "" {
+		return 0, nil
+	}
+	rows, err := m.store.WorkspaceListDurableByUser(ctx, tenantID, userID)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	var errs []error
+	for _, r := range rows {
+		// The query asks for these already; a store that ever answered
+		// wider must not let one user's erasure reach another's.
+		if r.TenantID != tenantID || r.UserID != userID || r.Lifetime != store.WorkspaceLifetimeDurable {
+			continue
+		}
+		if err := m.remove(ctx, r); err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		n++
+	}
+	return n, errors.Join(errs...)
 }

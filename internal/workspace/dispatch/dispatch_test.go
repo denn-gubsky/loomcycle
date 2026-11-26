@@ -127,26 +127,26 @@ func TestDo_OpenStatusRemoveOnARealWorker(t *testing.T) {
 	waitAttached(t, d, id)
 	ctx := context.Background()
 
-	if err := d.Open(ctx, "acme", id, "ws1"); err != nil {
+	if err := d.Open(ctx, "acme", "", id, "ws1"); err != nil {
 		t.Fatal(err)
 	}
 	if !exists(filepath.Join(root, "ws1")) {
 		t.Fatal("open made no directory")
 	}
-	if ok, err := d.Status(ctx, "acme", id, "ws1"); err != nil || !ok {
+	if ok, err := d.Status(ctx, "acme", "", id, "ws1"); err != nil || !ok {
 		t.Fatalf("status = %v, %v", ok, err)
 	}
 	// An open repeated is harmless.
-	if err := d.Open(ctx, "acme", id, "ws1"); err != nil {
+	if err := d.Open(ctx, "acme", "", id, "ws1"); err != nil {
 		t.Fatalf("a repeated open: %v", err)
 	}
-	if err := d.Open(ctx, "acme", id, "ws2"); dispatch.ClassOf(err) != workspace.ClassAtCapacity {
+	if err := d.Open(ctx, "acme", "", id, "ws2"); dispatch.ClassOf(err) != workspace.ClassAtCapacity {
 		t.Fatalf("an open past capacity: %v, want at_capacity", err)
 	}
-	if err := d.Remove(ctx, "acme", id, "ws1"); err != nil {
+	if err := d.Remove(ctx, "acme", "", id, "ws1"); err != nil {
 		t.Fatal(err)
 	}
-	if ok, err := d.Status(ctx, "acme", id, "ws1"); err != nil || ok || exists(filepath.Join(root, "ws1")) {
+	if ok, err := d.Status(ctx, "acme", "", id, "ws1"); err != nil || ok || exists(filepath.Join(root, "ws1")) {
 		t.Fatalf("after remove: status = %v, %v", ok, err)
 	}
 	if _, err := d.Do(ctx, id, dispatch.Request{TenantID: "acme", WorkspaceID: "ws1", Op: "launch"}); dispatch.ClassOf(err) != workspace.ClassUnsupportedOp {
@@ -176,7 +176,7 @@ func TestPlace_ATenantWorkerServesOnlyItsTenant(t *testing.T) {
 	}
 	// A caller holding the worker's id still cannot send it another
 	// tenant's op.
-	if err := d.Open(ctx, "other", acmeID("w1"), "ws9"); dispatch.ClassOf(err) != workspace.ClassNoWorker {
+	if err := d.Open(ctx, "other", "", acmeID("w1"), "ws9"); dispatch.ClassOf(err) != workspace.ClassNoWorker {
 		t.Fatalf("another tenant's op: %v, want no_worker", err)
 	}
 	if exists(filepath.Join(root, "ws9")) {
@@ -226,7 +226,7 @@ func TestPool_Refills(t *testing.T) {
 	realWorker(t, target, tokAcme, "w1", worker.Options{IdleStreams: 1})
 	waitAttached(t, d, acmeID("w1"))
 	for i := range 20 {
-		if _, err := d.Status(context.Background(), "acme", acmeID("w1"), "ws1"); err != nil {
+		if _, err := d.Status(context.Background(), "acme", "", acmeID("w1"), "ws1"); err != nil {
 			t.Fatalf("op %d: %v", i, err)
 		}
 	}
@@ -236,7 +236,7 @@ func TestPool_Refills(t *testing.T) {
 	f.attach("f1")
 	f.heartbeat(100 * time.Millisecond)
 	s := f.stream("f1")
-	go func() { _, _ = d.Status(context.Background(), "other", otherID("f1"), "ws1") }()
+	go func() { _, _ = d.Status(context.Background(), "other", "", otherID("f1"), "ws1") }()
 	if _, err := s.Recv(); err != nil { // the OpStart; never answered
 		t.Fatal(err)
 	}
@@ -346,7 +346,7 @@ func TestDo_AKilledWorkerFailsItsOpWithWorkerLost(t *testing.T) {
 				t.Fatalf("deaths = %d, want 1", d.Stats().Deaths)
 			}
 			// An op for a worker that is gone answers worker_lost at once.
-			if err := d.Open(context.Background(), "acme", acmeID("f1"), "ws1"); !errors.Is(err, dispatch.ErrWorkerLost) {
+			if err := d.Open(context.Background(), "acme", "", acmeID("f1"), "ws1"); !errors.Is(err, dispatch.ErrWorkerLost) {
 				t.Fatalf("an op for a gone worker: %v", err)
 			}
 		})
@@ -497,7 +497,7 @@ func TestAttach_AnUnverifiableTokenIsRetriedNeverServed(t *testing.T) {
 	if n := len(d.Workers()); n != 0 {
 		t.Fatalf("%d workers attached on a token that does not resolve", n)
 	}
-	if err := d.Open(context.Background(), "acme", acmeID("w1"), "ws1"); !errors.Is(err, dispatch.ErrWorkerLost) {
+	if err := d.Open(context.Background(), "acme", "", acmeID("w1"), "ws1"); !errors.Is(err, dispatch.ErrWorkerLost) {
 		t.Fatalf("an op while the token does not resolve: %v", err)
 	}
 	select {
@@ -526,7 +526,7 @@ func TestAttach_ARotatedTokenKeepsTheWorkerAndItsWorkspaces(t *testing.T) {
 
 	realWorker(t, target, tokAcme2, "w1", worker.Options{Root: root, IdleStreams: 1})
 	waitAttached(t, d, id)
-	if ok, err := d.Status(context.Background(), "acme", id, "ws1"); err != nil || !ok {
+	if ok, err := d.Status(context.Background(), "acme", "", id, "ws1"); err != nil || !ok {
 		t.Fatalf("the workspace after the rotation: status = %v, %v", ok, err)
 	}
 	if !st.has("ws1") || st.state("ws1") != store.WorkspaceReady {
@@ -698,12 +698,9 @@ func TestAttach_MarksTheWorkersWorkspacesAsSeen(t *testing.T) {
 	waitFor(t, "two touches", func() bool { return st.touched() >= 2 })
 }
 
-// RFC GW P13: until the dispatcher serves a personal worker by its user
-// (the user worker id, placement and ops held to (tenant, user)), a personal
-// worker token attaches nothing. Read as a tenant worker it would take a
-// "tenant:<T>/..." id, and with it another worker's id and rows, and serve
-// every user of the tenant.
-func TestAttach_APersonalWorkerTokenIsRefusedUntilServedByItsUser(t *testing.T) {
+// RFC GW P13: with workspace.personal_workers off (Options.PersonalWorkers
+// unset), a personal worker token attaches nothing.
+func TestAttach_APersonalWorkerTokenIsRefusedWithPersonalWorkersOff(t *testing.T) {
 	d, target := core(t, newMemStore(), dispatch.Options{})
 	f := dialFake(t, target, tokPersonal)
 	_, err := f.hello(&workspacepb.Hello{WorkerId: "w1", ProtocolVersion: workspace.ProtocolVersion, Engine: workspace.EngineHost, Capacity: 4})

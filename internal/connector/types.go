@@ -1671,8 +1671,9 @@ type GetOntologyJobRequest struct {
 }
 
 // ResumeOntologyJobRequest gives the tenant's unfinished ontology job one slice of
-// work. ID, when set, must be that job's id: a resume aimed at a job that has since
-// finished is refused rather than carrying on another one.
+// work. ID is required and must be that job's id: a resume aimed at a job that has
+// since finished is refused rather than carrying on another one. An empty ID is
+// ErrOntologyJobIDRequired.
 type ResumeOntologyJobRequest struct {
 	Tenant string `json:"tenant,omitempty"`
 	ID     string `json:"id,omitempty"`

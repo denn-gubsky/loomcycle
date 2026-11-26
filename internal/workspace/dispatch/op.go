@@ -62,7 +62,11 @@ func ClassOf(err error) string {
 type Request struct {
 	// TenantID is the tenant the op is for. Do refuses a worker that does
 	// not serve it, whatever the caller read from a row.
-	TenantID    string
+	TenantID string
+	// UserID is the user of the workspace's row. A personal worker (RFC GW
+	// P13) takes an op only for its own user; a request without one is
+	// refused there (D-P13-12).
+	UserID      string
 	WorkspaceID string
 	Op          string
 	// Args is the op's JSON object; nil for none.
@@ -141,10 +145,11 @@ func (d *Dispatcher) target(workerID string, req Request) (*worker, error) {
 	if w == nil {
 		return nil, ErrWorkerLost
 	}
-	if !w.servesTenant(req.TenantID) {
+	if !w.servesUser(req.TenantID, req.UserID) {
 		// Placement never puts a workspace here; a row naming this worker
-		// for another tenant is a bug or a forgery, and nothing is sent.
-		return nil, &OpError{Class: workspace.ClassNoWorker, Detail: "the worker does not serve this tenant"}
+		// for another tenant, or another user on a personal worker, is a bug
+		// or a forgery, and nothing is sent.
+		return nil, &OpError{Class: workspace.ClassNoWorker, Detail: "the worker does not serve this tenant or user"}
 	}
 	return w, nil
 }
@@ -333,14 +338,14 @@ func doneResult(dn *workspacepb.OpDone, out []byte) result {
 
 // Open makes workspace id's directory on the worker. An at_capacity answer
 // means the caller places it on the next worker.
-func (d *Dispatcher) Open(ctx context.Context, tenantID, workerID, id string) error {
-	return d.OpenWith(ctx, tenantID, workerID, id, workspace.OpenArgs{})
+func (d *Dispatcher) Open(ctx context.Context, tenantID, userID, workerID, id string) error {
+	return d.OpenWith(ctx, tenantID, userID, workerID, id, workspace.OpenArgs{})
 }
 
 // OpenWith is Open with the workspace's settings, its disk quota (RFC GW
 // P2); zero values are the worker's defaults.
-func (d *Dispatcher) OpenWith(ctx context.Context, tenantID, workerID, id string, args workspace.OpenArgs) error {
-	req := Request{TenantID: tenantID, WorkspaceID: id, Op: workspace.OpOpen}
+func (d *Dispatcher) OpenWith(ctx context.Context, tenantID, userID, workerID, id string, args workspace.OpenArgs) error {
+	req := Request{TenantID: tenantID, UserID: userID, WorkspaceID: id, Op: workspace.OpOpen}
 	if args != (workspace.OpenArgs{}) {
 		raw, err := json.Marshal(args)
 		if err != nil {
@@ -354,14 +359,14 @@ func (d *Dispatcher) OpenWith(ctx context.Context, tenantID, workerID, id string
 
 // Remove deletes workspace id's directory on the worker; one already gone is
 // success.
-func (d *Dispatcher) Remove(ctx context.Context, tenantID, workerID, id string) error {
-	_, err := d.Do(ctx, workerID, Request{TenantID: tenantID, WorkspaceID: id, Op: workspace.OpRemove})
+func (d *Dispatcher) Remove(ctx context.Context, tenantID, userID, workerID, id string) error {
+	_, err := d.Do(ctx, workerID, Request{TenantID: tenantID, UserID: userID, WorkspaceID: id, Op: workspace.OpRemove})
 	return err
 }
 
 // Status reports whether workspace id's directory exists on the worker.
-func (d *Dispatcher) Status(ctx context.Context, tenantID, workerID, id string) (exists bool, err error) {
-	res, err := d.Do(ctx, workerID, Request{TenantID: tenantID, WorkspaceID: id, Op: workspace.OpStatus, MaxOutput: 4 << 10})
+func (d *Dispatcher) Status(ctx context.Context, tenantID, userID, workerID, id string) (exists bool, err error) {
+	res, err := d.Do(ctx, workerID, Request{TenantID: tenantID, UserID: userID, WorkspaceID: id, Op: workspace.OpStatus, MaxOutput: 4 << 10})
 	if err != nil {
 		return false, err
 	}

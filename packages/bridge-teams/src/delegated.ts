@@ -55,10 +55,17 @@ export function pendingKey(conversationId: string, botUserId: string): string {
 }
 
 interface Entry<TRef> {
-  msg: PendingMessage<TRef>;
-  /** When the card was sent: the message waits until this plus the TTL. */
+  /** The file-like message waiting, if any. A text message is never held:
+   *  it goes to the agent at once, and its entry only records the card. */
+  msg?: PendingMessage<TRef>;
+  /** When the card was sent: the message waits until this plus the TTL, and
+   *  no second card goes out before then. */
   since: number;
 }
+
+/** What a completed sign-in finds waiting: a message to process, or only
+ *  the card (the person had written text, which went on at once). */
+export type Taken<TRef> = { msg: PendingMessage<TRef> } | { msg?: undefined };
 
 export interface PendingOptions {
   ttlMs?: number;
@@ -66,10 +73,11 @@ export interface PendingOptions {
   now?: () => number;
 }
 
-/** PendingSignIns holds at most one message per person and conversation, for
- *  at most ttlMs after its card was sent, and at most `max` in all (the
- *  oldest goes first). A bridge restart forgets them: the person is then
- *  asked to attach the file again after signing in. */
+/** PendingSignIns records, per person and conversation, the sign-in card
+ *  sent and at most one file-like message waiting for it, for at most ttlMs
+ *  after the card, and at most `max` in all (the oldest goes first). A
+ *  bridge restart forgets them: the person is then asked to attach the file
+ *  again after signing in. */
 export class PendingSignIns<TRef> {
   private readonly entries = new Map<string, Entry<TRef>>();
   private readonly ttlMs: number;
@@ -82,32 +90,37 @@ export class PendingSignIns<TRef> {
     this.now = o.now ?? Date.now;
   }
 
-  /** hold keeps msg for key. It is true when nobody was waiting there, so a
-   *  card should be sent; false when it replaced a message still waiting for
-   *  the card already sent, which keeps its time. */
-  hold(key: string, msg: PendingMessage<TRef>): boolean {
+  /** hold records that key needs a sign-in, keeping msg (a file-like
+   *  message) when given. It is true when no card is outstanding there, so
+   *  one should be sent; false when a card already is, and then msg, when
+   *  given, replaces what waited, keeping the card's time. Without msg (a
+   *  text message, which goes on at once) a waiting message stays. */
+  hold(key: string, msg?: PendingMessage<TRef>): boolean {
     const now = this.now();
     this.prune(now);
     const waiting = this.entries.get(key);
     if (waiting) {
-      waiting.msg = msg;
+      if (msg) waiting.msg = msg;
       return false;
     }
     if (this.entries.size >= this.max) {
       const oldest = this.entries.keys().next().value;
       if (oldest !== undefined) this.entries.delete(oldest);
     }
-    this.entries.set(key, { msg, since: now });
+    this.entries.set(key, msg ? { msg, since: now } : { since: now });
     return true;
   }
 
-  /** take removes and returns the message waiting for key, or undefined when
-   *  none is, or it waited too long. */
-  take(key: string): PendingMessage<TRef> | undefined {
+  /** take removes what key recorded. undefined when nothing was recorded
+   *  (or the bridge restarted), or a message waited too long; { msg } for a
+   *  message still waiting; {} when only the card was (nothing to redo). */
+  take(key: string): Taken<TRef> | undefined {
     const e = this.entries.get(key);
     this.entries.delete(key);
-    if (!e || this.now() - e.since >= this.ttlMs) return undefined;
-    return e.msg;
+    if (!e) return undefined;
+    if (!e.msg) return {};
+    if (this.now() - e.since >= this.ttlMs) return undefined;
+    return { msg: e.msg };
   }
 
   drop(key: string): void {

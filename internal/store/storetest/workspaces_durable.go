@@ -198,6 +198,9 @@ func testWorkspaceCountDurableByUser(t *testing.T, s store.Store) {
 		if n, err := s.WorkspaceCountDurableByUser(ctx, c.tenant, c.user); err != nil || n != c.want {
 			t.Errorf("durable of %s/%s = %d, %v; want %d", c.tenant, c.user, n, err, c.want)
 		}
+		if l, err := s.WorkspaceListDurableByUser(ctx, c.tenant, c.user); err != nil || len(l) != c.want {
+			t.Errorf("durable list of %s/%s = %d, %v; want %d", c.tenant, c.user, len(l), err, c.want)
+		}
 	}
 }
 

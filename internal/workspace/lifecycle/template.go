@@ -250,7 +250,7 @@ func (m *Manager) packTemplate(ctx context.Context, src store.WorkspaceRow, chec
 	h := sha256.New()
 	cw := &countWriter{w: io.MultiWriter(f, h)}
 	limit := m.templateMaxBytes()
-	_, err = m.disp.Stream(ctx, src.WorkerID, dispatch.Request{TenantID: src.TenantID, WorkspaceID: src.ID,
+	_, err = m.disp.Stream(ctx, src.WorkerID, dispatch.Request{TenantID: src.TenantID, UserID: src.UserID, WorkspaceID: src.ID,
 		Op: workspace.OpTemplatePack, Args: args, MaxOutput: limit}, nil, cw)
 	if dispatch.ClassOf(err) == workspace.ClassOutputTooLarge {
 		return "", 0, fmt.Errorf("%w: the template passes %d bytes (workspace.template.max_mb); nothing was kept", ErrTemplateTooLarge, limit)
@@ -436,7 +436,7 @@ func (m *Manager) openFromTemplate(ctx context.Context, o Owner, t store.Workspa
 	if err != nil {
 		return err
 	}
-	req := dispatch.Request{TenantID: o.TenantID, WorkspaceID: id, Op: workspace.OpTemplateOpen, Args: args, MaxOutput: maxCheckpointAnswer}
+	req := dispatch.Request{TenantID: o.TenantID, UserID: o.UserID, WorkspaceID: id, Op: workspace.OpTemplateOpen, Args: args, MaxOutput: maxCheckpointAnswer}
 	_, err = m.disp.Do(ctx, workerID, req)
 	if dispatch.ClassOf(err) != workspace.ClassTemplateMissing {
 		return err
@@ -473,7 +473,7 @@ func (m *Manager) sendTemplate(ctx context.Context, o Owner, t store.WorkspaceTe
 		return err
 	}
 	var buf bytes.Buffer
-	_, err = m.disp.Stream(ctx, workerID, dispatch.Request{TenantID: o.TenantID, WorkspaceID: id, Op: workspace.OpTemplatePut,
+	_, err = m.disp.Stream(ctx, workerID, dispatch.Request{TenantID: o.TenantID, UserID: o.UserID, WorkspaceID: id, Op: workspace.OpTemplatePut,
 		Args: args, MaxOutput: maxAnswer, InputSize: st.Size()}, f, &buf)
 	return err
 }
