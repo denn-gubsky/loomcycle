@@ -88,7 +88,8 @@ switch for the whole server, not per tenant:
 - `LOOMCYCLE_HTTP_HOST_ALLOWLIST` is a single list: the hosts every tenant's
   agents may fetch from. Name hosts; `*` lets any user's agent fetch any
   public URL. Private addresses stay blocked either way.
-- `LOOMCYCLE_BASH_ENABLED=1` should stay off on a server with more than one
+- `LOOMCYCLE_BASH_ENABLED=1` is deprecated (a future release removes it;
+  `docs/MIGRATING-FROM-BASH.md`), and should stay off on a server with more than one
   tenant. It gives every user's chat agent an unsandboxed shell in the shared
   container once the agent has a writable volume. The shell starts in that
   volume and is not confined to it: it reaches other tenants' directories by

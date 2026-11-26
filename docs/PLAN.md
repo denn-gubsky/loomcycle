@@ -720,6 +720,8 @@ First-party integrations the runtime makes more valuable:
 
 ### Operator posture: sandbox vs agentic, no profile flag
 
+> **Later:** `LOOMCYCLE_BASH_ENABLED` and the `Bash` tool are deprecated, and RFC GW P15 removes them. In the agentic recipe, commands now run in a workspace: `workspace.mode: local` on a single trusted machine, or workspace workers, with the `Workspace` tool and a `workspace` grant. See [MIGRATING-FROM-BASH.md](MIGRATING-FROM-BASH.md).
+
 v1.0 keeps a single binary and a single config schema. There is **no** `--profile=sandbox` flag and no separate `loomcycle-server` / `loomcycle-agentic` binaries. Operators compose their own posture by setting individual env vars and YAML keys; the docs ship a cookbook of common shapes.
 
 **Sandbox recipe** — server-style deployment, agents process untrusted prompts, no host filesystem reach:

@@ -39,6 +39,9 @@
 # can set them. They stay lines in your environment file, each one a
 # deliberate opt-in. The file tools also need a volume, which names
 # a directory on your machine: add a `volumes:` entry to your own loomcycle.yaml.
+# Bash and Bashbox are deprecated (RFC GW P15 removes them): to run commands,
+# set `workspace.mode: local` in your loomcycle.yaml instead, and the chat
+# agents use their Workspace tool (docs/MIGRATING-FROM-BASH.md).
 #
 # No agent here drains the memory queue: add the `memory` bundle
 # (`presets: [personal, memory]`) and enable its schedule if the chat

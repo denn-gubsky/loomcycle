@@ -121,6 +121,10 @@ var layers = []layer{
 			// An archive's walk under File op=unpack's bounds (RFC GW D34):
 			// the core and a workspace worker's conversion child share it.
 			"internal/files/unpack",
+			// A personal workspace worker's grant key (RFC GW P13): stdlib
+			// only, so the dispatcher and the snapshot restore check build
+			// it from one function.
+			"internal/workerid",
 			// The file tools' operations on a given root (RFC GW P1): stdlib
 			// only, so a workspace worker runs them without the tools package.
 			"internal/fsops",

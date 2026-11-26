@@ -101,6 +101,12 @@ type GitGrant struct {
 	// OnDefaultBranch is told the forge's default branch (a full ref) when
 	// an advertisement names it.
 	OnDefaultBranch func(ref string)
+	// WatchRef, when set, is a full ref the core looks for in the forge's
+	// advertisement as it passes; OnWatchedRef is told when it is there.
+	// The forge's own answer decides whether a branch exists, never the
+	// worker's word (the owner's Q2).
+	WatchRef     string
+	OnWatchedRef func()
 }
 
 // GitRequest is what the worker described: a shape, its headers and body.
@@ -219,6 +225,9 @@ func (p *GitProxy) Do(ctx context.Context, g GitGrant, r GitRequest) (*Response,
 	}
 	if g.OnDefaultBranch != nil && (r.Shape == GitAdvertiseUpload || r.Shape == GitAdvertiseReceive) {
 		out = &advertSniffer{rc: out, report: g.OnDefaultBranch}
+	}
+	if g.WatchRef != "" && g.OnWatchedRef != nil && (r.Shape == GitAdvertiseUpload || r.Shape == GitAdvertiseReceive) {
+		out = &refWatcher{rc: out, want: g.WatchRef, seen: g.OnWatchedRef}
 	}
 	return &Response{Status: resp.StatusCode, Header: gitResponseHeader(resp.Header), Body: out}, nil
 }
@@ -463,3 +472,71 @@ func defaultBranchOf(b []byte) (ref string, ok, finished bool) {
 		return "", false, true
 	}
 }
+
+// refWatcher reads an advertisement's pkt-lines as they pass and reports
+// when one advertises the watched ref. It holds at most one line, and stops
+// at the flush that ends the refs. It changes nothing.
+type refWatcher struct {
+	rc   io.ReadCloser
+	want string
+	seen func()
+	buf  []byte
+	// flushes counts the flushes passed: the service line's comes first.
+	flushes int
+	done    bool
+}
+
+func (w *refWatcher) Read(p []byte) (int, error) {
+	n, err := w.rc.Read(p)
+	if !w.done && n > 0 {
+		w.buf = append(w.buf, p[:n]...)
+		w.scan()
+	}
+	return n, err
+}
+
+func (w *refWatcher) scan() {
+	for !w.done && len(w.buf) >= 4 {
+		if !isLowerHex(string(w.buf[:4])) {
+			w.done = true
+			return
+		}
+		var n int
+		_, _ = fmt.Sscanf(string(w.buf[:4]), "%04x", &n)
+		if n == 0 {
+			w.buf = w.buf[4:]
+			w.flushes++
+			// A smart-HTTP advertisement is "# service" and a flush, then
+			// the refs and a flush; without the service line, one flush.
+			if w.flushes >= 2 {
+				w.done = true
+			}
+			continue
+		}
+		if n < 4 || n > maxPktLen {
+			w.done = true
+			return
+		}
+		if len(w.buf) < n {
+			return
+		}
+		line := string(w.buf[4:n])
+		w.buf = w.buf[n:]
+		if strings.HasPrefix(line, "# service=") {
+			continue
+		}
+		if w.flushes == 0 {
+			// No service line: this advertisement's refs end at the first
+			// flush.
+			w.flushes = 1
+		}
+		line, _, _ = strings.Cut(strings.TrimSuffix(line, "\n"), "\x00")
+		if _, name, ok := strings.Cut(line, " "); ok && name == w.want {
+			w.done = true
+			w.buf = nil
+			w.seen()
+		}
+	}
+}
+
+func (w *refWatcher) Close() error { return w.rc.Close() }

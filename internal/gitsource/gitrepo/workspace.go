@@ -52,6 +52,11 @@ var mirrorKeyRe = regexp.MustCompile(`^[0-9a-f]{32}$`)
 // ValidMirrorKey reports whether k is a key MirrorKey makes.
 func ValidMirrorKey(k string) bool { return mirrorKeyRe.MatchString(k) }
 
+// ValidBranchName reports whether name is a short branch name this package
+// creates: the core checks a workspace's own branch with it before the open
+// reaches the network.
+func ValidBranchName(name string) bool { return validBranchName(name) == nil }
+
 // errWorkspaceNetwork refuses a network op a workspace's repository does not
 // take: its objects come from the mirror, which Mirror.Fetch fills.
 var errWorkspaceNetwork = fmt.Errorf("%w: a workspace fetches through its mirror", ErrInvalidArgument)

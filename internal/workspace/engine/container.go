@@ -68,6 +68,10 @@ type ContainerOptions struct {
 	// command writes and files the worker writes have one owner. Never
 	// root.
 	User string
+	// MirrorKeyFor names the mirror of a git workspace (RFC GW §4.2), "" for
+	// any other; its objects are mounted read-only at /mirror/objects in
+	// the workspace's session. nil mounts none.
+	MirrorKeyFor func(workspace string) string
 	// HostRoot is the worker's root as the container daemon sees it, when
 	// the two differ (a worker that runs in a container itself and drives
 	// the host's daemon); empty is the root as the worker sees it.
@@ -207,6 +211,10 @@ func (c *Container) session(workspace string) string {
 	return "loomws-" + c.opt.WorkerKey + "-" + workspace
 }
 
+// MirrorObjectsMount is where a git workspace's session sees its mirror's
+// objects, read-only.
+const MirrorObjectsMount = "/mirror/objects"
+
 // hardening is the part of a session's run arguments that confines it. The
 // probe runs under it too, so what the worker reports is what a session has.
 //
@@ -244,7 +252,7 @@ func (c *Container) hardening(network string) []string {
 }
 
 // runArgs are the arguments that start workspace's session over hostDir.
-func (c *Container) runArgs(workspace, hostDir string) []string {
+func (c *Container) runArgs(workspace, hostDir, mirrorObjects string) []string {
 	a := []string{"run", "-d", "--name", c.session(workspace),
 		"--label", labelWorker + "=" + c.opt.WorkerKey,
 		"--label", "loomcycle.workspace=" + workspace,
@@ -252,6 +260,11 @@ func (c *Container) runArgs(workspace, hostDir string) []string {
 	a = append(a, c.hardening(c.sessionNetwork(workspace))...)
 	if c.egress != nil {
 		a = append(a, "-v", filepath.Join(c.egress.hostDir, cargoConfigFile)+":"+cargoConfigMount+":ro")
+	}
+	if mirrorObjects != "" && !strings.ContainsAny(mirrorObjects, ":,") {
+		// Read-only: a command cannot damage what other workspaces of the
+		// repository rest on (RFC GW §4.2).
+		a = append(a, "-v", mirrorObjects+":"+MirrorObjectsMount+":ro")
 	}
 	a = append(a, "-v", hostDir+":"+WorkspaceMount+":rw", "--workdir", WorkspaceMount, c.opt.Image, "sleep", "infinity")
 	return a
@@ -288,6 +301,21 @@ func (c *Container) Probe(ctx context.Context) ([]string, error) {
 		}
 	}
 	return tc, nil
+}
+
+// ProbeBrowser reports whether the session image carries the browser a
+// screenshot runs (chromium on its PATH), by starting a session of it as
+// Probe does. Only the one word the probe prints is taken.
+func (c *Container) ProbeBrowser(ctx context.Context) (bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
+	args := append([]string{"run", "--rm"}, c.hardening("none")...)
+	args = append(args, c.opt.Image, "/bin/sh", "-c", `command -v chromium >/dev/null 2>&1 && echo browser; true`)
+	out, err := c.cli(ctx, args...)
+	if err != nil {
+		return false, fmt.Errorf("container engine: starting a session of %s: %w", c.opt.Image, err)
+	}
+	return slices.Contains(strings.Fields(string(out)), "browser"), nil
 }
 
 // Reconcile removes every session of this worker: at start, those a crash
@@ -347,7 +375,17 @@ func (c *Container) ensure(ctx context.Context, workspace, root string) error {
 	if err := c.egressUp(ctx, workspace); err != nil {
 		return err
 	}
-	if _, err := c.cli(ctx, c.runArgs(workspace, hostDir)...); err != nil {
+	mirror := ""
+	if c.opt.MirrorKeyFor != nil {
+		if key := c.opt.MirrorKeyFor(workspace); key != "" {
+			base := filepath.Dir(hostDir)
+			if c.opt.HostRoot != "" {
+				base = c.opt.HostRoot
+			}
+			mirror = filepath.Join(base, ".loomcycle-mirrors", key, "objects")
+		}
+	}
+	if _, err := c.cli(ctx, c.runArgs(workspace, hostDir, mirror)...); err != nil {
 		return fmt.Errorf("starting the session: %w", err)
 	}
 	return nil

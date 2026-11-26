@@ -6,7 +6,7 @@ The `Workspace` tool gives you a **workspace**: a directory on a workspace
 worker, a machine apart from the runtime, where you can run shell commands
 (`exec`), run code in an interpreter that keeps its variables (`run_cell`),
 read and change files (`read`, `write`, `edit`, `glob`, `grep`), and look at
-pictures it holds (`view`).
+pictures it holds (`view`) or the pages its server serves (`screenshot`).
 Use it for work that needs a real shell and toolchains such as Python and
 Node. For files you keep, use your volumes and the Read, Write and Edit tools.
 
@@ -16,7 +16,7 @@ Your agent's grant decides which operations work: `open` needs the grant to
 open workspaces; `exec`, `run_cell`, `reset_kernel`, `start`, `stop`,
 `logs`, `request` and `await` need `exec`; `write`
 and `edit` need `write`; `read`, `view`, `glob`, `grep`, `list` and `status` need
-`read`; `share` and `unshare` need the grant to share; `expose` and `unexpose` need the grant to expose; `checkpoint`,
+`read`; `share` and `unshare` need the grant to share; `expose` and `unexpose` need the grant to expose; `screenshot` needs both `exec` and the grant to connect; `checkpoint`,
 `restore` and `delete_checkpoint` need `write`, `checkpoints` needs `read`,
 and `fork` needs the grant to open workspaces; `save_template` and
 `delete_template` need the grant to keep templates (a tenant template also
@@ -70,6 +70,7 @@ reason.
 | `await` | the next update your application posted from its page (what the person did), once; or `timed_out` | `name`, `timeout_s` |
 | `read` | a file's text | `name`, `path`, `offset`, `limit`, `line_numbers` |
 | `view` | look at a picture (PNG, JPEG, GIF, WebP) | `name`, `path` |
+| `screenshot` | look at the page your running server serves on a port, in a headless browser | `name`, `port`, `path`, `width`, `height` |
 | `write` | create or replace a file whole | `name`, `path`, `content` |
 | `edit` | replace exact text in a file | `name`, `path`, `old_string`, `new_string`, `replace_all` |
 | `glob` | find files by name | `name`, `pattern`, `path` |
