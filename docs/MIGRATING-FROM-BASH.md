@@ -15,6 +15,8 @@ loomcycle warns about each use at boot, and `loomcycle doctor` lists them under 
 
 Agent definitions stored at run time (`AgentDef`, `register_agent`) are seen only when a run is given one. Each such run is counted in `loomcycle_deprecated_use_total{kind,name}`. The first run per tenant and agent in a process also logs one warning, which names the agent and the items, never a credential.
 
+An admin sees both in the Web UI, under Settings → Health: the lines boot printed and the runs this replica gave each item. An agent reads its own in `Context op=self`, whose `deprecations` lists each deprecated tool or field it was given, with the replacement.
+
 The workspaces guide (`docs/WORKSPACES.md`) covers turning workspaces on (`workspace.mode`), the agent's `workspace` grant, and egress routes.
 
 ## Environment variables
