@@ -1586,8 +1586,11 @@ type OntologyRenameJobPlan struct {
 	Runnable   bool                      `json:"runnable"`
 	Blocked    []string                  `json:"blocked,omitempty"`
 	Collisions []OntologyRenameCollision `json:"collisions,omitempty"`
-	// CollisionsTotal counts every collision; Collisions lists the first five.
-	CollisionsTotal int `json:"collisions_total"`
+	// CollisionsTotal counts every collision; Collisions lists the first five, of
+	// the tenant scope only. CollisionsOtherScopes is the part of the total in
+	// user and agent scopes, counted and never listed.
+	CollisionsTotal       int `json:"collisions_total"`
+	CollisionsOtherScopes int `json:"collisions_other_scopes,omitempty"`
 	// ScopesNotCounted is the user and agent scopes the plan could not count.
 	ScopesNotCounted int `json:"scopes_not_counted"`
 	// Running is the unfinished rename job of the tenant, when one exists: a
@@ -1618,16 +1621,21 @@ type OntologyRenameCollision struct {
 // its state (running, done, blocked, abandoned), the step it is at, and the
 // rows each step has rewritten.
 type OntologyJobStatus struct {
-	ID     string         `json:"id"`
-	Kind   string         `json:"kind"`
-	Entry  string         `json:"entry"`
-	From   []string       `json:"from"`
-	To     string         `json:"to"`
-	State  string         `json:"state"`
-	Step   string         `json:"step,omitempty"`
-	Done   map[string]int `json:"done,omitempty"`
-	Error  string         `json:"error,omitempty"`
-	Remain int            `json:"remaining"`
+	ID    string         `json:"id"`
+	Kind  string         `json:"kind"`
+	Entry string         `json:"entry"`
+	From  []string       `json:"from"`
+	To    string         `json:"to"`
+	State string         `json:"state"`
+	Step  string         `json:"step,omitempty"`
+	Done  map[string]int `json:"done,omitempty"`
+	Error string         `json:"error,omitempty"`
+	// Remain is the rows still under an old name in the scope the job is at.
+	Remain int `json:"remaining"`
+	// Scope is the kind of scope the job is at (tenant, user, agent); ScopesDone
+	// the scopes it has finished, the tenant scope first.
+	Scope      string `json:"scope,omitempty"`
+	ScopesDone int    `json:"scopes_done,omitempty"`
 }
 
 // PlanOntologyResult is a plan. It wrote nothing. Fingerprint identifies the

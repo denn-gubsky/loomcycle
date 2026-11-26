@@ -1,24 +1,31 @@
 package builtin
 
 // document_ontology_rename_job.go — the class-rename job (RFC GQ D9, 4.6; plan
-// /loomcycle/docs/rfc-gq-p3-p8-plan, 4.1–4.2 and row P5.3).
+// /loomcycle/docs/rfc-gq-p3-p8-plan, 4.1–4.2 and rows P5.3, P5.4).
 //
 // WHAT IT DOES. A class is renamed in the ontology in one write that sets its new name
 // and records the old one as `@renamed_from <old>`; from then on every reader takes the
 // old name as the class (P5.1, internal/memory/ontology_class_former.go). The job then
-// rewrites the stored rows that still carry the old name, step by step:
+// rewrites what still carries the old name, step by step:
 //
+//	ontology_mentions (tenant scope only): the ontology's own mentions of the class —
+//	an instance's @a, a scheme's @projects, a relation's @domain and @range, a ref
+//	field's class — first, so they follow the rename in the same change (RFC GQ 9b
+//	C12, owner ruling 15.1);
 //	documents_type, chunks_type, chunk_types (the define_type registry),
 //	identity_keys (`<lower class>:<values>`), subject_keys (`<class>:<slug>`, with an
 //	alias row so the old key still reaches the same subject — owner ruling Q1),
 //	annotation_classes (chunk_annotations.class), node_stats and measure_points (a
-//	class's rows are keyed by its name).
+//	class's rows are keyed by its name);
+//	classification_records: a document root's fields.classification applied_type and
+//	proposed_type, last (document_ontology_rename_steps.go).
 //
-// THIS PHASE REWRITES THE TENANT SCOPE ONLY. A rename whose rows reach a user or agent
-// scope, or that the ontology itself names elsewhere (an instance's @a, a scheme's
-// @projects, a relation's @domain or @range, a field's range), is still refused with
-// rename_job_pending: carrying those is later work (P5.4 and the C12 rewrite), and
-// starting a job that cannot finish would leave the tenant's only job slot taken.
+// EVERY SCOPE OF THE TENANT. The tenant scope first, then each user and agent scope
+// holding documents, in a fixed order (document_ontology_rename_scopes.go). A scope from
+// before the document plane split is rewritten where its documents are, on its agent
+// plane, and is not moved: the Document tool's next use of it moves the rewritten rows.
+// The job row records the last scope it finished; a slice that runs out of time leaves
+// the job unfinished at the scope it was in, which the next slice resumes.
 //
 // ONE JOB AT A TIME PER TENANT. The job row lives in the tenant scope (ontology_jobs).
 // A rename is refused (rename_job_running) while an unfinished one exists, after the
@@ -29,20 +36,23 @@ package builtin
 //
 // RESUMABLE BY CONSTRUCTION. Each batch is one statement (or, for keys, one statement
 // per row) whose predicate is "still under an old name", so a rewritten row drops out of
-// it and running a step again is a no-op. The row only records which step is next and
-// what was done. No transaction spans batches: on SQLite a scope has one connection, so
-// every read is materialised before the writes it drives.
+// it and running a step again is a no-op. The row only records which scope and step are
+// next and what was done. No transaction spans batches: on SQLite a scope has one
+// connection, so every read is materialised before the writes it drives.
 //
 // IT FAILS CLOSED, NEVER HALFWAY UNREADABLE. Until it finishes, the class reads its rows
 // under both names. A key the job cannot move because another row already holds the new
-// key stops it as blocked, with the key named; the plan lists such collisions first, and
-// a rename that has any is refused (rename_identity_collision).
+// key stops it as blocked, with the key named; the plan lists such collisions first, in
+// every scope, and a rename that has any is refused (rename_identity_collision).
+//
+// A RELEASE WHEN IT IS DONE (plan 4.2 step 7). The finished job takes an `apply` release
+// of the ontology it left, unless the newest release already holds that content version
+// or the caller takes one itself (an accepted change proposal does).
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"strconv"
 	"strings"
 	"time"
@@ -107,24 +117,49 @@ const (
 type renameStep struct {
 	name string
 	// table.column is where the step finds the old name (the census of every column
-	// holding a class name is TestClassRename_EveryColumnHoldingAClassNameIsListed).
+	// holding a class name is TestClassRename_EveryColumnHoldingAClassNameIsListed). ""
+	// for a step whose names live outside SQL (ontology bodies, document fields).
 	table, column string
+	// tenantOnly: the step has work in the tenant scope only (the ontology lives there).
+	tenantOnly bool
 	// run moves rows until none is left or the deadline passes; it returns the rows it
 	// moved and whether the step is finished.
-	run func(d *Document, ctx context.Context, key sqlmem.ScopeKey, j *ontologyJob, deadline time.Time) (int, bool, error)
-	// left counts the rows still under an old name (the finish check, and the plan).
-	left func(d *Document, ctx context.Context, key sqlmem.ScopeKey, from []string, to string) (int, error)
+	run renameRunFn
+	// left counts the rows still under an old name (the finish check, and the plan); nil
+	// for a step the finish check does not recount (classification_records, which would
+	// read every document's fields again).
+	left renameLeftFn
 }
 
 var renameSteps = []renameStep{
-	{"documents_type", "documents", "type", renameTypeColumn("documents"), leftTypeColumn("documents")},
-	{"chunks_type", "chunks", "type", renameTypeColumn("chunks"), leftTypeColumn("chunks")},
-	{"chunk_types", "chunk_types", "name", renameChunkTypes, leftNamed("chunk_types", "name", "")},
-	{"identity_keys", "chunks", "identity_key", renameIdentityKeys, leftIdentityKeys},
-	{"subject_keys", "chunk_memory_meta", "natural_key", renameSubjectKeys, leftSubjectKeys},
-	{"annotation_classes", "chunk_annotations", "class", renameAnnotationClasses, leftNamed("chunk_annotations", "class", "")},
-	{"node_stats", "node_stats", "node_id", renameNodeStats, leftNamed("node_stats", "node_id", `kind = 'class'`)},
-	{"measure_points", "measure_points", "node_id", renameMeasurePoints, leftMeasurePoints},
+	{"ontology_mentions", "", "", true, renameOntologyMentions, leftOntologyMentions},
+	{"documents_type", "documents", "type", false, onKey(renameTypeColumn("documents")), leftOnKey(leftTypeColumn("documents"))},
+	{"chunks_type", "chunks", "type", false, onKey(renameTypeColumn("chunks")), leftOnKey(leftTypeColumn("chunks"))},
+	{"chunk_types", "chunk_types", "name", false, onKey(renameChunkTypes), leftOnKey(leftNamed("chunk_types", "name", ""))},
+	{"identity_keys", "chunks", "identity_key", false, onKey(renameIdentityKeys), leftOnKey(leftIdentityKeys)},
+	{"subject_keys", "chunk_memory_meta", "natural_key", false, onKey(renameSubjectKeys), leftOnKey(leftSubjectKeys)},
+	{"annotation_classes", "chunk_annotations", "class", false, onKey(renameAnnotationClasses), leftOnKey(leftNamed("chunk_annotations", "class", ""))},
+	{"node_stats", "node_stats", "node_id", false, onKey(renameNodeStats), leftOnKey(leftNamed("node_stats", "node_id", `kind = 'class'`))},
+	{"measure_points", "measure_points", "node_id", false, onKey(renameMeasurePoints), leftOnKey(leftMeasurePoints)},
+	{"classification_records", "", "", false, renameClassificationRecords, nil},
+}
+
+type (
+	renameRunFn  func(*Document, context.Context, renameScope, *ontologyJob, time.Time) (int, bool, error)
+	renameLeftFn func(*Document, context.Context, renameScope, []string, string) (int, error)
+)
+
+// onKey and leftOnKey run a step that works on the scope's SQL rows alone.
+func onKey(f func(*Document, context.Context, sqlmem.ScopeKey, *ontologyJob, time.Time) (int, bool, error)) renameRunFn {
+	return func(d *Document, ctx context.Context, sc renameScope, j *ontologyJob, deadline time.Time) (int, bool, error) {
+		return f(d, ctx, sc.key, j, deadline)
+	}
+}
+
+func leftOnKey(f func(*Document, context.Context, sqlmem.ScopeKey, []string, string) (int, error)) renameLeftFn {
+	return func(d *Document, ctx context.Context, sc renameScope, from []string, to string) (int, error) {
+		return f(d, ctx, sc.key, from, to)
+	}
 }
 
 // ontologyJob is a row of ontology_jobs.
@@ -135,13 +170,23 @@ type ontologyJob struct {
 	State, Step     string
 	Counts          map[string]int
 	Error           string
-	// Remain is the tenant-scope rows still under an old name when the slice ended.
+	// The walk's place, stored as scope_cursor: the last scope finished ("" for none, so
+	// the tenant scope is next), how many are finished, and the last document whose
+	// classification record was read in the scope after Done.
+	Done       string
+	ScopesDone int
+	Doc        string
+	// Scope is the kind of scope the job is at (tenant, user, agent); not stored.
+	Scope string
+	// Remain is the rows of the scope the job is at still under an old name when the
+	// slice ended.
 	Remain int
 }
 
 func (j *ontologyJob) status() *connector.OntologyJobStatus {
 	return &connector.OntologyJobStatus{ID: j.ID, Kind: j.Kind, Entry: j.Entry, From: j.From, To: j.To,
-		State: j.State, Step: j.Step, Done: j.Counts, Error: j.Error, Remain: j.Remain}
+		State: j.State, Step: j.Step, Done: j.Counts, Error: j.Error, Remain: j.Remain,
+		Scope: j.Scope, ScopesDone: j.ScopesDone}
 }
 
 func (j *ontologyJob) unfinished() bool {
@@ -227,6 +272,9 @@ func (d *Document) classRenameGate(ctx context.Context, key sqlmem.ScopeKey, msc
 		for _, c := range pc.Job.Collisions {
 			named = append(named, c.Column+" "+strconv.Quote(c.Key)+" would become "+strconv.Quote(c.Into)+", held by "+c.Holder)
 		}
+		if n := pc.Job.CollisionsOtherScopes; n > 0 {
+			named = append(named, strconv.Itoa(n)+" in user and agent scopes")
+		}
 		return fail(refuse(renameCollisionCode, strconv.Itoa(pc.Job.CollisionsTotal)+" stored keys would collide under the new name ("+
 			strings.Join(named, "; ")+")", "Merge or re-key the colliding rows first; the plan lists them under job.collisions."))
 	}
@@ -270,7 +318,7 @@ func (d *Document) createRenameJob(ctx context.Context, key sqlmem.ScopeKey, s *
 	now := time.Now().UnixNano()
 	return d.exec(ctx, key, `INSERT INTO ontology_jobs (id, kind, entry, from_names, to_name, state, step, scope_cursor, counts, error, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
-		s.jobID, ontologyJobKindClassRename, s.entry, string(from), s.to, jobStatePending, renameSteps[0].name, "tenant", "{}", now, now)
+		s.jobID, ontologyJobKindClassRename, s.entry, string(from), s.to, jobStatePending, renameSteps[0].name, (&ontologyJob{}).cursor(), "{}", now, now)
 }
 
 // withRenameJob adds the rename job's state to update_chunk's answer as rename_job.
@@ -293,154 +341,11 @@ func withRenameJob(res tools.Result, st *connector.OntologyJobStatus) tools.Resu
 	return res
 }
 
-// startRenameJob runs the first slice of a job whose rename was just written.
-func (d *Document) startRenameJob(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, s *renameJobStart) *connector.OntologyJobStatus {
-	j := &ontologyJob{ID: s.jobID, Kind: ontologyJobKindClassRename, Entry: s.entry, From: s.from, To: s.to,
-		State: jobStateRunning, Step: renameSteps[0].name, Counts: map[string]int{}}
-	if err := d.saveOntologyJob(ctx, key, j); err != nil {
-		// The rename is written and reads under both names; the next rename finds the
-		// row pending and resumes it.
-		st := j.status()
-		st.State, st.Error = jobStatePending, "could not record the job's start: "+err.Error()
-		return st
-	}
-	return d.runOntologyJob(ctx, key, j).status()
-}
-
-// continueOntologyJob gives an unfinished job one slice. A pending job whose rename
-// never reached the ontology is abandoned; one whose rename did is resumed.
-func (d *Document) continueOntologyJob(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, j *ontologyJob) *ontologyJob {
-	if j.State == jobStatePending {
-		read, err := d.ontologyForKey(noWrites(ctx), key, mscope, memrank.OntologyPath, nil)
-		if err != nil {
-			return j
-		}
-		if e, ok := planEntries(read)[j.Entry]; !ok || !strings.EqualFold(e.Name, j.To) {
-			j.State = jobStateAbandoned
-			_ = d.saveOntologyJob(ctx, key, j)
-			return j
-		}
-		j.State = jobStateRunning
-	}
-	return d.runOntologyJob(ctx, key, j)
-}
-
-// runOntologyJob works on j for one slice, from the step it is at. It returns j as it
-// left it: done, still running (out of time, or stopped by a test), or blocked.
-func (d *Document) runOntologyJob(ctx context.Context, key sqlmem.ScopeKey, j *ontologyJob) *ontologyJob {
-	budget := d.renameJobBudget
-	if budget <= 0 {
-		budget = renameJobSlice
-	}
-	deadline := time.Now().Add(budget)
-	if j.Counts == nil {
-		j.Counts = map[string]int{}
-	}
-	j.State, j.Error = jobStateRunning, ""
-	defer func() {
-		// What the caller is told is left; best effort, the job row is what resumes.
-		if j.State == jobStateDone {
-			j.Remain = 0
-		} else if n, err := d.renameRowsLeft(ctx, key, j.From, j.To); err == nil {
-			j.Remain = n
-		}
-	}()
-	for pass := 0; pass < renameFinishPasses; pass++ {
-		at := stepIndex(j.Step)
-		for i := at; i < len(renameSteps); i++ {
-			st := renameSteps[i]
-			j.Step = st.name
-			n, finished, err := st.run(d, ctx, key, j, deadline)
-			j.Counts[st.name] += n
-			if err != nil {
-				j.State, j.Error = jobStateBlocked, st.name+": "+err.Error()
-				_ = d.saveOntologyJob(ctx, key, j)
-				return j
-			}
-			if !finished {
-				_ = d.saveOntologyJob(ctx, key, j)
-				return j
-			}
-			if i+1 < len(renameSteps) {
-				j.Step = renameSteps[i+1].name
-			}
-			_ = d.saveOntologyJob(ctx, key, j)
-			if d.renameJobStop != nil && d.renameJobStop(st.name) {
-				return j
-			}
-		}
-		// The finish check: nothing in the tenant scope may hold an old name (RFC GQ
-		// check P5). Rows written under it while the job ran send it round again.
-		left, err := d.renameRowsLeft(ctx, key, j.From, j.To)
-		if err != nil {
-			j.State, j.Error = jobStateBlocked, "finish check: "+err.Error()
-			_ = d.saveOntologyJob(ctx, key, j)
-			return j
-		}
-		if left == 0 {
-			j.State, j.Step = jobStateDone, ""
-			_ = d.saveOntologyJob(ctx, key, j)
-			return j
-		}
-		if time.Now().After(deadline) {
-			break
-		}
-		j.Step = renameSteps[0].name
-	}
-	j.Step = renameSteps[0].name
-	_ = d.saveOntologyJob(ctx, key, j)
-	return j
-}
-
-func stepIndex(name string) int {
-	for i, s := range renameSteps {
-		if s.name == name {
-			return i
-		}
-	}
-	return 0
-}
-
-// renameRowsLeft counts the tenant-scope rows still under an old name, measure points a
-// collision kept aside excepted (they are never deleted, RFC GQ 9b).
-func (d *Document) renameRowsLeft(ctx context.Context, key sqlmem.ScopeKey, from []string, to string) (int, error) {
-	total := 0
-	for _, st := range renameSteps {
-		if st.name == "measure_points" {
-			continue
-		}
-		n, err := st.left(d, ctx, key, from, to)
-		if err != nil {
-			return 0, fmt.Errorf("%s: %w", st.name, err)
-		}
-		total += n
-	}
-	return total, nil
-}
-
-// saveOntologyJob writes j's state back to its row.
-func (d *Document) saveOntologyJob(ctx context.Context, key sqlmem.ScopeKey, j *ontologyJob) error {
-	counts, _ := json.Marshal(j.Counts)
-	var errText any
-	if j.Error != "" {
-		errText = j.Error
-	}
-	err := d.exec(ctx, key, `UPDATE ontology_jobs SET state = ?, step = ?, counts = ?, error = ?, updated_at = ? WHERE id = ?`,
-		j.State, j.Step, string(counts), errText, time.Now().UnixNano(), j.ID)
-	if err != nil {
-		// The rows already moved stay moved and every step is idempotent, so a lost
-		// save only makes the next slice redo a step. The store error is returned, not
-		// logged: its text can carry whatever the failing statement was bound with.
-		slog.WarnContext(ctx, "ontology rename job: could not save its state", "tenant", key.Tenant, "job", j.ID, "state", j.State, "step", j.Step)
-	}
-	return err
-}
-
 // unfinishedOntologyJob is the tenant's unfinished job, nil when there is none.
 func (d *Document) unfinishedOntologyJob(ctx context.Context, key sqlmem.ScopeKey) (*ontologyJob, error) {
-	res, err := d.planQuery(ctx, key, `SELECT id, kind, entry, from_names, to_name, state, step, counts, coalesce(error, '')
+	res, err := d.planQuery(ctx, key, `SELECT id, kind, entry, from_names, to_name, state, step, counts, coalesce(error, ''), scope_cursor
 		FROM ontology_jobs WHERE state IN (?, ?, ?) ORDER BY created_at LIMIT 1`, jobStatePending, jobStateRunning, jobStateBlocked)
-	if err != nil || len(res.Rows) == 0 || len(res.Rows[0]) < 9 {
+	if err != nil || len(res.Rows) == 0 || len(res.Rows[0]) < 10 {
 		return nil, err
 	}
 	r := res.Rows[0]
@@ -450,6 +355,7 @@ func (d *Document) unfinishedOntologyJob(ctx context.Context, key sqlmem.ScopeKe
 		return nil, fmt.Errorf("job %s: unreadable from_names", j.ID)
 	}
 	_ = json.Unmarshal([]byte(asStr(r[7])), &j.Counts)
+	j.readCursor(asStr(r[9]))
 	return j, nil
 }
 
@@ -613,7 +519,18 @@ func leftIdentityKeys(d *Document, ctx context.Context, key sqlmem.ScopeKey, fro
 // already led to the old key is pointed on to the new one, so a chain of renames keeps
 // every older key working.
 func renameSubjectKeys(d *Document, ctx context.Context, key sqlmem.ScopeKey, j *ontologyJob, deadline time.Time) (int, bool, error) {
+	ensured := false
 	alias := func(oldKey, newKey string) error {
+		if !ensured {
+			// A scope provisioned before the alias table existed, or one still on its agent
+			// plane, may lack it; the job creates it rather than provisioning the scope.
+			for _, ddl := range []string{subjectKeyAliasesDDL, subjectKeyAliasesToDDL} {
+				if err := d.exec(ctx, key, ddl); err != nil {
+					return err
+				}
+			}
+			ensured = true
+		}
 		now := time.Now().UnixNano()
 		if err := d.exec(ctx, key, `UPDATE subject_key_aliases SET to_key = ? WHERE to_key = ?`, newKey, oldKey); err != nil {
 			return err
