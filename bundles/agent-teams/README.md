@@ -32,7 +32,13 @@ For a team whose deliverable is a code change (the `team/repo` skill), also set:
 `LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV=GITHUB_TOKEN` (+ `GITHUB_TOKEN` in the host
 env), and a volume marked `dynamic_root: true`. Marketing/accounting/research
 teams need none of this — the workspace is domain-pluggable (Documents, SQL
-Memory, or external SQL/Excel via Bashbox/MCP).
+Memory, or external SQL/Excel in a workspace or through an MCP tool).
+
+`team/orchestrator` also holds `Workspace` and a workspace grant (read, write,
+exec, open; RFC GW P14): it runs a data team's scripts in a workspace, and the
+handlers it spawns open their own workspaces under it. It keeps `Bashbox` until
+RFC GW P15 removes it, for `team/repo` and for installs without workspaces
+(`workspace.mode`).
 
 ## What's inside
 

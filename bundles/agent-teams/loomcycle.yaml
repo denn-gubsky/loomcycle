@@ -174,8 +174,13 @@ agents:
     # coordinate parallel branches; Interruption = ask the human; Context = self-
     # inspect; Memory = durable notes. VolumeDef + Bashbox are for SOFTWARE teams
     # (ephemeral repo volume + git/gh via Bashbox's host-command fallback); unused
-    # by Documents-only teams.
-    tools: [Agent, Document, TeamDef, Channel, Interruption, Context, Memory, VolumeDef, Bashbox]
+    # by Documents-only teams. Workspace + File run a data team's scripts on a
+    # workspace worker (team/sqldata), and the grant is the ceiling the handlers
+    # it spawns open their own workspaces under (a sub-agent holds only what its
+    # parent holds). Bashbox stays until RFC GW P15 removes it; team/repo still
+    # uses it.
+    tools: [Agent, Document, TeamDef, Channel, Interruption, Context, Memory, VolumeDef, Workspace, File, Bashbox]
+    workspace: {ops: [read, write, exec], open: true}
     channels:                               # coordinate parallel team branches on team/* channels (prefix wildcard); default-deny without this
       publish: [team/*]
       subscribe: [team/*]
@@ -220,7 +225,8 @@ agents:
       - **Marketing / docs** → work in the Document task board itself; no volume, no
         repo, no PR. The board is the deliverable.
       - **Accounting / data** → in-runtime SQL Memory (your `Memory`/SQL scope) for
-        ledgers, or reach external SQL/Excel via `Bash`/an MCP tool. No git.
+        ledgers, or work external SQL/Excel in a workspace or through an MCP tool
+        (load `team/sqldata`). No git.
       - **Research** → Documents for the writeup + Memory for collected data.
       When in doubt, ask the human what the deliverable is.
 
@@ -435,8 +441,8 @@ skills:
       Never print the token.
 
   team/sqldata:
-    description: Accounting/data-team workspace — per-scope SQL Memory tables (ledgers, reconciliation) and reaching external SQL/Excel via Bashbox/MCP. No git, no PR.
-    tools: [Memory, Bashbox, Document]
+    description: Accounting/data-team workspace — per-scope SQL Memory tables (ledgers, reconciliation), and external SQL/Excel in a workspace or through an MCP tool. No git, no PR.
+    tools: [Memory, Workspace, File, Document, Bashbox]
     body: |
       # SQL / data workspace (accounting + data teams)
 
@@ -451,12 +457,20 @@ skills:
          every handler you spawn in this run sees the same tables.
          - Seed: `Memory op=sql_exec scope=user sql="CREATE TABLE IF NOT EXISTS …"`.
          - Work: handlers sql_exec/sql_query; the orchestrator reads results to route.
-      2. **External SQL / Excel via Bashbox** — when the source of truth is outside
-         loomcycle (a warehouse, a `.xlsx`). Run a host CLI through Bashbox's
-         host-command fallback (operator allowlists e.g. `psql`, `duckdb`, a python
-         xlsx script; a DB token via the fallback env/cred allowlist), OR mount a
-         database MCP server and call its tools. Keep credentials in the fallback
-         cred allowlist (per-tenant) — never inline them.
+      2. **External data in a workspace** — when the source of truth is outside
+         loomcycle (a `.xlsx`, a CSV export, a warehouse's API). Open a workspace
+         (`Workspace op=open name="data"`) and put the data in it: a file the
+         human gave the run, from the run's inbox (`File op=copy from="<inbox
+         ref>" to="workspace:data:<file name>"`), or rows you hold (`Workspace op=write`).
+         Run a script over it with `Workspace op=exec` (or `op=run_cell` to keep
+         the data loaded between steps), and read the result with `Workspace
+         op=read`, or hand the file back with `File op=copy` to the inbox.
+         An API is reached only through an egress route the operator declared and
+         added to your grant: the core adds its credential, so no token ever
+         appears in a command. Or mount a database MCP server and call its tools.
+         If this install runs no workspaces, Bashbox's host-command fallback
+         (operator-allowlisted `psql`, `duckdb`, a python script) still works
+         until RFC GW P15 removes it.
 
       ## Drive it
       Represent each work-item as a Document chunk (status = the team's state) as
@@ -466,9 +480,9 @@ skills:
       output file, the external system).
 
       ## Safety
-      SQL Memory is scope-isolated (tenant/user). For external access via Bashbox,
-      only operator-allowlisted commands + creds reach the host — never interpolate
-      untrusted input into SQL or a shell command (parameterize / quote).
+      SQL Memory is scope-isolated (tenant/user). Never interpolate untrusted input
+      into SQL or a shell command (parameterize / quote). A script in a workspace
+      is untrusted code holding whatever routes the workspace holds.
 
   team/docboard:
     description: Marketing/content-team workspace — the Document task board IS the deliverable. Draft, review, and finalize copy in chunks. No volume, no repo, no PR.
