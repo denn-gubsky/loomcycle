@@ -111,6 +111,7 @@ var KnownWorkerClasses = map[string]bool{
 	ClassKernelUnavailable: true, ClassCheckpointLimit: true, ClassCheckpointNotFound: true,
 	ClassServerLimit: true, ClassServerNotFound: true, ClassPortNotServed: true, ClassPortUnreachable: true,
 	ClassTemplateMissing: true, ClassNotOnRoot: true, ClassRootBusy: true,
+	ClassBrowserUnavailable: true, ClassBrowserBusy: true, ClassBrowserTimedOut: true,
 }
 
 // The engines a worker may run commands under, weakest first.

@@ -48,7 +48,7 @@ func (w *Workspace) Description() string {
 		"read, write, edit, glob, grep with the same arguments as the Read, Write, Edit, Glob and Grep tools (no `volume`); " +
 		"run_cell (`code`, optional `kernel` python|node, `timeout_s`) runs code in an interpreter that keeps its variables between cells, reset_kernel starts it clean. " +
 		"view (`path`) shows you a PNG, JPEG, GIF or WebP from the workspace as a picture, e.g. a chart you drew. " +
-		"start (`command`, optional `cwd`, `port`) runs a command that keeps running after the call, a server, and returns its id; stop (`server`) ends it; logs (`server`) reads its latest output, or without server lists the servers; request (`port`, `method`, `path`, optional `headers`, `body`) sends one HTTP request to a port a running server of the workspace declared and returns its status, headers and body (cut at 1 MiB); expose (`port`, optional `title`, `kind` page|panel) publishes that port to your user as a page in their chat and returns its base_path, unexpose (`port`) withdraws it; await (optional `timeout_s`) returns the next update your application posted to the address its servers find in LOOMCYCLE_UPDATE_URL (what the person did in the page), or timed_out. " +
+		"start (`command`, optional `cwd`, `port`) runs a command that keeps running after the call, a server, and returns its id; stop (`server`) ends it; logs (`server`) reads its latest output, or without server lists the servers; request (`port`, `method`, `path`, optional `headers`, `body`) sends one HTTP request to a port a running server of the workspace declared and returns its status, headers and body (cut at 1 MiB); screenshot (`port`, optional `path`, `width`, `height`) loads that port's page (default /) in a headless browser in the workspace and shows you the picture, on a worker whose sessions carry the browser; expose (`port`, optional `title`, `kind` page|panel) publishes that port to your user as a page in their chat and returns its base_path, unexpose (`port`) withdraws it; await (optional `timeout_s`) returns the next update your application posted to the address its servers find in LOOMCYCLE_UPDATE_URL (what the person did in the page), or timed_out. " +
 		"share (`name`, `with`: another run of your user by its agent id, `access`: read or read_write, optional `connect`: also its exposed pages) and unshare (`name`, `with`). " +
 		"checkpoint (`name`, optional `label`) records the workspace's files and answers an id; checkpoints lists them; restore (`name`, `checkpoint`) puts the files back and stops its interpreters and commands; delete_checkpoint frees one; fork (`name`, `as`, optional `checkpoint`) opens a second workspace of yours as a copy. Checkpoints count against the workspace's disk quota. " +
 		"A workspace another agent shared with you is named `<name>@<its agent id>` (list shows them): read, view, glob and grep on it, write and edit with read_write, and request to a port its owner exposed when shared with connect; never exec or run_cell. " +
@@ -62,7 +62,7 @@ func (w *Workspace) InputSchema() json.RawMessage {
 	return json.RawMessage(`{
 		"type": "object",
 		"properties": {
-			"op":               {"type": "string", "enum": ["open","release","list","status","exec","read","write","edit","glob","grep","share","unshare","run_cell","reset_kernel","view","start","stop","logs","request","await","expose","unexpose","checkpoint","checkpoints","restore","delete_checkpoint","fork","save_template","delete_template","templates"]},
+			"op":               {"type": "string", "enum": ["open","release","list","status","exec","read","write","edit","glob","grep","share","unshare","run_cell","reset_kernel","view","start","stop","logs","request","await","expose","unexpose","screenshot","checkpoint","checkpoints","restore","delete_checkpoint","fork","save_template","delete_template","templates"]},
 			"name":             {"type": "string", "description": "The workspace's name, your label for it within this run: 1-64 letters, digits, '.', '-', '_'. Every op but list takes it. A workspace shared with you: <name>@<owner agent id> (read, write, edit, glob, grep only)."},
 			"with":             {"type": "string", "description": "share/unshare: the agent id of the run to share with: your parent, a child, a sibling or another run of your user."},
 			"access":           {"type": "string", "enum": ["read","read_write"], "description": "share: read (read, glob, grep and copying files out) or read_write (also writing files in). Never commands."},
@@ -73,12 +73,14 @@ func (w *Workspace) InputSchema() json.RawMessage {
 			"egress":           {"type": "array", "items": {"type": "string"}, "description": "open: the egress routes the workspace may send requests out through, at http://egress/<route>/…, from those your grant names. Omit for all of them; [] for none."},
 			"command":          {"type": "string", "description": "exec, start: a shell command line, run with /bin/sh -c."},
 			"cwd":              {"type": "string", "description": "exec, start: the directory to start in, relative to the workspace (default its root)."},
-			"port":             {"type": "integer", "minimum": 1, "maximum": 65535, "description": "start: the port the server listens on, recorded with it; request: the port to send to, one a running server of this workspace declared at start (through a share: one its owner exposed); expose, unexpose: the port to publish to your user or withdraw."},
+			"port":             {"type": "integer", "minimum": 1, "maximum": 65535, "description": "start: the port the server listens on, recorded with it; request: the port to send to, one a running server of this workspace declared at start (through a share: one its owner exposed); expose, unexpose: the port to publish to your user or withdraw; screenshot: the port of a running server of this workspace whose page to take a picture of."},
 			"method":           {"type": "string", "description": "request: the HTTP method, upper case (GET, POST, ...)."},
 			"headers":          {"type": "object", "additionalProperties": {"type": "string"}, "description": "request: headers to send, name to value. Content-Length, Transfer-Encoding and Connection are the runtime's."},
 			"body":             {"type": "string", "description": "request: the body to send, up to 1 MiB."},
 			"title":            {"type": "string", "description": "expose: the page's title, shown to the user (one line, up to 200 bytes)."},
 			"kind":             {"type": "string", "enum": ["page","panel"], "description": "expose: how the chat shows it (default page)."},
+			"width":            {"type": "integer", "minimum": 1, "maximum": 1920, "description": "screenshot: the browser's viewport width in pixels (default 1280)."},
+			"height":           {"type": "integer", "minimum": 1, "maximum": 1080, "description": "screenshot: the browser's viewport height in pixels (default 800)."},
 			"server":           {"type": "string", "description": "stop, logs: the server's id, as start returned it (srv-1, ...)."},
 			"tail_bytes":       {"type": "integer", "minimum": 1, "description": "logs with server: how much of its latest output to return (default 65536, at most 262144)."},
 			"timeout_s":        {"type": "integer", "minimum": 1, "description": "exec: seconds before the command and everything it started are killed; run_cell: seconds before the cell is interrupted; await: seconds to wait for an update. Default and ceiling are the operator's."},
@@ -91,7 +93,7 @@ func (w *Workspace) InputSchema() json.RawMessage {
 			"all_users":        {"type": "boolean", "description": "templates: every user's templates of your tenant too (a tenant operator's session only)."},
 			"owner":            {"type": "string", "description": "delete_template with scope user: the user whose template to delete (a tenant operator's session only; default yourself)."},
 			"scope":            {"type": "string", "enum": ["user","tenant"], "description": "save_template, delete_template: user (your runs only) or tenant (every user of your tenant; needs the tenant value in memory_scopes)."},
-			"path":             {"type": "string", "description": "read/write/edit: the file; glob/grep: the directory to search. Relative to the workspace. request: the request target, starting with / (e.g. /api/items?page=2)."},
+			"path":             {"type": "string", "description": "read/write/edit: the file; glob/grep: the directory to search. Relative to the workspace. request: the request target, starting with / (e.g. /api/items?page=2); screenshot: the page to load, starting with / (default /)."},
 			"content":          {"type": "string", "description": "write: the whole new file, up to 1 MiB."},
 			"old_string":       {"type": "string", "description": "edit: the exact text to replace; unique unless replace_all."},
 			"new_string":       {"type": "string", "description": "edit: the replacement."},
@@ -154,6 +156,9 @@ var workspaceOpArgs = map[string][]string{
 	"unexpose": {"name", "port"},
 	"share":    {"name", "with", "access", "connect"},
 	"unshare":  {"name", "with"},
+	// RFC GW §5.8: a picture of a page a server of the run's own workspace
+	// serves, by a browser in its container session (P10 plan §10).
+	"screenshot": {"name", "port", "path", "width", "height"},
 }
 
 // WorkspaceMCPOps are the ops the Workspace tool takes over loomcycle's MCP
@@ -204,6 +209,9 @@ var workspaceOpGrant = map[string]string{
 	// expose puts model-written active content in front of a person: its
 	// own grant (RFC GW §7). Withdrawing it needs the same.
 	"expose": "expose", "unexpose": "expose",
+	// A screenshot loads a server's page as a peer's request through a
+	// connect share does (RFC GW §5.8: grant connect).
+	"screenshot": "connect",
 	// share needs the share grant and what it hands over: checked in share.
 	"share": "share", "unshare": "share",
 	// A checkpoint and a restore change what the workspace holds; a fork
@@ -266,6 +274,9 @@ type workspaceInput struct {
 	Body       string            `json:"body"`
 	Title      string            `json:"title"`
 	Kind       string            `json:"kind"`
+	// Width and Height are screenshot's viewport; zero is the default.
+	Width  int `json:"width"`
+	Height int `json:"height"`
 }
 
 // workspaceRefusal is a failure the model sees: a class and a detail.
@@ -440,6 +451,8 @@ func (w *Workspace) Execute(ctx context.Context, input json.RawMessage) (tools.R
 		return w.await(ctx, row, in), nil
 	case "expose", "unexpose":
 		return w.exposeOp(ctx, owner, in), nil
+	case "screenshot":
+		return w.screenshot(ctx, owner, in), nil
 	}
 	return w.fileOp(ctx, row, in), nil
 }
