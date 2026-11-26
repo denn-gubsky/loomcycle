@@ -3,6 +3,8 @@ package worker
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/fsops"
@@ -233,4 +235,70 @@ func (w *worker) gitLocal(id, dir string, raw []byte) answer {
 		return jsonAnswer(map[string]any{"branch": head.Branch, "head": head.Hash, "detached": head.Detached})
 	}
 	return refuse(workspace.ClassInvalid, "unknown git op %q", in.Op)
+}
+
+// gitAdopt makes a fork a git workspace of its own, or after a restore pins
+// what the workspace's history names again.
+func (w *worker) gitAdopt(id, dir string, raw []byte) answer {
+	var in workspace.GitAdoptArgs
+	if a := decodeArgs(raw, &in); a.class != "" {
+		return a
+	}
+	if !in.NewBranch {
+		r, m, done, a := w.gitWorkspace(id, dir, in.Mirror, in.URL, in.Branch)
+		if a.class != "" {
+			return a
+		}
+		defer done()
+		if err := r.PinTracking(m, id); err != nil {
+			return refuse(gitClass(err), "%v", err)
+		}
+		head, err := r.Head()
+		if err != nil {
+			return refuse(gitClass(err), "%v", err)
+		}
+		return jsonAnswer(workspace.GitOpenAnswer{Base: head.Hash})
+	}
+	if _, err := os.Lstat(dir); err != nil {
+		return refuse(workspace.ClassNotFound, "the workspace is not open")
+	}
+	fs, done, err := w.mirrorFS(in.Mirror)
+	if err != nil {
+		return refuse(workspace.ClassInvalid, "the mirror: %v", err)
+	}
+	defer done()
+	unlock := w.lockMirror(in.Mirror)
+	defer unlock()
+	m, err := gitrepo.OpenMirror(fs)
+	if err != nil {
+		return refuse(workspace.ClassFailed, "opening the mirror: %v", err)
+	}
+	base, err := m.Resolve(in.Base)
+	if err != nil {
+		return refuse(gitClass(err), "%v", err)
+	}
+	v, err := fsops.OpenVolumeFS(dir, "")
+	if err != nil {
+		return refuse(workspace.ClassFailed, "opening the workspace: %v", err)
+	}
+	defer v.Close()
+	wt, err := rootbilly.New(v, "")
+	if err != nil {
+		return refuse(workspace.ClassFailed, "opening the workspace: %v", err)
+	}
+	// The marker first, so a removal that follows a failure below still
+	// finds the mirror whose pins it must drop.
+	if err := os.WriteFile(filepath.Join(w.opt.Root, id+gitMarkerSuffix), []byte(in.Mirror+"\n"), 0o600); err != nil {
+		return refuse(workspace.ClassFailed, "recording the workspace's mirror: %v", err)
+	}
+	spec := gitrepo.WorkspaceSpec{ID: id, URL: in.URL, Branch: in.Branch, AlternatesPath: w.mirrorObjects(in.Mirror)}
+	r, err := gitrepo.AdoptWorkspace(wt, m, spec, base)
+	if err != nil {
+		return refuse(gitClass(err), "%v", err)
+	}
+	head, err := r.Head()
+	if err != nil {
+		return refuse(gitClass(err), "%v", err)
+	}
+	return jsonAnswer(workspace.GitOpenAnswer{Base: head.Hash})
 }

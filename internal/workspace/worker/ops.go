@@ -175,6 +175,8 @@ func (w *worker) run(ctx context.Context, start *workspacepb.OpStart, input []by
 		return hidePaths(w.gitOpen(ctx, id, dir, start.GetArgs()), false, dir, w.opt.Root)
 	case workspace.OpGitFetchWorkspace, workspace.OpGitPull:
 		return hidePaths(w.gitSync(ctx, id, dir, start.GetArgs(), start.GetOp() == workspace.OpGitPull), false, dir, w.opt.Root)
+	case workspace.OpGitAdopt:
+		return hidePaths(w.gitAdopt(id, dir, start.GetArgs()), false, dir, w.opt.Root)
 	case workspace.OpGitLocal:
 		return hidePaths(w.gitLocal(id, dir, start.GetArgs()), false, dir, w.opt.Root)
 	case workspace.OpGitPush:

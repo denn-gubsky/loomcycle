@@ -957,6 +957,23 @@ type GitLocalArgs struct {
 	Detach bool   `json:"detach,omitempty"`
 }
 
+// OpGitAdopt makes the op's workspace, a copy of another git workspace (a
+// fork), a git workspace of its own (GitAdoptArgs with NewBranch): its
+// mirror marker, its own branch at the copy's HEAD, checked out, and its
+// pins. Without NewBranch (after a restore) it pins what the workspace's
+// tracking refs name again. It answers GitOpenAnswer with the HEAD.
+const OpGitAdopt = "git_adopt"
+
+// GitAdoptArgs are a git_adopt op's arguments: the row's repository, own
+// branch and base.
+type GitAdoptArgs struct {
+	Mirror    string `json:"mirror"`
+	URL       string `json:"url"`
+	Branch    string `json:"branch"`
+	Base      string `json:"base"`
+	NewBranch bool   `json:"new_branch,omitempty"`
+}
+
 // GitOpenAnswer is the commit the workspace was opened at.
 type GitOpenAnswer struct {
 	Base string `json:"base"`
