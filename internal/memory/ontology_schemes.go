@@ -377,8 +377,7 @@ func directiveIssue(name, what string) string {
 // definition shared by the mirror and every reader, so the tag a concept is written with
 // and the tag a document is classified with can never differ.
 func MirrorTag(scheme string, path []string) string {
-	segs := make([]string, 0, len(path)+1)
-	segs = append(segs, MirrorSegment(scheme))
+	segs := []string{MirrorSegment(scheme)}
 	for _, p := range path {
 		segs = append(segs, MirrorSegment(p))
 	}

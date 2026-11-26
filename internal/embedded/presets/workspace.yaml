@@ -16,13 +16,19 @@
 #
 # Every route here is GET and HEAD only, with no credential. pip needs both
 # pypi (the index) and pypi-files (the files the index links to; the core
-# rewrites those links to the route). Routes for Go and cargo are yours to add:
+# rewrites those links to the route). Routes for Go and cargo are yours to add,
+# under exactly these names: a session's go and cargo are pointed at them.
+# cargo needs both crates (the index) and crates-dl (the downloads its
+# config.json names; the core points it at the route). cargo is set up in
+# container sessions only.
 #
 #   workspace:
 #     egress:
 #       routes:
-#         goproxy: { url: "https://proxy.golang.org/" }
-#         gosum:   { url: "https://sum.golang.org/" }
+#         goproxy:   { url: "https://proxy.golang.org/" }
+#         gosum:     { url: "https://sum.golang.org/" }
+#         crates:    { url: "https://index.crates.io/" }
+#         crates-dl: { url: "https://static.crates.io/" }
 
 workspace:
   egress:

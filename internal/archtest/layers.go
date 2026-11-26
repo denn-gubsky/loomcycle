@@ -333,6 +333,10 @@ var allowedSideways = []subsystemEdge{
 	{"internal/convert", "internal/files/unpack"},
 	{"internal/files/unpack", "internal/files/extract"},
 	{"internal/files/unpack", "internal/files/filenames"},
+	// gitsource/rootbilly opens a repository through the file tools'
+	// verified walk, so the Git tool and a workspace worker (RFC GW P11)
+	// confine go-git alike; fsops knows nothing of git.
+	{"internal/gitsource", "internal/fsops"},
 	{"internal/convert", "internal/transcribe/helper"},
 	{"internal/kms", "internal/awsauth"},
 	{"internal/logging", "internal/redact"},

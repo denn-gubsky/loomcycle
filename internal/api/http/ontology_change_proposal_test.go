@@ -167,13 +167,15 @@ func TestOntologyProposals_TamperedChangeProposalIs422(t *testing.T) {
 
 // TestOntologyProposals_ChangeAcceptRefusalsCarryTheirCodes: a rename of a kind in use
 // needs the plan's fingerprint (409 plan_required, carrying it) and applies with it; a
-// class rename with dependents is 409 rename_job_pending whatever the fingerprint.
+// class rename with dependents the rename job cannot carry yet (a row in a user scope,
+// RFC GQ P5.3) is 409 rename_job_pending whatever the fingerprint.
 func TestOntologyProposals_ChangeAcceptRefusalsCarryTheirCodes(t *testing.T) {
 	s, mi, exec := changeProposalFixture(t)
 	a := exec(map[string]any{"op": "create_document", "scope": "tenant", "title": "Alice"})["root_chunk_id"]
 	b := exec(map[string]any{"op": "create_document", "scope": "tenant", "title": "Bob"})["root_chunk_id"]
 	exec(map[string]any{"op": "link_chunks", "scope": "tenant", "from_id": a, "to_id": b, "kind": "supervises"})
 	exec(map[string]any{"op": "create_document", "scope": "tenant", "title": "A memo", "type": "Memo"})
+	exec(map[string]any{"op": "create_document", "scope": "user", "title": "My memo", "type": "Memo"})
 	edit := exec(map[string]any{"op": "propose_entity", "change": "edit", "entry": "supervises", "section": "relations",
 		"name": "oversees"})["chunk_id"].(string)
 	rename := exec(map[string]any{"op": "propose_entity", "change": "edit", "entry": "Memo", "name": "Memorandum"})["chunk_id"].(string)
