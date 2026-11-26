@@ -1652,6 +1652,9 @@ type OntologyJobStatus struct {
 	// the scopes it has finished, the tenant scope first.
 	Scope      string `json:"scope,omitempty"`
 	ScopesDone int    `json:"scopes_done,omitempty"`
+	// ToTags is a concept re-tag's new tags, index-aligned with From (the old
+	// ones); To then joins them for reading.
+	ToTags []string `json:"to_tags,omitempty"`
 }
 
 // PlanOntologyResult is a plan. It wrote nothing. Fingerprint identifies the

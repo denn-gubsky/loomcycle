@@ -176,6 +176,16 @@ func rekeyRegistryKey(fields json.RawMessage, from []string, to string) json.Raw
 // in the root's fields, in the Memory plane, so no SQL predicate finds it: the cursor is
 // what makes the step resumable, and the step is not recounted by the finish check.
 func renameClassificationRecords(d *Document, ctx context.Context, sc renameScope, j *ontologyJob, deadline time.Time) (int, bool, error) {
+	return walkClassificationRecords(d, ctx, sc, j, deadline, func(fields json.RawMessage) (json.RawMessage, bool) {
+		return renamedClassification(fields, j.From, j.To)
+	})
+}
+
+// walkClassificationRecords is the classification-record step of a job: each root of the
+// scope, from j.Doc in id order, gets its fields rewritten by edit (which reports
+// whether it changed them).
+func walkClassificationRecords(d *Document, ctx context.Context, sc renameScope, j *ontologyJob, deadline time.Time,
+	edit func(json.RawMessage) (json.RawMessage, bool)) (int, bool, error) {
 	moved := 0
 	for {
 		if pastDeadline(ctx, deadline) {
@@ -197,7 +207,7 @@ func renameClassificationRecords(d *Document, ctx context.Context, sc renameScop
 			if pastDeadline(ctx, deadline) {
 				return moved, false, nil
 			}
-			n, err := d.rewriteClassificationRecord(ctx, sc, asStr(r[1]), j.From, j.To)
+			n, err := d.rewriteClassificationRecord(ctx, sc, asStr(r[1]), edit)
 			if err != nil {
 				return moved, false, err
 			}
@@ -210,11 +220,12 @@ func renameClassificationRecords(d *Document, ctx context.Context, sc renameScop
 // classificationTypeFields are the record's fields that hold a class name.
 var classificationTypeFields = []string{"applied_type", "proposed_type"}
 
-// rewriteClassificationRecord renames the class in one root's record. The fields are
+// rewriteClassificationRecord rewrites one root's record by edit. The fields are
 // patched key by key, the rest kept as stored, and written without a new embedding (the
 // body is unchanged). A root another writer changes meanwhile is read again; one that
 // keeps changing is left, to read through @renamed_from.
-func (d *Document) rewriteClassificationRecord(ctx context.Context, sc renameScope, root string, from []string, to string) (int, error) {
+func (d *Document) rewriteClassificationRecord(ctx context.Context, sc renameScope, root string,
+	edit func(json.RawMessage) (json.RawMessage, bool)) (int, error) {
 	for attempt := 0; attempt < 3; attempt++ {
 		// Only the columns every scope has had from the start: a pre-split scope from an
 		// older build may lack later ones (valid_at), and a missing column must not stop
@@ -228,7 +239,7 @@ func (d *Document) rewriteClassificationRecord(ctx context.Context, sc renameSco
 		if err != nil {
 			return 0, err
 		}
-		fields, changed := renamedClassification(cb.Fields, from, to)
+		fields, changed := edit(cb.Fields)
 		if !changed {
 			return 0, nil
 		}

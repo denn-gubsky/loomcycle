@@ -103,6 +103,14 @@ func TestMirrorSchemeTags_IsIdempotentAndFollowsARename(t *testing.T) {
 	if strings.Join(tags, ",") != "keep-me,topics/risk-management/outsourcing" {
 		t.Errorf("concept tags after mirror = %v", tags)
 	}
+	docTags := func() string {
+		dg, _ := docExec(t, d, ctx, `{"op":"get_document","scope":"tenant","id":"`+docOut["document_id"].(string)+`"}`)
+		return fmt.Sprint(dg["tags"])
+	}
+	// The mirror never re-files a document.
+	if got := docTags(); got != "[topics/risk-management/outsourcing]" {
+		t.Errorf("the mirror touched a document's tags: %v", got)
+	}
 
 	// Rename the concept: the next mirror replaces the old tag, keeps keep-me.
 	g, _ := docExec(t, d, ctx, `{"op":"get_chunk","scope":"tenant","id":"`+out.ChunkID+`"}`)
@@ -119,10 +127,10 @@ func TestMirrorSchemeTags_IsIdempotentAndFollowsARename(t *testing.T) {
 	if strings.Join(tags, ",") != "keep-me,topics/risk-management/vendor-outsourcing" {
 		t.Errorf("concept tags after rename = %v", tags)
 	}
-	// The document keeps the classification it was given; the mirror never re-files it.
-	dg, _ := docExec(t, d, ctx, `{"op":"get_document","scope":"tenant","id":"`+docOut["document_id"].(string)+`"}`)
-	if fmt.Sprint(dg["tags"]) != "[topics/risk-management/outsourcing]" {
-		t.Errorf("the mirror touched a document's tags: %v", dg["tags"])
+	// The document follows the rename: the rename's re-tag job (RFC GQ P5.5) moved its
+	// tag, not the mirror.
+	if got := docTags(); got != "[topics/risk-management/vendor-outsourcing]" {
+		t.Errorf("the document's tag after the rename = %v, want the concept's new tag", got)
 	}
 }
 
