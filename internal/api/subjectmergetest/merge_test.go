@@ -56,6 +56,7 @@ const (
 	legacy   = "legacy-subject-merge"
 	operator = "lct_acme_ops"
 	member   = "lct_acme_alice"
+	isolated = "lct_acme_iris"
 	tenant   = "acme"
 )
 
@@ -99,6 +100,7 @@ func newEnv(t *testing.T) *env {
 	}{
 		{operator, "ops", []string{auth.ScopeTenant}},
 		{member, "alice", []string{auth.ScopeRunsCreate, auth.ScopeRunsRead}},
+		{isolated, "iris", []string{auth.ScopeUser}},
 	} {
 		if _, err := st.OperatorTokenDefCreate(context.Background(), store.OperatorTokenDefRow{
 			DefID: "def_" + tok.subject, Name: "acme-" + tok.subject, TenantID: tenant, Subject: tok.subject,
