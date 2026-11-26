@@ -125,6 +125,51 @@ describe("the file port with a file token", () => {
     expect(host.requests).toEqual([]);
   });
 
+  it("sends the bearer only to a OneDrive personal site, refusing a team site or any other path before acquiring a token", async () => {
+    const host = fakeHost({});
+    const tok = recordingToken();
+    const log = new RecordingLogger();
+    const port = teamsFilePort({ hosts: HOSTS, fetch: host.fetchFn, token: tok.source, log });
+    for (const url of [
+      "https://contoso.sharepoint.com/sites/finance/Shared%20Documents/a.pdf",
+      "https://contoso-my.sharepoint.com/sites/x/a.pdf",
+      "https://contoso-my.sharepoint.com/personalx/alice/a.pdf",
+      "https://contoso-my.sharepoint.com/_layouts/15/download.aspx?UniqueId=1",
+      "https://-my.sharepoint.com/personal/alice/a.pdf",
+      "https://a.contoso-my.sharepoint.com/personal/alice/a.pdf",
+    ]) {
+      await expect(port.download(file(url), 1000, signal())).rejects.toMatchObject({ name: "TeamsFileError", reason: "host" });
+    }
+    expect(tok.scopes).toEqual([]);
+    expect(host.requests).toEqual([]);
+    expect(log.lines[0]).toEqual({ level: "warn", msg: "teams file download refused", attrs: { reason: "host", host: "contoso.sharepoint.com" } });
+
+    // A personal site under a sovereign suffix the operator allows gets it.
+    const gov = "https://contoso-my.sharepoint.us/personal/alice_contoso_us/Documents/a.pdf";
+    const govHost = fakeHost({ [gov]: {} });
+    const port2 = teamsFilePort({ hosts: [".sharepoint.us"], fetch: govHost.fetchFn, token: tok.source });
+    expect(await port2.download(file(gov), 1000, signal())).toEqual({ bytes: PDF });
+    expect(govHost.requests).toEqual([{ url: gov, authorization: `Bearer ${BEARER}` }]);
+    expect(tok.scopes).toEqual(["https://contoso-my.sharepoint.us/.default"]);
+  });
+
+  it("drops the bearer on a redirect from a personal site to a team site, which must still be an allowed host", async () => {
+    const team = "https://contoso.sharepoint.com/sites/finance/a.pdf";
+    const host = fakeHost({ [BARE]: { status: 302, headers: { location: team } }, [team]: {} });
+    expect(await teamsFilePort({ hosts: HOSTS, fetch: host.fetchFn, token: recordingToken().source }).download(file(BARE), 1000, signal())).toEqual({
+      bytes: PDF,
+    });
+    expect(host.requests).toEqual([
+      { url: BARE, authorization: `Bearer ${BEARER}` },
+      { url: team, authorization: null },
+    ]);
+    const off = fakeHost({ [BARE]: { status: 302, headers: { location: "https://contoso.sharepoint.example/sites/x" } } });
+    await expect(teamsFilePort({ hosts: HOSTS, fetch: off.fetchFn, token: recordingToken().source }).download(file(BARE), 1000, signal())).rejects.toMatchObject({
+      reason: "redirect",
+    });
+    expect(off.requests.map((r) => r.url)).toEqual([BARE]);
+  });
+
   it("refuses a link without tempauth when there is no file token, fetching nothing", async () => {
     const host = fakeHost({ [BARE]: {} });
     const log = new RecordingLogger();

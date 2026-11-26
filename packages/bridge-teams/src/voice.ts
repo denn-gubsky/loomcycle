@@ -182,11 +182,30 @@ export function hasTempauth(url: URL): boolean {
   return false;
 }
 
+/** isPersonalSite says a URL is in a OneDrive personal site: a host whose
+ *  first label is `<tenant>-my` (`contoso-my.sharepoint.com`, or the same
+ *  under a sovereign suffix) and a path under `/personal/`, which is where a
+ *  file a person attaches in a 1:1 chat lives.
+ *
+ *  It bounds the bot's file token. That token reaches whatever SharePoint the
+ *  bot's app is permitted, so a crafted downloadUrl would otherwise make the
+ *  bot a confused deputy that fetches any file the app may read. The app is
+ *  meant to hold only the File.ReadSelected.User RSC permission (files people
+ *  shared with the bot) and no SharePoint application role; this check keeps
+ *  the token off team sites whatever the app holds. It does not tell whose
+ *  OneDrive the URL names: that is the sender's-own-drive check RFC HF P1 makes
+ *  for Graph app mode, a follow-up for this path. */
+export function isPersonalSite(url: URL): boolean {
+  const first = url.hostname.toLowerCase().split(".")[0] ?? "";
+  return first.length > "-my".length && first.endsWith("-my") && url.pathname.toLowerCase().startsWith("/personal/");
+}
+
 /** download fetches a link, following a redirect only to another allowed
  *  host, and reads at most maxBytes (more is an error, found while
  *  streaming). A pre-authorised link goes with no credential and no added
  *  header. Any other link goes with the file token for its own host, which is
- *  acquired only after the host passed the allowed list, and sent on the first
+ *  acquired only after the host passed the allowed list and the link is in a
+ *  OneDrive personal site (isPersonalSite), and sent on the first
  *  request alone: a redirect, even to the same host, drops it. */
 async function download(
   doFetch: typeof fetch,
@@ -204,7 +223,7 @@ async function download(
     // downloadPinned refuses it below, as a link that is not a URL.
   }
   if (url && !hasTempauth(url)) {
-    if (!hostAllowed(url, hosts)) throw new TeamsFileError("host", { host: url.hostname });
+    if (!hostAllowed(url, hosts) || !isPersonalSite(url)) throw new TeamsFileError("host", { host: url.hostname });
     if (!token) throw new TeamsFileError("token", { cause: "none" });
     let bearer: string;
     try {
