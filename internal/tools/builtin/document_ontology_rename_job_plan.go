@@ -1,10 +1,10 @@
 package builtin
 
 // document_ontology_rename_job_plan.go — the plan's `job` block for a class rename
-// (RFC GQ plan P5.3, 4.2 "What the plan shows before"): the rows each step of the
-// rename job would move, why the job cannot carry the rename in this phase, the stored
-// keys that would collide under the new name, and the tenant's unfinished job. Like the
-// rest of a plan, it writes nothing.
+// (RFC GQ plan P5.3–P5.4, 4.2 "What the plan shows before"): the rows each step of the
+// rename job would move, what keeps it from running (a plan that could not count every
+// scope), the stored keys that would collide under the new name in any scope, and the
+// tenant's unfinished job. Like the rest of a plan, it writes nothing.
 
 import (
 	"context"
@@ -13,7 +13,6 @@ import (
 	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/connector"
-	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
 )
 
@@ -23,12 +22,18 @@ func (d *Document) renameJobPlan(ctx context.Context, key sqlmem.ScopeKey, read 
 	ch connector.OntologyPlannedChange, complete bool, skipped int) (*connector.OntologyRenameJobPlan, error) {
 	to := strings.TrimSpace(p.in.Name)
 	job := &connector.OntologyRenameJobPlan{ScopesNotCounted: skipped}
-	from := p.classes
+	from := renameOwnNames(p)
 	count := func(name string) connector.OntologyPlanCount { return ch.Counts[name] }
-	other := 0
+	tenant := renameScope{key: key, tenant: true, name: renameTenantScope}
+	mentions := ontologyMentions(read, from)
 	for _, st := range renameSteps {
 		s := connector.OntologyRenameJobStep{Name: st.name}
 		switch st.name {
+		case "ontology_mentions":
+			s.TenantScope = len(mentions)
+		case "classification_records":
+			// In document fields, not SQL: counting means reading every document's
+			// fields, which a plan does not do. The job reads them.
 		case "documents_type":
 			s.TenantScope, s.OtherScopes = count("typed_documents").TenantScope, count("typed_documents").OtherScopes
 		case "chunks_type":
@@ -38,26 +43,25 @@ func (d *Document) renameJobPlan(ctx context.Context, key sqlmem.ScopeKey, read 
 		case "node_stats", "measure_points":
 			s.TenantScope = count(st.name).TenantScope
 		default:
-			n, err := st.left(d, ctx, key, from, to)
+			n, err := st.left(d, ctx, tenant, from, to)
 			if err != nil {
 				return nil, fmt.Errorf("rename job %s: %w", st.name, err)
 			}
 			s.TenantScope = n
 		}
-		other += s.OtherScopes
 		job.Steps = append(job.Steps, s)
 	}
 	if !complete {
-		job.Blocked = append(job.Blocked, "not every user and agent scope could be counted, so rows under the old name may lie where the job does not reach")
+		// Kept from P5.3 (plan 4.2: an incomplete plan refuses the rename): a scope not
+		// counted is a scope whose colliding keys are not known before the job meets them.
+		job.Blocked = append(job.Blocked, "not every user and agent scope could be counted, so keys under the old name that would collide may lie where the plan did not look")
 	}
-	if other > 0 {
-		job.Blocked = append(job.Blocked, strconv.Itoa(other)+" rows in user and agent scopes carry the old name, and the job rewrites the tenant scope only so far")
-	}
-	job.Blocked = append(job.Blocked, ontologyNamesClass(read, from)...)
 	var err error
 	if job.Collisions, job.CollisionsTotal, err = d.renameCollisions(ctx, key, from, to); err != nil {
 		return nil, err
 	}
+	job.CollisionsOtherScopes = p.otherCollisions
+	job.CollisionsTotal += p.otherCollisions
 	running, err := d.unfinishedOntologyJob(ctx, key)
 	if err != nil {
 		return nil, err
@@ -69,50 +73,25 @@ func (d *Document) renameJobPlan(ctx context.Context, key sqlmem.ScopeKey, read 
 	}
 	job.Notes = append(job.Notes,
 		"the rename writes the new name and @renamed_from "+p.entry.Name+" in one write, so the rows read as the class while the job moves them",
-		"definitions outside the ontology that name the class (agent prompts, source declarations) are not rewritten",
-		"the classification record on documents (fields.classification) keeps the old name and reads through @renamed_from")
+		"the job rewrites the tenant scope, then every user and agent scope; a scope from before the document plane split is rewritten on its agent plane")
+	for _, m := range mentions {
+		job.Notes = append(job.Notes, "the ontology names the class elsewhere, and the job's first step rewrites it to the new name: "+m.what)
+	}
+	job.Notes = append(job.Notes,
+		"the classification record on documents (fields.classification applied_type and proposed_type) is rewritten by the job's last step in each scope; the plan does not count it",
+		"definitions outside the ontology that name the class (agent prompts, source declarations) are not rewritten")
 	job.Runnable = len(job.Blocked) == 0 && job.CollisionsTotal == 0
 	return job, nil
 }
 
-// ontologyNamesClass lists where the ontology itself names one of the classes besides
-// the class's own entry: mentions the rename would leave pointing at an old name, since
-// rewriting them in the same change (RFC GQ 9b C12) is not built in this phase.
-func ontologyNamesClass(read OntologyRead, classes []string) []string {
-	var out []string
-	for _, in := range read.Instances {
-		if containsFold(classes, in.Class) {
-			out = append(out, "the instance "+strconv.Quote(in.Name)+" is of the class (@a)")
-		}
+// renameOwnNames is the names a rename of the class moves rows off: its own, and the
+// former name it reads rows under. Its subclasses keep their names.
+func renameOwnNames(p *plannedChange) []string {
+	from := []string{p.entry.Name}
+	if p.entry.former != "" {
+		from = appendUnique(from, p.entry.former)
 	}
-	for _, s := range read.Schemes {
-		for _, c := range s.Projects {
-			if containsFold(classes, c) {
-				out = append(out, "the scheme "+strconv.Quote(s.Name)+" projects the class (@projects)")
-				break
-			}
-		}
-	}
-	for _, r := range read.Relations {
-		for _, c := range append(append([]string{}, r.Domain...), r.Range...) {
-			if containsFold(classes, c) {
-				out = append(out, "the relation "+strconv.Quote(r.Name)+" names the class in @domain or @range")
-				break
-			}
-		}
-	}
-	for _, t := range read.Terms {
-		for _, fs := range memrank.AllFieldSpecs(t) {
-			if fs.Range != "" && containsFold(classes, fs.Range) {
-				out = append(out, "the field "+strconv.Quote(fs.Name)+" of the class "+strconv.Quote(t.Name)+" ranges over the class")
-				break
-			}
-		}
-	}
-	for i := range out {
-		out[i] = "the ontology names the class elsewhere, which the rename does not rewrite yet: " + out[i]
-	}
-	return out
+	return from
 }
 
 // renameCollisions finds the stored keys the rename would move onto a key another row

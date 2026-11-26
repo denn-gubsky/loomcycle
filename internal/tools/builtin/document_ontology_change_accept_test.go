@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
 )
@@ -297,23 +298,33 @@ func TestAcceptChange_ConcurrentEditOfTargetIsRefused(t *testing.T) {
 	}
 }
 
-// TestAcceptChange_ClassRenameTheJobCannotCarryIsRefused (RFC GQ Q4, P5.3): a class
-// something rests on in a user scope, which the rename job does not reach yet, is not
-// renamed, fingerprint or not; a class nothing rests on is.
+// TestAcceptChange_ClassRenameTheJobCannotCarryIsRefused (RFC GQ Q4, P5.3, plan 4.2): a
+// class something rests on is not renamed, fingerprint or not, while the plan cannot
+// count every user and agent scope (the job could not know their colliding keys); a
+// class nothing rests on is. Once every scope is counted, the same proposal is accepted
+// and the rename job carries the class through the user scope too (P5.4).
 func TestAcceptChange_ClassRenameTheJobCannotCarryIsRefused(t *testing.T) {
 	f := newAcceptFixture(t)
 	f.must(map[string]any{"op": "create_document", "scope": "user", "title": "My memo", "type": "Memo"})
 	memo := f.chunk("Memo")
 	id := f.file(map[string]any{"change": "edit", "entry": memo, "name": "Memorandum"})
+	f.d.planScopeBudget = time.Nanosecond
 	if _, err := f.accept(id, f.fingerprintNow()); !errors.Is(err, ErrChangeRenameJobPending) {
 		t.Errorf("accept = %v, want ErrChangeRenameJobPending", err)
 	}
+	f.d.planScopeBudget = 0
 	if f.chunk("Memo") != memo || !f.exists(id) {
 		t.Error("a refused rename changed something")
 	}
 	free := f.file(map[string]any{"change": "edit", "entry": "Provision", "name": "Clause"})
 	if _, err := f.accept(free, f.fingerprintNow()); err != nil {
 		t.Errorf("rename of a class nothing rests on: %v", err)
+	}
+	if _, err := f.accept(id, f.fingerprintNow()); err != nil {
+		t.Fatalf("accept once every scope is counted: %v", err)
+	}
+	if got := rowTitles(f.must(map[string]any{"op": "query_documents", "scope": "user", "type": "Memorandum"}), "documents"); !reflect.DeepEqual(got, []string{"My memo"}) {
+		t.Errorf("user documents of Memorandum = %v, want the user's memo carried by the job", got)
 	}
 }
 

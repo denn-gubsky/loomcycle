@@ -166,9 +166,9 @@ func TestOntologyProposals_TamperedChangeProposalIs422(t *testing.T) {
 }
 
 // TestOntologyProposals_ChangeAcceptRefusalsCarryTheirCodes: a rename of a kind in use
-// needs the plan's fingerprint (409 plan_required, carrying it) and applies with it; a
-// class rename with dependents the rename job cannot carry yet (a row in a user scope,
-// RFC GQ P5.3) is 409 rename_job_pending whatever the fingerprint.
+// needs the plan's fingerprint (409 plan_required, carrying it) and applies with it; so
+// does a class rename with dependents in a user scope, which the rename job then carries
+// through that scope too (RFC GQ P5.4; until P5.4 it was 409 rename_job_pending).
 func TestOntologyProposals_ChangeAcceptRefusalsCarryTheirCodes(t *testing.T) {
 	s, mi, exec := changeProposalFixture(t)
 	a := exec(map[string]any{"op": "create_document", "scope": "tenant", "title": "Alice"})["root_chunk_id"]
@@ -185,11 +185,19 @@ func TestOntologyProposals_ChangeAcceptRefusalsCarryTheirCodes(t *testing.T) {
 	if code != http.StatusConflict || out["code"] != "plan_required" || fp == "" {
 		t.Fatalf("accept without a plan = %d %v, want 409 plan_required with the fingerprint", code, out)
 	}
-	if code, out := postProposal(t, s, mi.Tenant, map[string]string{"chunk_id": rename, "action": "accept", "plan_fingerprint": fp}); code != http.StatusConflict || out["code"] != "rename_job_pending" {
-		t.Errorf("class rename = %d %v, want 409 rename_job_pending", code, out)
-	}
 	if code, out := postProposal(t, s, mi.Tenant, map[string]string{"chunk_id": edit, "action": "accept", "plan_fingerprint": fp}); code != http.StatusOK {
 		t.Errorf("accept with the fingerprint = %d %v", code, out)
+	}
+	code, out = postProposal(t, s, mi.Tenant, map[string]string{"chunk_id": rename, "action": "accept"})
+	fp, _ = out["fingerprint"].(string)
+	if code != http.StatusConflict || out["code"] != "plan_required" || fp == "" {
+		t.Fatalf("class rename without a plan = %d %v, want 409 plan_required with the fingerprint", code, out)
+	}
+	if code, out := postProposal(t, s, mi.Tenant, map[string]string{"chunk_id": rename, "action": "accept", "plan_fingerprint": fp}); code != http.StatusOK {
+		t.Fatalf("class rename with the fingerprint = %d %v", code, out)
+	}
+	if docs, _ := exec(map[string]any{"op": "query_documents", "scope": "user", "type": "Memorandum"})["documents"].([]any); len(docs) != 1 {
+		t.Errorf("user documents of Memorandum = %v, want the user's memo carried by the rename job", docs)
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
@@ -147,12 +148,14 @@ func (f *retiredFixture) planNotes(ch connector.OntologyChange) string {
 // TestOntologyRename_DirectClassRenameInUseIsRefused: renaming a class something rests
 // on, by its title or by its body's heading, is refused with rename_job_pending for the
 // operator and an admin, with or without a fingerprint; the plan says so in its notes.
-// Here the rename job cannot carry it (RFC GQ P5.3): a row in a user scope carries the
-// class, and the job rewrites the tenant scope only so far.
+// Here the rename job cannot carry it: the job reaches every scope (RFC GQ P5.4), but the
+// plan could not count every user and agent scope, so keys there that would collide are
+// not known before the job meets them (plan 4.2: an incomplete plan refuses the rename).
 func TestOntologyRename_DirectClassRenameInUseIsRefused(t *testing.T) {
 	f := newFingerprintFixture(t)
 	f.must(map[string]any{"op": "create_document", "scope": "user", "title": "My memo", "type": "Memo"})
 	memo := f.chunk("Memo")
+	f.d.planScopeBudget = time.Nanosecond
 	for name, ctx := range map[string]context.Context{"operator": f.ctx, "admin": adminCtx(f.ctx)} {
 		wantRenameJobPending(t, name+" rename without a fingerprint", f.change(ctx, "update_chunk", memo, map[string]any{"title": "Memorandum"}), "Memo")
 		fp := f.planFingerprint(memo)
@@ -170,6 +173,7 @@ func TestOntologyRename_DirectClassRenameInUseIsRefused(t *testing.T) {
 		t.Errorf("plan of a body edit of the titled Memo: notes %q, want no %s", notes, renameJobPendingCode)
 	}
 	// The edit that keeps the name, and a directive change with a fingerprint, still apply.
+	f.d.planScopeBudget = 0
 	if r := f.change(f.ctx, "update_chunk", memo, map[string]any{"title": "Memo", "body": "@alt note", "plan_fingerprint": f.planFingerprint(memo)}); r.IsError {
 		t.Errorf("an edit of Memo that keeps its name: %s", r.Text)
 	}
@@ -178,6 +182,7 @@ func TestOntologyRename_DirectClassRenameInUseIsRefused(t *testing.T) {
 	if r := f.change(f.ctx, "update_chunk", memo, map[string]any{"title": "", "body": "# Memo\n@alt note"}); r.IsError {
 		t.Fatalf("moving Memo's name into its heading: %s", r.Text)
 	}
+	f.d.planScopeBudget = time.Nanosecond
 	if notes := f.planNotes(connector.OntologyChange{Op: connector.OntologyPlanEdit, Entry: memo, Body: "# Memorandum\n@alt note"}); !strings.Contains(notes, renameJobPendingCode) {
 		t.Errorf("plan of a heading edit renaming the untitled Memo: notes %q, want %s", notes, renameJobPendingCode)
 	}
@@ -238,7 +243,7 @@ func TestOntologyPlan_DirectiveAndRenameRulingsOnPostgres(t *testing.T) {
 	d, base := pgDocumentOrSkip(t)
 	f := &retiredFixture{t: t, d: d, ctx: operatorCtx(installTenantOntology(t, d, base, retiredOntologyMD, memrank.OntologyConfirmedStatus))}
 	seedFingerprintDependents(f)
-	// A user-scope row the rename job cannot reach yet (RFC GQ P5.3).
+	// A user-scope row, and a plan that cannot count the user scope (RFC GQ P5.4, plan 4.2).
 	f.must(map[string]any{"op": "create_document", "scope": "user", "title": "My memo", "type": "Memo"})
 	memo, reporting := f.chunk("Memo"), f.chunk("Reporting")
 	fp := f.planFingerprint(memo)
@@ -246,7 +251,9 @@ func TestOntologyPlan_DirectiveAndRenameRulingsOnPostgres(t *testing.T) {
 	if r := f.change(f.ctx, "update_chunk", reporting, map[string]any{"body": "What is reported."}); r.IsError {
 		t.Errorf("meaning edit of Reporting: %s", r.Text)
 	}
+	f.d.planScopeBudget = time.Nanosecond
 	wantRenameJobPending(t, "rename Memo with a fingerprint", f.change(f.ctx, "update_chunk", memo, map[string]any{"title": "Memorandum", "plan_fingerprint": f.planFingerprint(memo)}), "Memo")
+	f.d.planScopeBudget = 0
 	if r := f.change(f.ctx, "update_chunk", f.chunk("Provision"), map[string]any{"title": "Clause"}); r.IsError {
 		t.Errorf("rename of a class nothing rests on: %s", r.Text)
 	}
