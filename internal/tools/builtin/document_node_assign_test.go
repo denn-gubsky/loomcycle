@@ -509,3 +509,36 @@ func TestOntologySchemes_AssignProposalsOnBothTiers(t *testing.T) {
 		}
 	})
 }
+
+// TestAssign_PlacedUnderAnUncomparedSiblingIsNeverFiled — a document placed live
+// under a concept too small for a centroid (Alpha Three, one member) is placed at
+// that level: the ranker compares only Alpha One and Two, but neither is filed for
+// it, however clear its margin (conditional-qa 2026-11-27: 11 such filings, all
+// wrong). An unplaced document in the same spot is still filed.
+func TestAssign_PlacedUnderAnUncomparedSiblingIsNeverFiled(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	md := strings.Replace(assignOntologyMD, "##### Alpha Two\n", "##### Alpha Two\n\n##### Alpha Three\n", 1)
+	a := newAssignCorpus(t, d, base, md)
+	three := a.f.concepts["topics/alpha/alpha-three"]
+	if three == "" {
+		t.Fatalf("concepts = %v", a.f.concepts)
+	}
+	small := a.doc(t, "/kb/small", []float32{1, 0.02, 0, 0}, three)
+	loose := a.doc(t, "/kb/loose", []float32{1, 0.03, 0, 0}, a.alpha)
+	body := `{"op":"node_stats","mode":"assign","limit":200,"margins":{"2":0.01}}`
+	rep := assignRun(t, d, a.f.operator, body)
+	if r := rep.docOf(t, small).at(t, 2); r.Compared != 2 || r.Nearest.NodeID != a.one || r.Margin < 0.01 || r.Eligible || r.Agrees != nil {
+		t.Errorf("small (placed under Alpha Three) level 2 = %+v; want Alpha One nearest, compared 2, not eligible, no agreement", r)
+	}
+	if r := rep.docOf(t, loose).at(t, 2); !r.Eligible || r.Nearest.NodeID != a.one {
+		t.Errorf("loose (placed at Alpha only) level 2 = %+v; want Alpha One eligible", r)
+	}
+	assignRun(t, d, a.f.operator, `{"op":"node_stats","mode":"assign","propose":true,"margins":{"2":0.01}}`)
+	got := assignedStatements(t, d, a.f.operator)
+	if _, ok := got[a.docs[small]+"->"+a.one]; ok {
+		t.Errorf("filed Alpha One for a document placed under Alpha Three: %v", got)
+	}
+	if _, ok := got[a.docs[loose]+"->"+a.one]; !ok {
+		t.Errorf("did not file Alpha One for the document placed at Alpha only: %v", got)
+	}
+}

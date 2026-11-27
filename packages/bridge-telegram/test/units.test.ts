@@ -462,6 +462,35 @@ describe("cards", () => {
     expect(renderCard(question(["a.txt"]), { untrusted: true })).toEqual(renderCard(question(["a.txt"])));
   });
 
+  /** numbered is the context bridge-core writes for a question's options (RFC HG). */
+  const numbered = (options: string[]) => `${options.map((o, i) => `${i + 1}. ${o}`).join("\n")}\n\nReply with a number, or tap a button.`;
+  const eight = ["o1", "o2", "o3", "o4", "o5", "o6", "o7", "o8"];
+  const asked = (options: string[], over: Partial<{ question: string }> = {}) => {
+    const drawn = question(options.slice(0, 6));
+    return { ...drawn, options, context: numbered(options), ...over } as CanonicalCard;
+  };
+
+  it("shows all eight numbered options and buttons for the six the core drew, then Decline", () => {
+    const r = renderCard(asked(eight));
+    for (const [i, o] of eight.entries()) {
+      expect(r.plain).toContain(`${i + 1}. ${o}`);
+      expect(r.html).toContain(`${i + 1}. ${o}`);
+    }
+    expect(r.replyMarkup!.inline_keyboard.map((row) => row[0]!.text)).toEqual([...eight.slice(0, 6), "Decline"]);
+  });
+
+  it("escapes a numbered option's HTML", () => {
+    const r = renderCard(asked(["<b>bold</b> & co", "no"]));
+    expect(r.html).toContain("1. &lt;b&gt;bold&lt;/b&gt; &amp; co");
+  });
+
+  it("keeps a card within Telegram's message limit, cutting a long question and not the numbered options", () => {
+    const options = Array.from({ length: 20 }, (_, i) => `${"y".repeat(150)}${i}`);
+    const r = renderCard(asked(options, { question: "q".repeat(5000) }));
+    expect(r.plain.length).toBeLessThanOrEqual(4096);
+    expect(r.plain).toContain(`20. ${options[19]}\n\nReply with a number, or tap a button.`);
+  });
+
   it("renders a review with approve and send back on one row", () => {
     const r = renderCard({
       kind: "review",

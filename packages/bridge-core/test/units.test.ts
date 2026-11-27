@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
-import { optionLabels } from "../src/cards.js";
+import { MAX_OPTIONS, numberedOptions, optionLabels, pickOption } from "../src/cards.js";
 import { ConfigError, EnvReader, loadSharedConfig } from "../src/config.js";
 import { Health } from "../src/health.js";
 import { close, createBridgeServer, listen } from "../src/http.js";
@@ -118,6 +118,41 @@ describe("cards", () => {
   it("reads string and object options", () => {
     expect(optionLabels(["a", { label: "b" }, { value: "c" }, 7])).toEqual(["a", "b", "c"]);
     expect(optionLabels(undefined)).toEqual([]);
+  });
+
+  it("keeps up to twenty options (RFC HG D4)", () => {
+    const many = Array.from({ length: 25 }, (_, i) => `o${i + 1}`);
+    expect(optionLabels(many)).toEqual(many.slice(0, MAX_OPTIONS));
+    expect(MAX_OPTIONS).toBe(20);
+  });
+
+  it("numbers the options and says how to answer", () => {
+    expect(numberedOptions(["Yes", "No"], false)).toBe("1. Yes\n2. No\n\nReply with a number, or tap a button.");
+    expect(numberedOptions(["Yes", "No"], true)).toBe("1. Yes\n2. No\n\nReply with a number or type your own answer, or tap a button.");
+    expect(numberedOptions([], true)).toBe("");
+  });
+
+  it("picks an option by number, with a trailing dot or bracket, or by its text", () => {
+    const opts = ["Yes", "No", "Maybe later"];
+    expect(pickOption("1", opts)).toBe("Yes");
+    expect(pickOption(" 2. ", opts)).toBe("No");
+    expect(pickOption("3)", opts)).toBe("Maybe later");
+    expect(pickOption("03", opts)).toBe("Maybe later");
+    expect(pickOption("  maybe LATER ", opts)).toBe("Maybe later");
+    for (const no of ["", "0", "4", "1.5", "-1", "1..", "1 2", "2.)", "one", "+1", "1e0", "１"]) expect(pickOption(no, opts)).toBeUndefined();
+  });
+
+  it("tries an out-of-range number as an option's text", () => {
+    expect(pickOption("10", ["10", "20"])).toBe("10");
+    // In range, the number wins over an option of the same text.
+    expect(pickOption("1", ["2", "1"])).toBe("2");
+  });
+
+  it("reads a long reply in linear time", () => {
+    const start = Date.now();
+    expect(pickOption(`${"9".repeat(100_000)}.`, ["a"])).toBeUndefined();
+    expect(pickOption(`${" ".repeat(100_000)}x`, ["a"])).toBeUndefined();
+    expect(Date.now() - start).toBeLessThan(1000);
   });
 });
 

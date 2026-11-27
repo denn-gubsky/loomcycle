@@ -135,6 +135,7 @@ As a gate the bridge also tells loomcycle about groups and leavers. Every person
 - **A shared chat runs as itself, never as one of its members.** A group chat, or a channel, is its own loomcycle user (`teams-conv-<hash>`), with its own memory and history. Anyone in it may talk to the agent, so no single person's private data or tools are reachable from it. A channel's threads share the channel's identity; each thread is its own run.
 - Every message reaches the agent labelled with the speaker's name, so it knows who is talking.
 - The person who started the conversation answers the agent's question and review cards, and only they can `/new` or `/stop`.
+- A question card lists its options numbered (up to 20), with a button for each of the first six, then Decline. The owner can also reply with a number or an option's text, or their own answer when the question allows one, and with `BRIDGE_STORE=file:<path>` an open question still answers after a restart. See [Questions](../bridge-core#questions).
 - Teams sends the bot channel messages only when it is @mentioned.
 
 ## Files and recordings

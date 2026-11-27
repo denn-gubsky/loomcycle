@@ -20,9 +20,11 @@ export interface RenderedCard {
 /** Button labels are capped at 75 characters by Block Kit. */
 export const MAX_BUTTON_LABEL = 75;
 /** Slack caps all markdown blocks of one message at 12,000 characters together;
- *  the question and its context get a share each, well clear of it. */
+ *  the question and its context get a share each, well clear of it. The
+ *  context holds up to 20 numbered options of up to 200 characters each
+ *  (RFC HG), so it gets the larger share. */
 export const MAX_QUESTION_CHARS = 3000;
-export const MAX_CONTEXT_CHARS = 3000;
+export const MAX_CONTEXT_CHARS = 6000;
 
 function clip(s: string, max: number): string {
   return s.length <= max ? s : `${s.slice(0, max - 1)}…`;
@@ -68,11 +70,9 @@ export function renderCard(card: CanonicalCard, channelType: ChannelType): Rende
 
   const question = clip(card.question.trim() || "The agent has a question.", MAX_QUESTION_CHARS);
   const blocks: Block[] = [md(question)];
+  // The context lists every option numbered (bridge-core, RFC HG), so a long
+  // option shows whole there though its button is cut short.
   if (card.context?.trim()) blocks.push(md(clip(card.context.trim(), MAX_CONTEXT_CHARS)));
-  // A long option shows whole in the card's text, since its button is cut short.
-  if (card.options.some((o) => o.length > MAX_BUTTON_LABEL)) {
-    blocks.push(md(card.options.map((o, i) => `${i + 1}. ${o}`).join("\n")));
-  }
   const buttons = card.buttons.filter((b) => !isSendButton(b));
   if (card.options.length === 0) {
     const where = channelType === "im" ? "Reply with your answer" : "Reply in this thread with your answer";

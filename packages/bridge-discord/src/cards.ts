@@ -32,6 +32,8 @@ export const CUSTOM_ID_PREFIX = "lc:";
 export const MAX_CUSTOM_ID = 100;
 const MAX_LABEL = 80;
 export const MAX_CONTENT = 2000;
+/** A question is cut to make room for its context, but never below this. */
+const MIN_QUESTION_CHARS = 300;
 const BUTTONS_PER_ROW = 5;
 const Style = { PRIMARY: 1, SECONDARY: 2, SUCCESS: 3, DANGER: 4 } as const;
 
@@ -98,9 +100,15 @@ export function renderCard(card: CanonicalCard): MessageBody {
         .filter((b) => !(freeText && b.action.verb === VERB.answer))
         .map((b) => button(b, b.action.verb === VERB.decline ? Style.SECONDARY : Style.PRIMARY));
       const hint = freeText ? `\n\n${FREE_TEXT_HINT}` : "";
-      const text = neutraliseLinks([card.question || "The agent has a question.", card.context].filter(Boolean).join("\n\n"));
+      const budget = MAX_CONTENT - hint.length - 13;
+      // The context ends with the numbered options and how to answer them
+      // (bridge-core, RFC HG), so a long question is cut before it is.
+      const context = card.context ? neutraliseLinks(card.context) : "";
+      const room = context ? Math.max(MIN_QUESTION_CHARS, budget - context.length - 2) : budget;
+      const question = clip(neutraliseLinks(card.question || "The agent has a question."), room);
+      const text = [question, context].filter(Boolean).join("\n\n");
       return {
-        content: `**Question**\n${clip(text, MAX_CONTENT - hint.length - 13)}${hint}`,
+        content: `**Question**\n${clip(text, budget)}${hint}`,
         components: rows(buttons),
         allowed_mentions: NO_MENTIONS,
         flags: SUPPRESS_EMBEDS,
