@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/agents"
@@ -845,7 +846,29 @@ func (a *AgentDef) execFork(ctx context.Context, policy tools.AgentDefPolicyValu
 			return errResult(fmt.Sprintf("fork: promote: %s", err)), nil
 		}
 	}
-	return okJSON(rowResponse(created, promote))
+	resp := rowResponse(created, promote)
+	if dropped := removedFromParent(parent.Definition); len(dropped) > 0 {
+		resp["removed"] = dropped
+		resp["note"] = "the forked version names " + strings.Join(dropped, ", ") + ", which " + config.RemovedIn + " removed; the new version does not carry it (see " + config.MigrationGuide + ")"
+	}
+	return okJSON(resp)
+}
+
+// removedFromParent names what v1.172.0 removed that a forked version's
+// definition still holds (RFC GW P15 Q1), in table order: what the fork
+// stripped.
+func removedFromParent(parentJSON json.RawMessage) []string {
+	var base mergedDef
+	_ = json.Unmarshal(parentJSON, &base)
+	_, tools := config.WithoutRemovedTools(base.Tools)
+	fields := config.RemovedFieldsInJSON(parentJSON)
+	var out []string
+	for _, r := range config.Removals() {
+		if slices.Contains(tools, r.Name) || slices.Contains(fields, r.Name) {
+			out = append(out, r.Name)
+		}
+	}
+	return out
 }
 
 // ---- get / list ----
@@ -1154,6 +1177,10 @@ func (a *AgentDef) buildDefinition(ctx context.Context, name, parentJSON string,
 		// parent JSON yet but a static entry exists.
 		base = staticToMergedDef(static)
 	}
+	// What v1.172.0 removed and the forked version still names is stripped
+	// (RFC GW P15 Q1): a fork that only inherits it is not refused, and the
+	// new version does not carry it on. execFork says what went.
+	base.Tools, _ = config.WithoutRemovedTools(base.Tools)
 
 	modesSent := false
 	if len(overlay) > 0 {
@@ -1179,6 +1206,13 @@ func (a *AgentDef) buildDefinition(ctx context.Context, name, parentJSON string,
 		// read through decodeAgentOverlay on every resolve, and there a
 		// removal that names no default tool only fails to remove anything.
 		if err := config.ValidateToolRemovals(ov.Tools); err != nil {
+			return mergedDef{}, fmt.Errorf("AgentDef tool: %w", err)
+		}
+		// Authoring only, like the removals above: a stored definition naming
+		// a removed item runs without it (InertToolGrants), while a new
+		// request naming one is refused with the line to change (RFC GW P15
+		// Q1).
+		if err := config.RefuseRemovedAuthoring(ov.Tools, overlay); err != nil {
 			return mergedDef{}, fmt.Errorf("AgentDef tool: %w", err)
 		}
 		// Authoring only: a stored definition carrying it still loads and is
@@ -1293,9 +1327,6 @@ func decodeAgentOverlay(overlay json.RawMessage) (mergedDef, error) {
 	// The tool names and the mode alone; that each tool is granted is judged
 	// on the merged definition (buildDefinition), whose tools a fork may keep.
 	if err := config.ValidateToolModeNames(ov.ToolModes); err != nil {
-		return mergedDef{}, fmt.Errorf("AgentDef tool: %w", err)
-	}
-	if err := config.ValidateShellCredentials(ov.ShellCredentials); err != nil {
 		return mergedDef{}, fmt.Errorf("AgentDef tool: %w", err)
 	}
 	if err := config.ValidateGitRemote(ov.GitRemote); err != nil {
@@ -1699,13 +1730,6 @@ type mergedDef struct {
 	// it keeps its parent's. A fork may add a read mode and may not remove one
 	// (forkToolModes), as with retention: none and the allow_overrides lock.
 	ToolModes map[string]string `json:"tool_modes,omitempty"`
-	// ShellCredentials narrows the credentials the agent's Bash and Bashbox
-	// host commands receive (config.AgentDef.ShellCredentials, RFC EW). A
-	// pointer so "absent" (every credential the operator lists) and `[]`
-	// (none) stay apart in the stored JSON. Authority, not content: excluded
-	// from content_sha256, held to the author's own narrowing by
-	// ceilShellCreds, and a fork that does not send it keeps its parent's.
-	ShellCredentials *config.CredentialNames `json:"shell_credentials,omitempty"`
 	// GitRemote is the Git tool's network grant (config.AgentDef.GitRemote,
 	// RFC FB). Absent and [] both mean none, so a plain omitempty list is
 	// enough. Authority, not content: excluded from content_sha256, held to
@@ -1964,9 +1988,6 @@ func (d *mergedDef) applyOverlay(ov mergedDef) {
 	if ov.ToolModes != nil {
 		d.ToolModes = ov.ToolModes
 	}
-	if ov.ShellCredentials != nil {
-		d.ShellCredentials = ov.ShellCredentials
-	}
 	if ov.GitRemote != nil {
 		d.GitRemote = ov.GitRemote
 	}
@@ -2062,7 +2083,6 @@ var unhashedCapabilityTags = []string{
 	"retry_attempts",
 	"run_timeout_seconds",
 	"schedule_def_scopes",
-	"shell_credentials", // RFC EW: absent and [] differ, and the stored JSON keeps them apart
 	"skills",            // the skills: pattern allowlist is authority, not content
 	"statement_methods", // which relation methods a code-js agent may stamp: authority, not content
 	"system_prompt_base",
@@ -2079,10 +2099,7 @@ var unhashedCapabilityTags = []string{
 // Both sides are compared through their JSON encoding, which is what makes the
 // nil-vs-empty case correct for free: these fields are `omitempty` slices, so
 // an absent slice and an explicit `[]` both encode to "key missing" and
-// compare equal. The exception is `shell_credentials`, a pointer whose `[]`
-// means "none" and absent means "every operator credential": those two encode
-// differently and so count as a change, as they should (a fork changing only
-// that mints a new version). Comparison is order-SENSITIVE for slices,
+// compare equal. Comparison is order-SENSITIVE for slices,
 // matching the hashed path (agents.TestSign_OrderPreservedInArrays pins that
 // reordering `tools` changes the hash, so reordering an authority list should
 // count as a change here too).
@@ -2104,6 +2121,14 @@ func unhashedCapabilityFieldsMatch(stored json.RawMessage, incoming mergedDef) b
 	}
 	for _, tag := range unhashedCapabilityTags {
 		if !bytes.Equal(storedFields[tag], incomingFields[tag]) {
+			return false
+		}
+	}
+	// A stored row that still holds a removed field (shell_credentials, RFC
+	// GW P15) is not the clean definition being written: mint a new version
+	// rather than hand back the old row, whose runs carry a removed notice.
+	for _, r := range config.Removals() {
+		if _, held := storedFields[r.Name]; held && r.Kind == config.RemovedKindField {
 			return false
 		}
 	}
@@ -2176,10 +2201,6 @@ func staticToMergedDef(s config.AgentDef) mergedDef {
 		// RFC GL: a fork of a static read-only agent stays read-only; without
 		// this copy it came back holding Document and Path whole.
 		ToolModes: s.ToolModes,
-		// RFC EW: a fork of a static agent that narrowed its shell's
-		// credentials keeps the narrowing; without this copy the fork came
-		// back holding every credential the operator lists.
-		ShellCredentials: s.ShellCredentials,
 		// RFC FB: a fork of a static agent keeps its Git network grant; it is
 		// authority the operator gave, not something the fork asks for.
 		GitRemote: s.GitRemote,

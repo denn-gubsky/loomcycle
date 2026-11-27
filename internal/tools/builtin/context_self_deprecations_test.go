@@ -11,14 +11,12 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
-// RFC GW P14 (owner ruling Q5): op=self names each deprecated tool or field
-// the run was given, with its replacement, and says nothing of the
-// deployment's environment or of a credential the field lists.
-func TestContextSelf_DeprecationsNameWhatTheRunUsesWithItsReplacement(t *testing.T) {
-	cfg := &config.Config{Env: config.Env{BashAllowedCreds: []string{"GITHUB_TOKEN"}}}
-	self := func(p tools.RunPolicy) (map[string]any, string) {
+// RFC GW P15 Q3: op=self names each removed item the run's definition still
+// names, in table order, with what replaces it, and nothing else.
+func TestContextSelf_ListsDroppedItems(t *testing.T) {
+	self := func(p tools.RunPolicy) map[string]any {
 		t.Helper()
-		res, _ := (&Context{Cfg: cfg}).Execute(tools.WithRunPolicy(context.Background(), p), json.RawMessage(`{"op":"self"}`))
+		res, _ := (&Context{Cfg: &config.Config{}}).Execute(tools.WithRunPolicy(context.Background(), p), json.RawMessage(`{"op":"self"}`))
 		if res.IsError {
 			t.Fatalf("self: %s", res.Text)
 		}
@@ -26,38 +24,31 @@ func TestContextSelf_DeprecationsNameWhatTheRunUsesWithItsReplacement(t *testing
 		if err := json.Unmarshal([]byte(res.Text), &out); err != nil {
 			t.Fatalf("self JSON: %v", err)
 		}
-		return out, res.Text
+		return out
 	}
-	names := func(out map[string]any) []string {
-		var got []string
-		list, _ := out["deprecations"].([]any)
-		for _, e := range list {
-			m := e.(map[string]any)
-			if r, _ := m["replacement"].(string); r == "" {
-				t.Errorf("%v has no replacement", m)
-			}
-			got = append(got, m["name"].(string))
-		}
-		return got
-	}
-
-	keep := config.CredentialNames{"GITHUB_TOKEN"}
-	out, raw := self(tools.RunPolicy{
-		Tools:      []string{"Read", "Bashbox", "Bash", "mcp__sandbox__exec", "mcp__sandbox__read", "Workspace"},
-		ShellCreds: tools.ShellCredsFor(&keep),
+	out := self(tools.RunPolicy{
+		Tools:   []string{"Read", "Workspace"},
+		Removed: []string{"shell_credentials", "Bash", "Bashbox"},
 	})
-	want := []string{"Bash", "Bashbox", "mcp__sandbox__", "shell_credentials"}
-	if got := names(out); !reflect.DeepEqual(got, want) {
-		t.Errorf("deprecations = %v, want %v (table order, one per row)", got, want)
+	var got []string
+	list, _ := out["deprecations"].([]any)
+	for _, e := range list {
+		m := e.(map[string]any)
+		r, _ := m["replacement"].(string)
+		if !strings.Contains(r, "removed in "+config.RemovedIn) || !strings.Contains(r, config.MigrationGuide) {
+			t.Errorf("%v: the replacement does not say it was removed and where to read", m)
+		}
+		got = append(got, m["name"].(string))
 	}
-	list, _ := json.Marshal(out["deprecations"])
-	if strings.Contains(string(list), "GITHUB_TOKEN") || strings.Contains(string(list), "LOOMCYCLE_") {
-		t.Errorf("deprecations name a credential or a variable: %s", list)
+	if want := []string{"Bash", "Bashbox", "shell_credentials"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("deprecations = %v, want %v (table order)", got, want)
 	}
-	_ = raw
+	if _, ok := out["shell_credentials"]; ok {
+		t.Errorf("op=self still reports shell_credentials: %v", out["shell_credentials"])
+	}
 
-	out, _ = self(tools.RunPolicy{Tools: []string{"Read", "Workspace"}})
+	out = self(tools.RunPolicy{Tools: []string{"Read", "Workspace"}})
 	if _, ok := out["deprecations"]; ok {
-		t.Errorf("a run using nothing deprecated reports %v, want no field", out["deprecations"])
+		t.Errorf("a run whose definition names nothing removed reports %v, want no field", out["deprecations"])
 	}
 }

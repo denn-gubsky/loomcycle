@@ -23,7 +23,7 @@ func configTestCfg() *config.Config {
 	cfg.Env.PublicURL = "https://loomcycle.cloud"
 	cfg.Env.MaxRequestBytes = 16 << 20
 	cfg.Env.BraveAPIKey = "brave-secret-key-value"
-	cfg.Env.BashEnabled = true
+	cfg.Env.RetentionEnabled = true
 	cfg.Storage.Backend = "postgres"
 	cfg.Storage.PgDSN = "postgres://u:hunter2@db.internal:5432/loom"
 	cfg.SearchProviders = map[string]config.SearchProviderConfig{
@@ -172,8 +172,8 @@ func TestConfig_PublicViewLeaksNoSecretsTopologyOrPlans(t *testing.T) {
 	if !ok || len(feats) == 0 {
 		t.Fatalf("features missing from the public view: %v", out["features"])
 	}
-	if b, isBool := feats["bash"].(bool); !isBool || !b {
-		t.Errorf("features.bash = %v (%T), want the bool true", feats["bash"], feats["bash"])
+	if b, isBool := feats["retention"].(bool); !isBool || !b {
+		t.Errorf("features.retention = %v (%T), want the bool true", feats["retention"], feats["retention"])
 	}
 	if _, isMap := feats["search"].(map[string]any); isMap {
 		t.Error("features.search is still a nested object in the public view; it must be reduced to a bool")

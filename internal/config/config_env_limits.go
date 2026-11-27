@@ -28,18 +28,6 @@ func applyEnvToolLimits(cfg *Config) error {
 	if n, err := strconv.Atoi(os.Getenv("LOOMCYCLE_AUDIO_MAX_INFLIGHT")); err == nil && n > 0 {
 		cfg.Env.AudioMaxInflight = n
 	}
-	// Bashbox in-memory write cap (RFC ES follow-up): a positive override
-	// tunes it; a non-positive or malformed value keeps the default, since
-	// the cap is what keeps one call from exhausting the shared heap. gbash
-	// writes a few KiB of command stubs into the overlay as each call starts,
-	// so a value under 1 MiB is raised to 1 MiB rather than failing every
-	// call on a read-only volume.
-	cfg.Env.BashboxOverlayMaxBytes = BashboxOverlayMaxBytesDefault
-	if v := os.Getenv("LOOMCYCLE_BASHBOX_OVERLAY_MAX_BYTES"); v != "" {
-		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
-			cfg.Env.BashboxOverlayMaxBytes = max(n, 1<<20)
-		}
-	}
 	// Inbox and MCP frame caps (RFC FF). Refused rather than defaulted when
 	// they do not parse: a cap meant to be lowered and read as the default
 	// would keep more than the operator allowed.

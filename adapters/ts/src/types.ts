@@ -717,9 +717,12 @@ export interface HookDecisionInfo {
  *  the governing yaml key is not guessable from the tool name, which is most of
  *  why this failure was hard to act on. */
 export interface CapabilityInertInfo {
-  /** The granted tool, as named in the agent's `tools` list. */
+  /** The granted tool, as named in the agent's `tools` list. For gate
+   *  `removed`, the removed tool or field the definition still names. */
   tool: string;
-  /** The yaml key that governs it, e.g. `agent_def_scopes`. */
+  /** The yaml key that governs it, e.g. `agent_def_scopes`; or `removed`
+   *  (v1.172.0+): a stored definition names something loomcycle removed
+   *  (`Bash`, `Bashbox`, `shell_credentials`), and the run was not given it. */
   gate: string;
   /** A line naming the tool, the gate, and what to set. */
   message?: string;
@@ -1946,11 +1949,6 @@ export interface RunSpec {
      *  read modes the child holds on top of its own `tool_modes`, and holds
      *  again on resume. Absent: the parent held none. */
     tool_modes?: Record<string, string>;
-    /** The parent run's shell-credential narrowing at spawn (RFC EW): the
-     *  names the child's own `shell_credentials` were narrowed to, and are
-     *  narrowed to again on resume. Absent: the parent narrowed nothing. `[]`:
-     *  the parent allowed none. */
-    shell_credentials?: string[];
     /** The parent run's Git network grant at spawn (RFC FB): the operations
      *  the child's own `git_remote` was narrowed to, and is narrowed to again
      *  on resume. Absent: the parent had none. */
@@ -7082,13 +7080,6 @@ export interface AgentDefOverlay {
    *  `tools`. Unset = every tool whole. A fork may add a read mode and may not
    *  remove one. */
   tool_modes?: Record<string, "read">;
-  /** Which operator-listed credentials the agent's `Bash` and Bashbox host
-   *  commands receive (RFC EW): only these names of
-   *  `LOOMCYCLE_BASH_ALLOWED_CREDS` / `LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS`.
-   *  Unset = every credential the operator lists; `[]` = none; never adds one.
-   *  Held to the author's own narrowing; a sub-agent gets only the names its
-   *  parent run also allows. */
-  shell_credentials?: string[];
   /** Which network operations the agent's `Git` tool may perform (RFC FB):
    *  `['fetch']` (clone, fetch, pull, ls_remote) or `['fetch', 'push']`.
    *  Unset or `[]` = none, local repositories only; `push` needs `fetch`.

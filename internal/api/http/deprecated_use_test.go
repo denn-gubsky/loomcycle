@@ -17,26 +17,28 @@ func captureDeprecatedLog() (*slog.Logger, *bytes.Buffer) {
 	return slog.New(slog.NewTextHandler(&buf, nil)), &buf
 }
 
+// shellDef is a stored definition read back after v1.172.0: it names Bash, an
+// MCP tool of a server called sandbox (an ordinary MCP tool now, P15 Q2), and
+// the shell_credentials its stored JSON still holds.
 func shellDef() config.AgentDef {
-	creds := config.CredentialNames{"cred-name-5e1d"}
 	return config.AgentDef{
-		Tools:            []string{"Read", "Bash", "mcp__sandbox__sandbox_exec", "mcp__sandbox__sandbox_read"},
-		ShellCredentials: &creds,
+		Tools:         []string{"Read", "Bash", "mcp__sandbox__sandbox_exec", "mcp__sandbox__sandbox_read"},
+		RemovedFields: config.RemovedFieldsInJSON([]byte(`{"shell_credentials":["cred-name-5e1d"]}`)),
 	}
 }
 
-// A run given deprecated items counts each row once, by its kind and the
-// table's name: the label set stays bounded by the table.
-func TestDeprecatedUse_CountsEachRowOncePerRun(t *testing.T) {
+// A run whose definition names removed items counts each row once, by its
+// kind and the table's name: the label set stays bounded by the table, and
+// an mcp__sandbox__ tool is not counted (RFC GW P15 Q2).
+func TestDeprecatedUse_CountsADroppedItem(t *testing.T) {
 	log, _ := captureDeprecatedLog()
 	d := newDeprecatedUse(log)
 	d.note(context.Background(), "t1", "coder", shellDef(), true)
 	d.note(context.Background(), "t1", "coder", config.AgentDef{Tools: []string{"Read", "Workspace"}}, true)
 	got := d.snapshot()
 	want := map[deprecatedUseKey]int64{
-		{config.DeprecatedKindTool, "Bash"}:               1,
-		{config.DeprecatedKindTool, "mcp__sandbox__"}:     1,
-		{config.DeprecatedKindField, "shell_credentials"}: 1,
+		{config.RemovedKindTool, "Bash"}:               1,
+		{config.RemovedKindField, "shell_credentials"}: 1,
 	}
 	if len(got) != len(want) {
 		t.Fatalf("counts = %v, want %v", got, want)
@@ -59,7 +61,7 @@ func TestDeprecatedUse_LogsOncePerTenantAndAgentWithNamesOnly(t *testing.T) {
 	d.note(context.Background(), "t2", "coder", shellDef(), true)
 	d.note(context.Background(), "t1", "other", shellDef(), true)
 	out := buf.String()
-	if n := strings.Count(out, "will be removed in a future release"); n != 3 {
+	if n := strings.Count(out, "and the run was not given it"); n != 3 {
 		t.Fatalf("got %d log lines, want 3 (t1/coder, t2/coder, t1/other):\n%s", n, out)
 	}
 	for _, want := range []string{"coder", "Bash", "shell_credentials", config.MigrationGuide} {
@@ -72,8 +74,8 @@ func TestDeprecatedUse_LogsOncePerTenantAndAgentWithNamesOnly(t *testing.T) {
 	}
 }
 
-// An operator's static agent was warned about at boot: its runs are counted
-// and not logged again.
+// A static agent (an embedded bundle's; an operator's would not load) is
+// counted and not logged.
 func TestDeprecatedUse_AStaticAgentIsCountedNotLogged(t *testing.T) {
 	log, buf := captureDeprecatedLog()
 	d := newDeprecatedUse(log)
@@ -81,7 +83,7 @@ func TestDeprecatedUse_AStaticAgentIsCountedNotLogged(t *testing.T) {
 	if buf.Len() != 0 {
 		t.Fatalf("logged: %s", buf.String())
 	}
-	if d.snapshot()[deprecatedUseKey{config.DeprecatedKindTool, "Bash"}] != 1 {
+	if d.snapshot()[deprecatedUseKey{config.RemovedKindTool, "Bash"}] != 1 {
 		t.Fatal("not counted")
 	}
 }
@@ -94,10 +96,10 @@ func TestDeprecatedUse_TheLoggedSetIsBounded(t *testing.T) {
 	for i := range maxDeprecatedLogKeys + 10 {
 		d.note(context.Background(), "t", string(rune('a'+i%26))+strings.Repeat("x", i), shellDef(), true)
 	}
-	if n := strings.Count(buf.String(), "will be removed"); n != maxDeprecatedLogKeys {
+	if n := strings.Count(buf.String(), "and the run was not given it"); n != maxDeprecatedLogKeys {
 		t.Fatalf("logged %d, want %d", n, maxDeprecatedLogKeys)
 	}
-	if got := d.snapshot()[deprecatedUseKey{config.DeprecatedKindTool, "Bash"}]; got != maxDeprecatedLogKeys+10 {
+	if got := d.snapshot()[deprecatedUseKey{config.RemovedKindTool, "Bash"}]; got != maxDeprecatedLogKeys+10 {
 		t.Fatalf("counted %d", got)
 	}
 }
@@ -117,10 +119,10 @@ func TestStartRunSpan_CountsADeprecatedUse(t *testing.T) {
 	span.End()
 	_, span = srv.startRunSpan(context.Background(), shellDef(), lcotel.RunStartAttrs{AgentName: "coder", Tenant: "t2"})
 	span.End()
-	if got := srv.deprecatedUse.snapshot()[deprecatedUseKey{config.DeprecatedKindTool, "Bash"}]; got != 2 {
+	if got := srv.deprecatedUse.snapshot()[deprecatedUseKey{config.RemovedKindTool, "Bash"}]; got != 2 {
 		t.Fatalf("counted %d, want 2", got)
 	}
-	if n := strings.Count(buf.String(), "will be removed"); n != 1 {
+	if n := strings.Count(buf.String(), "and the run was not given it"); n != 1 {
 		t.Fatalf("logged %d lines, want 1 (the stored definition):\n%s", n, buf.String())
 	}
 }

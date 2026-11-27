@@ -96,8 +96,10 @@ func TestRetiredEnvRefusals_RefusesAValueThatAskedForSomethingTighter(t *testing
 		{name: "LOOMCYCLE_CODE_AGENTS_ENABLED", value: "", refused: true},
 		{name: "LOOMCYCLE_CODE_HOOKS_ENABLED", value: "true", refused: true},
 		{name: "LOOMCYCLE_CHANNEL_HOOKS", value: "1"},
+		// Bashbox is gone (RFC GW P15): its gate refuses on any value.
 		{name: "LOOMCYCLE_BASHBOX_ENABLED", value: "0", refused: true},
-		{name: "LOOMCYCLE_BASHBOX_ENABLED", value: "1"},
+		{name: "LOOMCYCLE_BASHBOX_ENABLED", value: "1", refused: true},
+		{name: "LOOMCYCLE_BASHBOX_ENABLED", value: ""},
 		{name: "LOOMCYCLE_RESUME_FANOUT", value: "off", refused: true},
 
 		// Caps: lowered or unreadable is refused; raised, equal, or the old

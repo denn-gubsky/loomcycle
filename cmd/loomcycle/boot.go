@@ -81,8 +81,6 @@ type boot struct {
 	skillSet          *skills.Set
 	helpSet           *help.Set
 	embedder          providers.Embedder
-	bashboxTool       *builtin.Bashbox
-	bashTool          *builtin.Bash
 	skillTool         *builtin.SkillTool
 	memoryTool        *builtin.Memory
 	channelBus        *channels.Bus

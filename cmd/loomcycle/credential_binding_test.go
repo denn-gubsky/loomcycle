@@ -3,10 +3,7 @@ package main
 import (
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
-	"os/exec"
-	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -15,11 +12,9 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/credential"
 	"github.com/denn-gubsky/loomcycle/internal/credential/credentialtest"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
-	"github.com/denn-gubsky/loomcycle/internal/redact"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
-	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
 
 // bindingWith stores credentials in tenant "t" (name → expires_at; nil for
@@ -91,25 +86,6 @@ func TestCredentialBinding_ExpiredProviderKeyFailsInsteadOfTheOperatorKey(t *tes
 	}
 }
 
-// The Bash / Bashbox injector reports an expired credential as an error (so
-// the tool unsets the variable, host var included), a missing one as a miss
-// (so the host var stays), and a live one as its value.
-func TestCredentialBinding_EnvVarSeparatesExpiredFromMissing(t *testing.T) {
-	past := time.Now().Add(-time.Minute)
-	b, _ := bindingWith(t, map[string]*time.Time{"GITHUB_TOKEN": &past, "GITLAB_TOKEN": nil})
-	resolve := b.envVar("bash")
-
-	if v, ok, err := resolve(runCtx(), "GITHUB_TOKEN"); !errors.Is(err, credential.ErrExpired) || ok || v != "" {
-		t.Errorf("expired: (%q, %v, %v), want an ErrExpired error and no value", v, ok, err)
-	}
-	if v, ok, err := resolve(runCtx(), "NPM_TOKEN"); err != nil || ok || v != "" {
-		t.Errorf("missing: (%q, %v, %v), want a plain miss", v, ok, err)
-	}
-	if v, ok, err := resolve(runCtx(), "GITLAB_TOKEN"); err != nil || !ok || v != "GITLAB_TOKEN-value" {
-		t.Errorf("live: ok=%v err=%v, want its value", ok, err)
-	}
-}
-
 // RFC AX Layer 1: a provider whose tenant key expired is not keyable, so a
 // restricted run is not routed to it (it may not use the operator key there).
 func TestCredentialBinding_AnExpiredKeyIsNotKeyable(t *testing.T) {
@@ -124,9 +100,8 @@ func TestCredentialBinding_AnExpiredKeyIsNotKeyable(t *testing.T) {
 }
 
 // A key the run holds but has restricted by allowed_urls is held, not
-// missing: the provider call fails instead of taking the operator's key, the
-// Bash / Bashbox variable is reported unusable instead of letting the host
-// variable through, and a restricted run is not routed on it.
+// missing: the provider call fails instead of taking the operator's key, and
+// a restricted run is not routed on it.
 func TestCredentialBinding_ARestrictedKeyIsNeverReplaced(t *testing.T) {
 	b, registered := bindingWith(t, nil)
 	scoped := &[]string{"https://api.example.com"}
@@ -147,9 +122,6 @@ func TestCredentialBinding_ARestrictedKeyIsNeverReplaced(t *testing.T) {
 		}
 	}
 
-	if v, ok, err := b.envVar("bash")(runCtx(), "GITHUB_TOKEN"); !errors.Is(err, credential.ErrRestricted) || ok || v != "" {
-		t.Errorf("env var: (%q, %v, %v), want a restricted error and no value", v, ok, err)
-	}
 	if b.keyable(context.Background(), "t", "", "u", "ANTHROPIC_API_KEY") {
 		t.Error("a restricted tenant key was reported keyable")
 	}
@@ -159,7 +131,7 @@ func TestCredentialBinding_ARestrictedKeyIsNeverReplaced(t *testing.T) {
 }
 
 // A run a trigger started without the right to act as its user does not
-// take that user's own provider key or host credential: the tenant's is used,
+// take that user's own provider key: the tenant's is used,
 // or none. Any other run takes the user's, as before.
 func TestCredentialBinding_ATriggerRunNeverTakesTheUsersOwnKey(t *testing.T) {
 	b, _ := bindingWith(t, nil)
@@ -177,69 +149,9 @@ func TestCredentialBinding_ATriggerRunNeverTakesTheUsersOwnKey(t *testing.T) {
 		if err != nil || !found || res.Value != want {
 			t.Errorf("CredentialsNoUserScope=%t: provider key %q found=%t err=%v, want %q", noUser, res.Value, found, err, want)
 		}
-		_, gotEnv, _ := b.envVar("bashbox")(ctx, "GITHUB_TOKEN")
-		if gotEnv == noUser {
-			t.Errorf("CredentialsNoUserScope=%t: bob's own GITHUB_TOKEN injected = %t", noUser, gotEnv)
-		}
 		if keyable := b.keyable(ctx, "t", "", "bob", "GITHUB_TOKEN"); keyable == noUser {
 			t.Errorf("CredentialsNoUserScope=%t: keyable on bob's own key = %t", noUser, keyable)
 		}
-	}
-}
-
-// A credential injected into a Bash child, or into a Bashbox host command,
-// is registered with the redactor as it is resolved, so a command that prints
-// its environment does not put the value into the stored transcript (the
-// server masks tool results with this redactor before persisting them). The
-// live result still carries it: the model can read any credential it is
-// given, and the redactor only keeps it out of what is stored.
-func TestBash_ResolvedCredValueRedactedFromOutput(t *testing.T) {
-	if _, err := exec.LookPath("env"); err != nil {
-		t.Skip("host env not available")
-	}
-	const value = "GITHUB_TOKEN-value"
-	root, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx := tools.UpdateRunPolicy(runCtx(), func(rp *tools.RunPolicy) {
-		rp.Volumes = tools.VolumePolicyValue{Active: true, Bindings: []tools.VolumeBinding{{Name: "default", Root: root, Default: true}}}
-	})
-	cmd, _ := json.Marshal(map[string]any{"command": "env"})
-
-	for _, tc := range []struct {
-		name string
-		tool func(b credentialBinding) tools.Tool
-	}{
-		{"Bash", func(b credentialBinding) tools.Tool {
-			return &builtin.Bash{Enabled: true, AllowedCreds: []string{"GITHUB_TOKEN"}, CredResolve: b.envVar("bash")}
-		}},
-		{"BashboxFallback", func(b credentialBinding) tools.Tool {
-			return &builtin.Bashbox{FallbackCommands: []string{"env"}, FallbackAllowedCreds: []string{"env:GITHUB_TOKEN"}, CredResolve: b.envVar("bashbox")}
-		}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			b, _ := bindingWith(t, map[string]*time.Time{"GITHUB_TOKEN": nil})
-			rd := redact.New(nil, true)
-			sink := &secretSink{}
-			sink.set(func() *redact.Redactor { return rd })
-			b.register = sink.registerCredential
-			res, err := tc.tool(b).Execute(ctx, cmd)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !strings.Contains(res.Text, "GITHUB_TOKEN="+value) {
-				t.Fatalf("the credential was not injected, so nothing is tested: %q", res.Text)
-			}
-			// The value is not secret-shaped: the patterns alone leave it, so
-			// masking below can only come from the registration.
-			if !strings.Contains(redact.New(nil, true).String(res.Text), value) {
-				t.Fatal("a pattern masks the test value; the registration is not what is tested")
-			}
-			if stored := rd.String(res.Text); strings.Contains(stored, value) {
-				t.Errorf("the resolved value survives redaction: %q", stored)
-			}
-		})
 	}
 }
 

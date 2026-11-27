@@ -228,17 +228,11 @@ func TestAgentDefFork_CodeBodyChangeOnAModelAgentDoesNotInheritBaseGrants(t *tes
 
 // The ceilings ceilingCases does not reach. Each base grant is refused to a
 // changed-code fork by an author holding less, and kept by a same-code fork.
-func TestAgentDefFork_ChangedCodeIsHeldToTheAuthorOnShellWorkspaceAndReadReach(t *testing.T) {
+func TestAgentDefFork_ChangedCodeIsHeldToTheAuthorOnWorkspaceAndReadReach(t *testing.T) {
 	cases := []struct {
 		field, base, fork, refusedAs string
 		policy                       func(context.Context) context.Context
 	}{
-		{field: "shell_credentials", base: `{"shell_credentials":["A","B"]}`, refusedAs: "shell_credentials:",
-			policy: func(ctx context.Context) context.Context {
-				return tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
-					rp.ShellCreds = tools.ShellCredsPolicyValue{Set: true, Names: []string{"A"}}
-				})
-			}},
 		{field: "workspace", base: `{"workspace":{"ops":["read","write"]}}`, refusedAs: "workspace.ops:",
 			policy: func(ctx context.Context) context.Context {
 				return tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Workspace = tools.WorkspacePolicyValue{Read: true} })

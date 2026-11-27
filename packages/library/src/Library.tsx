@@ -525,8 +525,6 @@ interface AgentDefBody {
   crypto_scopes?: string[];
   // RFC GL: a tool narrowed to its read operations; absent = every tool whole.
   tool_modes?: Record<string, string>;
-  // RFC EW: absent = every credential the operator lists; [] = none.
-  shell_credentials?: string[];
   // RFC FB: absent and [] both mean no Git network operation.
   git_remote?: string[];
   // RFC GW: absent = no workspace access.
@@ -639,7 +637,6 @@ function AgentGrants({ body }: { body: AgentDefBody }) {
     ["evaluation_scopes", body.evaluation_scopes],
     ["crypto_scopes", body.crypto_scopes],
     ["tool_modes", body.tool_modes && Object.entries(body.tool_modes).map(([tool, mode]) => `${tool}: ${mode}`)],
-    ["shell_credentials", body.shell_credentials],
     ["git_remote", body.git_remote],
     ["workspace", workspaceGrantLines(body.workspace)],
     ["statement_methods", body.statement_methods],
@@ -659,9 +656,6 @@ function AgentGrants({ body }: { body: AgentDefBody }) {
     // The state worth showing is the lock, which is the field being false.
     ["allow_overrides: false", body.allow_overrides === false],
     ["retention: none", body.retention === "none"],
-    // An empty shell_credentials is the narrowest setting, and an empty list
-    // would not render as a gate, so it is shown as a flag.
-    ["shell_credentials: none", Array.isArray(body.shell_credentials) && body.shell_credentials.length === 0],
   ];
   const shownGates = scopeGates.filter(([, v]) => v && v.length > 0);
   const shownFlags = flags.filter(([, v]) => v === true);

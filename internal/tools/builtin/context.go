@@ -458,7 +458,7 @@ func (c *Context) execSelf(ctx context.Context) (tools.Result, error) {
 	// volumes: the filesystem volumes (RFC AH) the file/exec tools enforce for
 	// this run. Each entry names the volume + mode (ro/rw) + whether it's the
 	// default for an omitted `volume` arg. Paths passed to Read/Write/Edit/
-	// Glob/Grep and Bash commands resolve RELATIVE to a volume's root (~ is
+	// Glob/Grep resolve RELATIVE to a volume's root (~ is
 	// not expanded). Surfaced so a bound agent knows precisely which volumes
 	// it may touch and which verb each allows, instead of guessing host paths.
 	//
@@ -490,7 +490,7 @@ func (c *Context) execSelf(ctx context.Context) (tools.Result, error) {
 			"path_convention": "Pass paths RELATIVE to a volume root (e.g. \"src/main.go\"); ~ is not expanded. Set the \"volume\" tool argument to target a non-default volume; omit it to use the one marked default.",
 		}
 	} else {
-		out["filesystem"] = "none — no volume bound; Read/Write/Edit/Glob/Grep/Bash refuse. Bind a volume via the agent's `volumes:` list (operator declares the universe in the top-level `volumes:` config)."
+		out["filesystem"] = "none — no volume bound; Read/Write/Edit/Glob/Grep refuse. Bind a volume via the agent's `volumes:` list (operator declares the universe in the top-level `volumes:` config)."
 	}
 	// RFC EY: the access-control set the run's tree runs under — the
 	// originating principal's groups, the rollout mode, and what this hop's
@@ -583,7 +583,7 @@ func (c *Context) execSelf(ctx context.Context) (tools.Result, error) {
 			"source":        "operator_default",
 		}
 	}
-	reportShellUse(out, c.Cfg, tools.PolicyOf(ctx))
+	reportShellUse(out, tools.PolicyOf(ctx))
 	reportReachGrants(out, tools.PolicyOf(ctx))
 	// The statement grants this run holds, so an agent can tell before writing
 	// whether a rule: stamp is accepted, whether its tenant link_chunks is
@@ -756,7 +756,7 @@ func (c *Context) execTools(ctx context.Context) (tools.Result, error) {
 		//	"network"     — outbound HTTP/HTTPS (HTTP, WebFetch, WebSearch)
 		//	"filesystem"  — reads/writes the runtime's filesystem (Read,
 		//	                Write, Edit)
-		//	"privileged"  — executes arbitrary code on the host (Bash, Agent)
+		//	"privileged"  — executes arbitrary code (Agent, Workspace)
 		//	"unknown"     — MCP-served tool; class isn't introspectable
 		//	                without operator metadata. Defaults here.
 		//
@@ -825,7 +825,7 @@ func sideEffectClassFor(name string) string {
 	// State mutations.
 	case "Write", "Edit":
 		return "filesystem"
-	case "Bash", "Agent", "Workspace":
+	case "Agent", "Workspace":
 		return "privileged"
 	case "Memory", "Channel", "AgentDef", "Evaluation":
 		// These have op-discriminated surfaces; some ops are pure
@@ -1501,36 +1501,6 @@ func (c *Context) selfNames(ctx context.Context, ident tools.RunIdentityValue) [
 		return nil
 	}
 	return memrank.ParseSelfNames(out.Markdown)
-}
-
-// shellCredentialsReport is what Context op=self says about the credentials
-// a shell receives (RFC EW): the NAMES Bash and the Bashbox fallback inject
-// for this run once its agent's shell_credentials narrowed the operator's
-// lists, never a value, so an agent can tell why a variable is unset. A
-// fallback entry keeps its "cmd:NAME" binding. It also names the fallback's
-// host variables withheld because the agent gave their names up. nil when
-// the operator lists no shell credentials at all.
-func shellCredentialsReport(cfg *config.Config, sc tools.ShellCredsPolicyValue) map[string]any {
-	if cfg == nil || (len(cfg.Env.BashAllowedCreds) == 0 && len(cfg.Env.BashboxFallbackAllowedCreds) == 0) {
-		return nil
-	}
-	fallback := []string{}
-	for _, entry := range cfg.Env.BashboxFallbackAllowedCreds {
-		if _, name, err := config.ParseBashboxFallbackCred(entry); err == nil && sc.Allows(name) {
-			fallback = append(fallback, entry)
-		}
-	}
-	return map[string]any{
-		"bash":             nonNilStrings(sc.Filter(cfg.Env.BashAllowedCreds)),
-		"bashbox_fallback": fallback,
-		// narrowed: the agent's shell_credentials kept only some of the
-		// operator's names; false means every name the operator lists.
-		"narrowed": sc.Set,
-		// Host variables the operator admits to fallback commands that are
-		// withheld because their name is a credential the agent gave up
-		// (D6). Bash has no operator host allowlist to report.
-		"bashbox_fallback_withheld_env": nonNilStrings(sc.WithheldHostNames(cfg.Env.BashboxFallbackAllowedEnv, fallbackCredNames(cfg.Env.BashboxFallbackAllowedCreds))),
-	}
 }
 
 // reportReachGrants adds to op=self the grants that reach beyond the runtime:

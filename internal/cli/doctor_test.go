@@ -27,9 +27,8 @@ type stubConfig struct {
 	dataDir        string
 	listen         string
 	configWarnings []string
-	deprecations   []string
 	awsProviders   map[string]AWSAuthProvider
-	hostShell      bool
+	hostEngine     bool
 	tokenEnv       config.Env
 	grpc           string
 	allowOpen      bool
@@ -62,11 +61,10 @@ func (s *stubConfig) DeclaredPrincipals() int { return s.principals }
 func (s *stubConfig) LoginPrincipals() int    { return s.loginable }
 
 func (s *stubConfig) AWSAuthProviders() map[string]AWSAuthProvider { return s.awsProviders }
-func (s *stubConfig) HostShellEnabled() bool                       { return s.hostShell }
+func (s *stubConfig) HostEngineCommands() bool                     { return s.hostEngine }
 
 func (s *stubConfig) ProviderPriorityList() []string  { return s.providers }
 func (s *stubConfig) ConfigWarnings() []string        { return s.configWarnings }
-func (s *stubConfig) DeprecationWarnings() []string   { return s.deprecations }
 func (s *stubConfig) AgentProviderHints() []string    { return s.agentProviders }
 func (s *stubConfig) UserTierProviderHints() []string { return s.tierProviders }
 func (s *stubConfig) ProviderAPIKeyEnv(id string) string {
@@ -188,7 +186,7 @@ func TestDoctor_AllPass(t *testing.T) {
 		"[PASS]  Provider anthropic",
 		"[PASS]  Storage backend",
 		"[PASS]  Listen address",
-		"[PASS]  Deprecated",
+		"[PASS]  Removed",
 		"0 warnings, 0 failures.",
 	} {
 		if !strings.Contains(out, want) {
@@ -532,7 +530,8 @@ func TestDoctor_PostgresBackendWithDSN_PASS(t *testing.T) {
 
 // An AWS-authenticated provider is checked by whose credentials it would use,
 // not as a key-less "local provider"; a provider whose chain finds nothing is
-// a WARN with the reason, and a host shell beside AWS credentials is a WARN.
+// a WARN with the reason, and the host workspace engine beside AWS
+// credentials is a WARN.
 func TestDoctor_AWSProvidersReportTheirIdentity(t *testing.T) {
 	tmp := t.TempDir()
 	withTempHome(t)
@@ -546,7 +545,7 @@ func TestDoctor_AWSProvidersReportTheirIdentity(t *testing.T) {
 			"bedrock-claude": {BaseURL: "https://bedrock-runtime.eu-central-1.amazonaws.com/anthropic", Auth: auth},
 			"bedrock-mantle": {BaseURL: "https://bedrock-mantle.eu-central-1.api.aws/v1", Auth: auth},
 		},
-		hostShell: true,
+		hostEngine: true,
 	})
 	orig := awsIdentityForDoctor
 	t.Cleanup(func() { awsIdentityForDoctor = orig })
@@ -571,7 +570,7 @@ func TestDoctor_AWSProvidersReportTheirIdentity(t *testing.T) {
 		"assumed-role/loomcycle-bedrock/i-0abc in account 123456789012, from EC2RoleProvider",
 		"[WARN]  Provider bedrock-mantle",
 		"no usable AWS credentials",
-		"[WARN]  AWS credentials and host shell",
+		"[WARN]  AWS credentials and the host workspace engine",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in:\n%s", want, out)

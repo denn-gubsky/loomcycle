@@ -488,7 +488,7 @@ func (sp *seriesPlan) nodeRows(n statNode, ss *seriesScheme, period string, p *n
 		sp.readSH[shiftKey] = membersHash(all)
 		if p.model != "" && len(ids) >= nodestats.MinMembers && len(earlier) >= nodestats.MinMembers {
 			k := shiftKey
-			lines := make([]string, 0, len(ids)+len(earlier))
+			lines := make([]string, 0, len(ids))
 			for _, group := range []struct {
 				tag string
 				ids []string

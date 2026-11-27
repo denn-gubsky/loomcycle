@@ -1,11 +1,11 @@
 ---
 name: Context/capabilities
-description: "Context op=capabilities — which features this deployment actually has working (vector and full-text memory, SQL memory, documents, bash, sandbox, scheduler, webhooks, search, consolidation) plus size limits."
+description: "Context op=capabilities — which features this deployment actually has working (vector and full-text memory, SQL memory, documents, scheduler, webhooks, search, consolidation) plus size limits."
 ---
 `capabilities` answers "does this deployment support X?" from what is
 actually running, not from what was asked for. Call it **before** a call that
-depends on an optional feature — semantic recall, SQL memory, documents, a
-sandbox, web search — so you can pick another route instead of reading a
+depends on an optional feature — semantic recall, SQL memory, documents, web
+search — so you can pick another route instead of reading a
 refusal.
 
 It says whether the deployment has a feature. Whether YOU may use it is a
@@ -23,8 +23,9 @@ One object; most entries are `{available: true|false}`:
   `embedder: {provider, model, dimension}`.
 - `full_text_memory`, `memory_layer` (whether Memory add/recall work at all).
 - `sql_memory`, `documents` — documents need SQL memory.
-- `bash`, `bashbox`, `sandbox` (sandboxed code tools present on this run),
-  `code_js`.
+- `code_js`.
+- `bash`, `bashbox` — always `{available: false}`: both tools were removed
+  in v1.172.0. Commands run in a workspace (the `Workspace` tool).
 - `scheduler`, `webhooks`, `retention`.
 - `search` — `{available, providers: [names]}`.
 - `consolidation` — `{available, configured, merge_threshold,
@@ -52,7 +53,7 @@ Check what works before planning a memory-heavy task:
 {"vector_memory": {"available": true, "embedder": {"provider": "openai", "model": "text-embedding-3-small", "dimension": 1536}},
  "full_text_memory": {"available": true}, "memory_layer": {"available": true},
  "sql_memory": {"available": false}, "documents": {"available": false},
- "bash": {"available": false}, "bashbox": {"available": true}, "sandbox": {"available": false},
+ "bash": {"available": false}, "bashbox": {"available": false},
  "search": {"available": true, "providers": ["brave"]},
  "limits": {"memory_inject_max_tokens": 2000, "max_request_bytes": 16777216}}
 ```

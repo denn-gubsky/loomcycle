@@ -128,39 +128,6 @@ func TestRead_RoVolumeAllowsRead(t *testing.T) {
 	}
 }
 
-// Bash refuses a ro volume (it cannot enforce read-only honestly — RFC §6).
-func TestBash_RoVolumeRefused(t *testing.T) {
-	root := realDir(t)
-	ctx := ctxWith(tools.VolumeBinding{Name: "ref", Root: root, ReadOnly: true, Default: true})
-	b := &Bash{Enabled: true}
-	body, _ := json.Marshal(map[string]string{"command": "echo hi", "volume": "ref"})
-	res, err := b.Execute(ctx, body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !res.IsError || !strings.Contains(res.Text, "read-only") {
-		t.Fatalf("Bash must refuse a ro volume, got Text=%q IsError=%v", res.Text, res.IsError)
-	}
-}
-
-// Bash binds its cwd to a rw volume root.
-func TestBash_RwVolumeBindsCwd(t *testing.T) {
-	root := realDir(t)
-	if err := os.WriteFile(filepath.Join(root, "marker.txt"), []byte(""), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	ctx := ctxWith(tools.VolumeBinding{Name: "work", Root: root, Default: true})
-	b := &Bash{Enabled: true}
-	body, _ := json.Marshal(map[string]string{"command": "ls marker.txt", "volume": "work"})
-	res, err := b.Execute(ctx, body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.IsError || !strings.Contains(res.Text, "marker.txt") {
-		t.Fatalf("Bash cwd should be the volume root, got Text=%q IsError=%v", res.Text, res.IsError)
-	}
-}
-
 // A named volume resolves the path under THAT volume's root, and a `..` escape
 // is still rejected (the unchanged resolveInsideRoot containment).
 func TestRead_NamedVolumeResolvesUnderItsRootAndRejectsEscape(t *testing.T) {

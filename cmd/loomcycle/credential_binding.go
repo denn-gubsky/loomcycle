@@ -12,8 +12,7 @@ import (
 
 // credentialBinding resolves a run's own stored credential by NAME for the
 // binders that put something else in its place when the run has none: the
-// provider / tool key override (the operator's host key) and the Bash /
-// Bashbox env injection (an operator-allowlisted host variable).
+// provider / tool key override (the operator's host key).
 //
 // Its one rule: a credential the run HOLDS but may not use here — expired,
 // restricted by allowed_urls, or stored but not openable (no KEK, a wrong or
@@ -86,20 +85,6 @@ func (b credentialBinding) providerKey(ctx context.Context, name string) (provid
 	// RFC AV: carry the owning scope + scope_id so a driver can tag usage
 	// (operator vs tenant/user spend) from the same resolve it uses for the key.
 	return providers.CredentialResolution{Value: res.Value, Scope: res.Scope, ScopeID: res.ScopeID}, true, nil
-}
-
-// envVar resolves a credential injected into a Bash / Bashbox child's env.
-// One held but unusable (expired, URL-restricted, unopenable) is an error,
-// so the tool leaves the variable unset rather than letting a same-named
-// host variable stand in for it.
-func (b credentialBinding) envVar(what string) func(ctx context.Context, name string) (string, bool, error) {
-	return func(ctx context.Context, name string) (string, bool, error) {
-		res, found, err := b.resolve(ctx, what, name)
-		if err != nil || !found {
-			return "", false, err
-		}
-		return res.Value, true, nil
-	}
 }
 
 // keyable is the RFC AX Layer-1 probe: may a restricted run be routed to a

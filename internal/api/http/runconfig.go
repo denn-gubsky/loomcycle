@@ -647,12 +647,6 @@ type spawnRecord struct {
 	// mode the child was held to beyond its own definition's. A resume adds
 	// them again (resumedToolModes); absent means the parent held none.
 	ToolModes map[string]string `json:"tool_modes,omitempty"`
-	// ShellCredentials is the parent run's shell-credential narrowing at spawn
-	// (RFC EW): the names the child's own shell_credentials were narrowed to.
-	// A resume narrows again against it. nil: the parent narrowed nothing,
-	// which is also what a record written before the field means, since no
-	// run could narrow before it existed. `[]`: the parent allowed none.
-	ShellCredentials *config.CredentialNames `json:"shell_credentials,omitempty"`
 	// GitRemote is the parent run's Git network grant at spawn (RFC FB): the
 	// operations the child's own git_remote was narrowed to. A resume narrows
 	// again against it. Absent means the parent had none, which is also what
