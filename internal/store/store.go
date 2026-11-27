@@ -7575,6 +7575,9 @@ type InterruptRow struct {
 	UserID      string          `json:"user_id,omitempty"`
 	AgentID     string          `json:"agent_id,omitempty"`
 	AgentName   string          `json:"agent_name,omitempty"`
+	// AllowOther (RFC HG): with Options, the resolve paths also accept an
+	// answer of the person's own. Meaningless without Options.
+	AllowOther bool `json:"allow_other,omitempty"`
 }
 
 // ErrInterruptAlreadyTerminal is returned by InterruptResolve /

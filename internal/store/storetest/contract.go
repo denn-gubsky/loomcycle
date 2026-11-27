@@ -692,6 +692,8 @@ func Run(t *testing.T, factory Factory) {
 		{"InterruptCountPendingByRunIsAccurateUnderConcurrency", testInterruptCountPendingByRunIsAccurateUnderConcurrency},
 		{"InterruptSweepExpiredMarksOnlyExpiredPending", testInterruptSweepExpiredMarksOnlyExpiredPending},
 		{"InterruptIDIsMonotonicByTime", testInterruptIDIsMonotonicByTime},
+		// RFC HG P1: an answer outside the options.
+		{"InterruptAllowOtherRoundTripsEveryRead", testInterruptAllowOtherRoundTripsEveryRead},
 		// v0.8.21 audit-view cross-session event listing.
 		{"ListEventsFilterByTypeAndRange", testListEventsFilterByTypeAndRange},
 		{"ListEventsFilterByTenant", testListEventsFilterByTenant},
@@ -18526,4 +18528,66 @@ func testMemoryEmbedListVectors(t *testing.T, s store.Store) {
 	} else if len(wide) != 3 {
 		t.Errorf("limit 5000 returned %d rows, want 3 (clamped, not reset)", len(wide))
 	}
+}
+
+// testInterruptAllowOtherRoundTripsEveryRead locks RFC HG P1: allow_other is
+// written by InterruptCreate and read back by every read — Get, the by-run
+// listing, and the by-user listing with and without its tenant JOIN — so a
+// resolve path reading the row through any of them applies the same check.
+// A row created without it reads back false.
+func testInterruptAllowOtherRoundTripsEveryRead(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	runID := makeRunForInterruptTenant(t, s, "t_hg", "u_hg", "a_intr_hg", "asker")
+
+	other := store.MintInterruptID(time.Now())
+	if _, err := s.InterruptCreate(ctx, store.InterruptRow{
+		InterruptID: other, RunID: runID, UserID: "u_hg", Question: "Which?",
+		Options: json.RawMessage(`["A","B"]`), AllowOther: true, CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("InterruptCreate allow_other: %v", err)
+	}
+	plain := store.MintInterruptID(time.Now().Add(time.Millisecond))
+	if _, err := s.InterruptCreate(ctx, store.InterruptRow{
+		InterruptID: plain, RunID: runID, UserID: "u_hg", Question: "Which?",
+		Options: json.RawMessage(`["A","B"]`), CreatedAt: time.Now().Add(time.Millisecond),
+	}); err != nil {
+		t.Fatalf("InterruptCreate plain: %v", err)
+	}
+	want := map[string]bool{other: true, plain: false}
+
+	check := func(read string, rows []store.InterruptRow) {
+		t.Helper()
+		if len(rows) != 2 {
+			t.Fatalf("%s: got %d rows, want 2", read, len(rows))
+		}
+		for _, r := range rows {
+			if r.AllowOther != want[r.InterruptID] {
+				t.Errorf("%s: %s AllowOther = %v, want %v", read, r.InterruptID, r.AllowOther, want[r.InterruptID])
+			}
+		}
+	}
+	var got []store.InterruptRow
+	for _, id := range []string{other, plain} {
+		r, err := s.InterruptGet(ctx, id)
+		if err != nil {
+			t.Fatalf("InterruptGet: %v", err)
+		}
+		got = append(got, r)
+	}
+	check("Get", got)
+	byRun, err := s.InterruptListByRun(ctx, runID, "")
+	if err != nil {
+		t.Fatalf("ListByRun: %v", err)
+	}
+	check("ListByRun", byRun)
+	byUser, err := s.InterruptListByUser(ctx, "u_hg", "", "")
+	if err != nil {
+		t.Fatalf("ListByUser: %v", err)
+	}
+	check("ListByUser", byUser)
+	byTenant, err := s.InterruptListByUser(ctx, "u_hg", "t_hg", "")
+	if err != nil {
+		t.Fatalf("ListByUser tenant: %v", err)
+	}
+	check("ListByUser tenant", byTenant)
 }

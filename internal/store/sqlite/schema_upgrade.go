@@ -360,6 +360,9 @@ func columnsSection2() schemaPlan {
 		// A git workspace's repository (RFC GW P11); none for every row
 		// before. Mirrors postgres 0145.
 		`ALTER TABLE workspaces ADD COLUMN git TEXT NOT NULL DEFAULT ''`,
+		// A question that also takes an answer outside its options (RFC HG
+		// P1); none for every row before. Mirrors postgres 0146.
+		`ALTER TABLE interrupts ADD COLUMN allow_other INTEGER NOT NULL DEFAULT 0`,
 	}}
 }
 
