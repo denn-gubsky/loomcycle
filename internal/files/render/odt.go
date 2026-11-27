@@ -625,7 +625,23 @@ func (x *odtWriter) styles() string {
 		if st != nil {
 			sz = strconv.FormatFloat(pt*st.headScale(), 'f', 1, 64) + "pt"
 		}
-		b.WriteString(`<style:style style:name="Heading_20_` + n + `" style:display-name="Heading ` + n + `" style:family="paragraph" style:parent-style-name="Standard" style:next-style-name="Text_20_body" style:default-outline-level="` + n + `" style:class="text"><style:paragraph-properties fo:margin-top="0.42cm" fo:margin-bottom="0.14cm" fo:keep-with-next="always"/><style:text-properties fo:font-size="` + sz + `" fo:font-weight="bold"` + headColor + `/></style:style>`)
+		// A level's look (RFC HB D2): a bottom border, capitals as a text
+		// transform (the text keeps its case), and the weight.
+		h := st.heading(i + 1)
+		para, weight, caps := "", "bold", ""
+		if h.Rule {
+			para = ` fo:border-bottom="0.5pt solid ` + st.headingColor() + `" fo:padding-bottom="0.05cm"`
+		}
+		switch h.Weight {
+		case "regular":
+			weight = "normal"
+		case "semibold":
+			weight = "600"
+		}
+		if h.Uppercase {
+			caps = ` fo:text-transform="uppercase"`
+		}
+		b.WriteString(`<style:style style:name="Heading_20_` + n + `" style:display-name="Heading ` + n + `" style:family="paragraph" style:parent-style-name="Standard" style:next-style-name="Text_20_body" style:default-outline-level="` + n + `" style:class="text"><style:paragraph-properties fo:margin-top="0.42cm" fo:margin-bottom="0.14cm" fo:keep-with-next="always"` + para + `/><style:text-properties fo:font-size="` + sz + `" fo:font-weight="` + weight + `"` + caps + headColor + `/></style:style>`)
 	}
 	b.WriteString(`<style:style style:name="Quotations" style:family="paragraph" style:parent-style-name="Standard" style:class="html"><style:paragraph-properties fo:margin-left="1cm" fo:padding-left="0.3cm" fo:border-left="1.5pt solid #d6d3d1"/><style:text-properties fo:color="#44403c"/></style:style>`)
 	b.WriteString(`<style:style style:name="Preformatted_20_Text" style:display-name="Preformatted Text" style:family="paragraph" style:parent-style-name="Standard" style:class="html"><style:paragraph-properties fo:background-color="#f5f5f4" fo:padding="0.15cm"/><style:text-properties style:font-name="Noto Sans Mono" fo:font-size="9pt"/></style:style>`)

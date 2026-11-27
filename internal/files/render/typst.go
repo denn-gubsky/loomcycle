@@ -268,6 +268,29 @@ func (t *typWriter) document() {
 		if k := st.headScale(); k != 1 {
 			t.s(`#show heading: it => { set text(size: ` + typNum(k) + `em); it }` + "\n")
 		}
+		// A level's look (RFC HB D2). Typst draws capitals as capitals, so
+		// a PDF's text reads them so; Word, ODT and HTML keep the case.
+		for n := 1; n <= 4; n++ {
+			h := st.heading(n)
+			if h.zero() {
+				continue
+			}
+			body := "it"
+			if h.Uppercase {
+				body = "upper(it)"
+			}
+			if h.Rule {
+				body = `block(width: 100%, stroke: (bottom: 0.5pt + rgb("` + st.headingColor() + `")), inset: (bottom: 3pt))[#` + body + `]`
+			}
+			weight := ""
+			switch h.Weight {
+			case "regular":
+				weight = `set text(weight: "regular"); `
+			case "semibold":
+				weight = `set text(weight: "semibold"); `
+			}
+			t.s(`#show heading.where(level: ` + strconv.Itoa(n) + `): it => { ` + weight + body + ` }` + "\n")
+		}
 	}
 	t.s("#set table(stroke: 0.5pt + luma(170), inset: 5pt)\n")
 	t.s("#show quote.where(block: true): it => block(stroke: (left: 2pt + luma(200)), inset: (left: 10pt, y: 3pt), it.body)\n\n")

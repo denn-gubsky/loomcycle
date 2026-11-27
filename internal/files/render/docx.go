@@ -891,7 +891,21 @@ func docxHeadingStylesFor(st *Style) string {
 	for i, sz := range sizes {
 		n := strconv.Itoa(i + 1)
 		s := strconv.Itoa(int(float64(sz)*st.headScale() + 0.5))
-		fmt.Fprintf(&b, `<w:style w:type="paragraph" w:styleId="Heading%s"><w:name w:val="heading %s"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/><w:keepLines/><w:spacing w:before="240" w:after="80"/><w:outlineLvl w:val="%d"/></w:pPr><w:rPr><w:b/><w:color w:val="%s"/><w:sz w:val="%s"/><w:szCs w:val="%s"/></w:rPr></w:style>`, n, n, i, color, s, s)
+		// A level's look (RFC HB D2): a bottom border for the rule, w:caps
+		// for capitals (the text keeps its case), and the weight; Word has
+		// no semibold, so semibold is bold.
+		h := st.heading(i + 1)
+		border, bold, caps := "", "<w:b/>", ""
+		if h.Rule {
+			border = `<w:pBdr><w:bottom w:val="single" w:sz="6" w:space="1" w:color="` + color + `"/></w:pBdr>`
+		}
+		if h.Weight == "regular" {
+			bold = ""
+		}
+		if h.Uppercase {
+			caps = "<w:caps/>"
+		}
+		fmt.Fprintf(&b, `<w:style w:type="paragraph" w:styleId="Heading%s"><w:name w:val="heading %s"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/><w:keepLines/>%s<w:spacing w:before="240" w:after="80"/><w:outlineLvl w:val="%d"/></w:pPr><w:rPr>%s%s<w:color w:val="%s"/><w:sz w:val="%s"/><w:szCs w:val="%s"/></w:rPr></w:style>`, n, n, border, i, bold, caps, color, s, s)
 	}
 	return b.String()
 }
