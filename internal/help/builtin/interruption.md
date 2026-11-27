@@ -23,6 +23,13 @@ blocks the agent loop until they answer.
    "priority": "normal"}
   ```
 
+  With `options`, the answer must be one of them. Set
+  `"allow_other": true` to also accept an answer of the person's
+  own (non-empty, at most 4000 characters); the result then
+  carries `"other": true` when the answer is not one of the
+  options, so you can read it as free text. Without options
+  `allow_other` means nothing: any non-empty answer is taken.
+
 - **`notify`** — fire-and-forget message (no answer expected, no
   block). Surfaces to operators via the same delivery surface as
   ask but doesn't carry an answer back.
