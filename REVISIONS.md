@@ -8,6 +8,66 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.170.0
+
+*Git workspaces are complete (RFC GW P11). A workspace opened on a repository can now fetch, pull and push its own branch, run status, diff, log, commit, branch and checkout as typed ops without `exec`, and be forked into a git workspace with a branch of its own. Mirrors on a worker are capped and swept when idle. The `agent-teams` bundle's `team/repo` works through a git workspace, with no token in any command (P14). Personal workers get an end-to-end suite, a `doctor` warning and a guide (P13). The workspace browser session image is published. A subject's erasure now reaches the copies of the ontology kept in its releases (RFC GQ P3.3). `File op=render` takes page text with page counters and an inline style (RFC HB P1). Four knowledge-base fixes come from a measurement on a second corpus.*
+
+The v1.170 line: #3000, #3002, #3004, #3005 and #3007 to #3021.
+- `@loomcycle/client` 1.170.0: `mintUserToken(subject, {purpose: "personal_worker"})`; `redacted` on `OntologyRelease` and `OntologyDiffSide`, and the `erased` change on an ontology diff entry. The Python adapter moves to 1.170.0 (`python-v1.170.0`): `redacted` on releases and diff sides.
+- Proto: `OntologyRelease.redacted`, `OntologyDiffSide.redacted`, and `erased` as a value of `OntologyEntryDiff.change`.
+- No migrations.
+- Code-js ABI unchanged (1.4.0).
+
+### Upgrade notes
+
+- **Git error class renamed (#3004).** A repository the forge does not have now answers `repository_not_found`, not `not_found`. A workspace's own `not_found` keeps meaning its directory is gone. Match on the new name.
+- **New git ops need the worker of this release (#3004, #3011, #3015).** `git_fetch`, `git_pull`, `git_push`, the local ops and a git fork run on the worker. Upgrade the runtime first, then the workers.
+- **Git grants.** `git_fetch` and `git_pull` need `write`. `git_push` needs `read` and the agent's `git_remote` push, and is held to `LOOMCYCLE_GIT_PUSH_HOSTS` and `workspace.push.ref_prefixes`. `git_status`, `git_diff` and `git_log` need `read`, and a read share may use only those three. `git_commit`, `git_checkout` and creating a branch need `write`.
+- **Commit author (#3011).** A workspace commit is signed as the Git tool signs one: `LOOMCYCLE_GIT_AUTHOR_NAME` / `LOOMCYCLE_GIT_AUTHOR_EMAIL`, else the agent's name, never the model's choice. Each message gets a `Loomcycle-Run:` trailer.
+- **New settings (#3016).** `workspace.git.mirror_max_mb` (default 4096) caps one mirror; a fetch past it is refused `mirror_too_large`. `workspace.git.mirror_idle_s` (default 3600) removes a mirror no workspace pins after it has been idle that long; a remote worker reads `LOOMCYCLE_WORKSPACE_MIRROR_IDLE_S`.
+- **Audit (#3004).** Every network git op, and every open of a repository, writes one `workspace_git` line, refused or not. It holds the credential's reference, never its value.
+- **`team/repo` (#3014).** The `agent-teams` bundle's `team/repo` skill opens the repository as a workspace and pushes through `git_push`. `team/orchestrator` gains `git_remote: [fetch, push]`. Where `workspace.mode` is off, Bashbox stays the fallback and is still deprecated.
+- **Erasure reaches ontology releases (#3002).** A subject's erasure redacts that subject's entries from the tenant's kept ontology releases: the entry's title becomes `[erased]` and its body is dropped, and the release is marked `redacted`. Its `content_version` is kept as recorded, so a redacted release no longer hashes to it. A diff reports such an entry as `erased`, and a rollback skips it. The tier 2 report gains `ontology_release_entries` and `ontology_release_summaries`.
+- **`doctor` warns about personal workers (#3007).** With `workspace.personal_workers` on, it says that a user's machine may attach, that the host engine is not a sandbox, and that `workspace.roots` with `exec` gives an agent what the user's shell has.
+- **`kb/ask` and `kb/classify` behave differently (#3018, #3019).** A date only in a question's preamble no longer routes it to `kb/walker` as dated. `kb/classify` answers NO for a question about one person's or one case's situation, even when its answer is a list. Both bundle copies change together.
+
+### Workspaces: git (RFC GW P11: #3004, #3011, #3015, #3016)
+
+- `git_fetch`, `git_pull` (fast-forward only; a diverged branch answers `non_fast_forward`) and `git_push {force?}`, which pushes only the workspace's own branch. Each op mints its own ticket, and the core holds every receive-pack to the branch's policy (#3004).
+- `git_status`, `git_diff`, `git_log`, `git_commit`, `git_branch` and `git_checkout`, on the worker over the workspace's mirror. The op itself checks `write` as well as the tool's grant. A repository feature the typed ops cannot read answers `unsupported_repository_feature` (#3011).
+- `fork` of a git workspace, in a run and at spawn, makes a git workspace with its own branch (`loom/<as>-<6 hex>` by default, or a named `branch` where `workspace.push.adopt_existing` is on). A restore pins what its restored tracking refs name again. `save_template` stays refused for a git workspace (#3015).
+- Mirror limits, and an end-to-end suite (`test/runtime/workspace-git`) of the real binary against an https forge, with a worker attached over TLS: commit and push, a refused rewrite, a hostile session configuration that changes nothing, and two workspaces of one repository kept apart (#3016).
+
+### Workspaces: personal workers, bundles, browser image (RFC GW P10, P13, P14: #3000, #3005, #3007, #3008, #3009, #3010, #3014)
+
+- `test/runtime/workspace/personal.sh` runs personal workers end to end, in CI too (#3007, #3008). `docs/WORKSPACES.md` and `docs/WORKERS.md` say how to set one up.
+- `@loomcycle/client` `mintUserToken` sends `purpose: "personal_worker"` (#3009).
+- `team/repo` on a git workspace (#3014).
+- The browser session image (`loomcycle-workspace-browser`) publishes with each release, signed and attested like `loomcycle-workspace` (#3005). CI takes a real screenshot in it (#3000).
+- The builder image pins quay.io's current `podman/stable` digest; the old one was garbage-collected (#3010).
+
+### Ontology (RFC GQ P3.3: #3002, #3017)
+
+- Erasure of a subject from the kept ontology releases, under the release lock (#3002). The Documents guide covers it, and the GQ follow-ups (#3017).
+
+### Rendering (RFC HB P1: #3021)
+
+- `header` and `footer` may be one line or three slots `{left, center, right}`, with `{page}`, `{pages}`, `{title}` and `{date}`. Typst, Word and ODT draw the counters with their own fields; HTML and EPUB, which have no pages, drop a counter and the text that leads up to it.
+- `page_text {header?, footer?, date?}` on `File op=render` replaces the style's lines for one render, with or without a style.
+- `style` may be the style JSON itself, checked as a named style is. It has no logo, and the render log names it `inline:<sha256>`.
+- A style with no slot and no brace renders byte for byte as before.
+
+### Knowledge base (#3013, #3018, #3019, #3020)
+
+- `kb/judge` judges a subject claim quoting only the page's title on the page's opening (#3013).
+- A date in a question's preamble no longer routes `kb/ask` dated (#3018, RFC HC D7).
+- `kb/classify` does not call a one-situation question an overview (#3019, RFC HC D6).
+- `node_stats` `assign` files nothing for a page already placed under a sibling too small to compare (#3020).
+
+### Docs (#3012)
+
+- CLAUDE.md types a store document's root with its ontology class (#3012).
+
 ## What's in v1.169.0
 
 *Workspaces become a place an agent keeps working in. A workspace can outlive its run (durable, RFC GW P12), travel in a snapshot and survive a worker's restart, and run on several replicas. It can start from a template and fork for each sub-agent (P6), serve a page to its user and take the person's updates back from it (P9), and show the agent a screenshot of that page (P10). It can open on a git branch over the tenant's mirror (P11, opening only) and run on a user's own machine (personal workers, P13). Egress gains the host engine's port, routes for MCP workspaces, and git request shapes. The `Bash` tool, Bashbox, the sandbox sidecar's tools and `shell_credentials` are deprecated in favour of workspaces (P14): boot, `doctor`, `Context op=self` and a metric say where they are used. The tenant ontology gains releases, rollback, and resumable rename and re-tag jobs (RFC GQ). Bridges get Teams files through Graph (RFC HF).*

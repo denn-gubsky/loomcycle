@@ -20,6 +20,11 @@ function card(body: unknown[], actions: unknown[] = []): Card {
   };
 }
 
+/** The options that get a button, as the core draws them (bridge-core's
+ *  MAX_OPTION_BUTTONS, which the bridge-core this package is built on does
+ *  not export yet). */
+export const MAX_OPTION_BUTTONS = 6;
+
 const text = (t: string, extra: Record<string, unknown> = {}) => ({ type: "TextBlock", text: t, wrap: true, ...extra });
 
 export function questionCard(opts: {
@@ -34,7 +39,9 @@ export function questionCard(opts: {
   if (opts.context) body.push(text(opts.context, { isSubtle: true, size: "Small" }));
   const actions: unknown[] = [];
   if (opts.options.length > 0) {
-    for (const o of opts.options) {
+    // Buttons for the first options only: the core lists every option
+    // numbered in the context, and a typed number answers the rest (RFC HG).
+    for (const o of opts.options.slice(0, MAX_OPTION_BUTTONS)) {
       actions.push({ type: "Action.Execute", title: o, verb: VERB.answer, data: { ...base, answer: o } });
     }
   } else {

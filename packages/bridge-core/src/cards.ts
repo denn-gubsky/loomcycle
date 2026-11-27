@@ -38,10 +38,15 @@ export type CanonicalCard =
       runId: string;
       interruptId: string;
       question: string;
+      /** What the person reads besides the question: with options, every
+       *  option numbered and how to answer (numberedOptions), so a renderer
+       *  shows them all by showing the context; in a shared chat, who may
+       *  answer. */
       context?: string;
-      /** Up to six choices. Empty: the question wants a free-text answer. */
+      /** Up to MAX_OPTIONS choices. Empty: the question wants a free-text answer. */
       options: string[];
-      /** One per option, or one "send" button for a free-text answer, then decline. */
+      /** One per option for the first MAX_OPTION_BUTTONS options, or one
+       *  "send" button for a free-text answer, then decline. */
       buttons: CardButton[];
     }
   | {
@@ -62,6 +67,47 @@ export function isButtonInput(i: CardInput): i is { buttonId: string; answer?: s
   return typeof (i as { buttonId?: unknown }).buttonId === "string";
 }
 
+/** The most options a question card offers (RFC HG D4): each is listed
+ *  numbered in the card's text and can be answered by its number. */
+export const MAX_OPTIONS = 20;
+
+/** The most options that also get a button; the rest are answered by number. */
+export const MAX_OPTION_BUTTONS = 6;
+
+/** The line under the numbered options that says how to answer them. */
+export const ANSWER_HINT = "Reply with a number, or tap a button.";
+export const ANSWER_HINT_OTHER = "Reply with a number or type your own answer, or tap a button.";
+
+/** numberedOptions is the text a question card shows for its options: each
+ *  one numbered, then how to answer. Empty for a free-text question. */
+export function numberedOptions(options: readonly string[], allowOther: boolean): string {
+  if (options.length === 0) return "";
+  const lines = options.map((o, i) => `${i + 1}. ${o}`).join("\n");
+  return `${lines}\n\n${allowOther ? ANSWER_HINT_OTHER : ANSWER_HINT}`;
+}
+
+/** The longest reply pickOption reads as a number (MAX_OPTIONS has two digits). */
+const MAX_NUMBER_DIGITS = 3;
+
+/** pickOption reads a typed reply as one of the options (RFC HG §4.2): a
+ *  number from 1 to n, optionally followed by "." or ")", or an option's own
+ *  text, ignoring case and surrounding whitespace. A number out of range is
+ *  tried as text, so an option that is itself a number is still found. It
+ *  returns the option as offered, or undefined. No regular expression: the
+ *  reply is a person's text, and a scan is linear whatever it holds. */
+export function pickOption(reply: string, options: readonly string[]): string | undefined {
+  const text = reply.trim();
+  let digits = text;
+  const last = digits.at(-1);
+  if (last === "." || last === ")") digits = digits.slice(0, -1).trimEnd();
+  if (digits.length > 0 && digits.length <= MAX_NUMBER_DIGITS && [...digits].every((c) => c >= "0" && c <= "9")) {
+    const n = Number(digits);
+    if (n >= 1 && n <= options.length) return options[n - 1];
+  }
+  const wanted = text.toLowerCase();
+  return options.find((o) => o.trim().toLowerCase() === wanted);
+}
+
 /** optionLabels reads an Interruption's options, which loomcycle carries as an
  *  untyped value: a list of strings, or of {label|value} objects. */
 export function optionLabels(options: unknown): string[] {
@@ -77,7 +123,7 @@ export function optionLabels(options: unknown): string[] {
       return undefined;
     })
     .filter((o): o is string => !!o && o.length <= 200)
-    .slice(0, 6);
+    .slice(0, MAX_OPTIONS);
 }
 
 /** isVerb reports whether v is one of the card verbs. */

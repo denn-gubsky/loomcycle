@@ -1,5 +1,5 @@
 <!-- EXPORTED FROM THE LOOMCYCLE DOCUMENT STORE — DO NOT EDIT HERE.
-     Source of truth: /loomcycle/docs/memory-architecture (scope=user)
+     Source of truth: /loomcycle/docs/memory-architecture (scope=tenant)
      Regenerate with `document op=export_md` rather than editing this file;
      an edit here is lost on the next export. -->
 

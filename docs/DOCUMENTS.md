@@ -1452,6 +1452,8 @@ A tenant subject can stand for a user of the tenant: `person:ada-lovelace` is th
 
 **What an erasure does with it.** `GET /v1/_erasure?subject=<user>` (and its gRPC and MCP twins) lists the tenant subjects bound to that user in `bound_subjects`, each `{document_id, natural_key, path}`, and counts them in `tier2_uncovered` as `subject_bindings`. A subject whose document the operator's access-control rules hide from reading is counted in `bound_subjects_withheld` and never named. A live `POST /v1/_erasure` clears each binding, so no row keeps the erased id, and keeps the subjects: deleting one would delete every statement and fact the tenant holds about that entity, which is the operator's call (`delete_document`, which announces `removed`). `retained.bound_subjects` says so, counting and never naming them, because the retained entries are copied into the audit record. After every other plane, `erased` goes to the tenant's `memory/subjects` channel for each subject; it names the subject and never the user. It is withheld, with the reason in `not_announced`, when the operator's rules hide part of the tenant's documents from reading.
 
+**Ontology releases.** Before it clears the bindings, the erasure redacts the person from the tenant's [ontology releases](#releases-rename-jobs-and-rollback-rfc-gq). Every release entry of a bound subject's ontology instance (matched by the registry key the instance recorded, or its chunk id) loses its name, text and fields. A release plan summary that names the person has each name replaced with `[erased]`. Both are counted in the report and the dry run as tier 2 `ontology_release_entries` and `ontology_release_summaries`. If the copies cannot be read or redacted, the bindings stay and the report says to run the erasure again. The instance entry in the ontology in force is not edited: `retained.ontology_releases` names what is left (that entry, and other entries that name the subject), so an operator retires or deletes it with a plan; otherwise the next release copies it again.
+
 ## Writing the tenant ontology
 
 The tenant ontology is one Document in the tenant scope that says what the tenant's documents and memory are made of: its document classes and entity types, the relation kinds statements may use, the concept schemes documents are classified by, the real organisations and posts it knows, and its review policy. Every reader in the runtime parses the same document, so this section is the reference for writing it. `Context op=help topic=Document/describe_ontology` has the grammar-line format and the review-rule format in full.
@@ -1742,7 +1744,9 @@ If the entry was updated but could not then be moved (another write landed in be
 - `rollback`: after a rollback is applied;
 - `catch_up`: first, before any of these, when the content version in force is not the newest release's. A direct edit is then never counted as part of the next batch.
 
-The newest 50 releases are kept. A release is a record, not a gate: if one cannot be taken, that is reported, and the confirm or accept still stands. A release keeps the ontology's text after an edit or an erasure removed it, so only an operator reads releases. A member gets 403.
+The newest 50 releases are kept. A release is a record, not a gate: if one cannot be taken, that is reported, and the confirm or accept still stands. A release keeps the ontology's text after an edit removed it, so only an operator reads releases. A member gets 403.
+
+Taking a release is serialised per tenant across every replica: the release holds a lease in the tenant scope (`principal:ontology-release`, a reserved name no caller can take), so two replicas sharing one database never take releases at once, and one content version gets one `catch_up`. A release waits up to 75 seconds for another replica's to finish; past that it is not taken and the confirm or accept reports a warning (the next one catches up). A replica that dies mid-release frees the lease within 60 seconds.
 
 | Read | HTTP | MCP `ontology` | gRPC | TS · Python |
 |---|---|---|---|---|
@@ -1751,6 +1755,8 @@ The newest 50 releases are kept. A release is a record, not a gate: if one canno
 | diff | `GET /v1/_ontology/releases/diff?from=<seq>&to=<seq\|current>` | `release_diff` | `DiffOntologyReleases` | `diffOntologyReleases` · `diff_ontology_releases` |
 
 A diff matches entries by chunk id. For each entry it lists what was added, removed, renamed, moved or retired, and whether its meaning or directives changed. It writes nothing. The Ontology page has a **Releases** tab that lists the releases and shows the diff of any two, or of one with the ontology in force.
+
+**A release an erasure redacted.** A subject erasure removes the erased person from every kept release (see "Binding a subject to a user"). Each release entry of the person's ontology instance has its title replaced by `[erased]` and loses its text and fields, and the release's Markdown export loses the entry's heading and text. A plan summary that names the person has each of those names replaced with `[erased]`. Every release the erasure changed is marked `redacted: true` on list, get and both sides of a diff, on every transport, and shows a **redacted** badge on the Releases tab. Its header, number and recorded content version stay, so a redacted release no longer hashes to the version it records; the diff notes this. A diff lists a redacted entry as `erased`, not as a change, and a rollback to that release leaves the entry as it is.
 
 **Class rename jobs.** Renaming a class that something rests on takes the plan's fingerprint, as any such change does. The rename then writes the new name and a `@renamed_from <old>` line in one write, and starts a job. The job rewrites every stored row that holds the old name, in the tenant scope and in every user and agent scope of the tenant:
 - the ontology's own mentions of the class: an instance's `@a`, a scheme's `@projects`, a relation's `@domain`/`@range`, a `ref()` field;
@@ -1762,6 +1768,8 @@ While the job runs, every row still reads as the class through `@renamed_from`. 
 
 **Concept re-tag jobs.** A document outside the tenant scope is filed under a concept by carrying its tag (`<scheme>/<path>`). Renaming or moving a concept, or renaming a scheme, starts a re-tag job that moves those tags, including every tag under the old one. It moves document tags, chunk tags and the `proposed_tags` of classification records, in every scope. A tag that already holds the new value is kept once. A re-tag takes no release: it changes no ontology content.
 
+**What the plan says about a job.** A planned change that will start a job carries a `job` block. A class rename's says `kind: class_rename`: the rows per step in the tenant scope and in the other scopes, any `blocked` reasons, and the `collisions` the new name would cause. A concept rename or move, or a scheme rename, that moves a tag says `kind: concept_retag`. Its `tag_moves` lists each `{from, to}`, only the topmost (a narrower concept's tag follows as a prefix), and it counts the rows the re-tag would rewrite per step (`chunk_tags`, `document_tags`; `classification_tags` is not counted). An edit of a concept's meaning alone moves no tag and carries no block. In both kinds, `scopes_not_counted` says how many user and agent scopes the plan did not reach, and `running` names an unfinished job: while it stays unfinished, the change would be refused `rename_job_running`.
+
 **How the jobs run.** A tenant has at most one unfinished job, of either kind. A job runs in slices of 20 seconds under the `ontology-rename` lease, one scope at a time, and records how far it has got. Every step can be run again safely, so resuming a job means running it again from that point. The answer to the change carries the job as `rename_job` or `retag_job`: `id`, `kind`, `state`, `step`, the scope kind it is at, scopes done, and rows rewritten and remaining. The refusals:
 - `rename_job_running`: another job is unfinished. Resume it first.
 - `rename_job_pending`: the plan could not count every scope, so it cannot know which keys would collide.
@@ -1772,24 +1780,26 @@ A job that cannot write a row stops as `blocked` and says why. Outside the tenan
 | Job | HTTP | MCP `ontology` | gRPC | TS · Python |
 |---|---|---|---|---|
 | status | `GET /v1/_ontology/job` | `job` | `GetOntologyJob` | `getOntologyJob` · `get_ontology_job` |
-| resume | `POST /v1/_ontology/job/resume` (`{"id"}` optional) | `resume_job` | `ResumeOntologyJob` | `resumeOntologyJob` · `resume_ontology_job` |
+| resume | `POST /v1/_ontology/job/resume` `{"id"}` | `resume_job` (`id`) | `ResumeOntologyJob` | `resumeOntologyJob({id})` · `resume_ontology_job(id=)` |
 
-The status is the unfinished job, else the one updated last, else `null`. Passing an `id` to resume makes sure you carry on that job and no newer one: if it is not the unfinished job, the resume is refused (`job_not_found`). Another call holding the lease answers `job_busy` (gRPC ABORTED), so try again later. Both routes are for operators only. A tenant operator acts on its own tenant; an admin may name another with `tenant`. The Ontology page shows the job and, while it is unfinished, a **Resume** button.
+The status is the unfinished job, else the one updated last, else `null`. A resume names the job it carries on: take the `id` from the status read. Without it the resume is refused (HTTP 400 `invalid_body`, gRPC `INVALID_ARGUMENT`, MCP `invalid_request`). A resume aimed at a job that has since finished is `job_not_found`, so it never carries on a newer one. While another call holds the lease, a resume is `job_busy` (HTTP 409, gRPC `FAILED_PRECONDITION`): try again later. Both routes are for operators only. A tenant operator acts on its own tenant; an admin may name another with `tenant`. The Ontology page shows the job and, while it is unfinished, a **Resume** button.
 
 **Rolling back to a release.** A rollback is a plan, then its application. It never happens by itself. Plan it with `{"op": "release", "seq": N}` as the only change, on `POST /v1/_ontology/plan` or any of its twins (gRPC `PlanOntology` carries `seq` on the change). The plan lists each difference from release N as a direct change, each carrying `release: N`:
 - `rename`, `edit`, `move`, `retire` or `unretire` for an entry in both;
 - `delete` for an entry added since (`retire` instead, when something rests on it or not every scope was counted);
 - `add` for an entry only in the release.
 
-Apply it with the plan's fingerprint, which is always required:
+An entry an erasure redacted in release N is left out of the plan. Apply the rollback with the plan's fingerprint, which is always required:
 
 | Apply | HTTP | MCP `ontology` | gRPC | TS · Python |
 |---|---|---|---|---|
 | rollback | `POST /v1/_ontology/rollback` `{"seq", "plan_fingerprint"}` | `rollback` | `ApplyOntologyRollback` | `rollbackOntology` · `rollback_ontology` |
 
-Each write goes through the usual chunk ops, so locks, the delete refusal and the rename job all apply. A class rename the job cannot carry refuses the whole rollback before anything is written. If another write lands mid-rollback, the rollback stops with `partially_applied` and lists what it applied. `plan_required` and `plan_stale` carry the current fingerprint: in the 409 body on HTTP and MCP, and in the gRPC `ErrorInfo` metadata as `fingerprint` (`applied` for a partial rollback); the Python client raises them as `.fingerprint` and `.applied`. The rollback takes a `catch_up` release before its writes and a `rollback` release after them, and is audited as `ontology_change_applied` with op `rollback` on every transport. One rollback is capped at 500 changes. The Releases tab does not apply a rollback.
+Each write goes through the usual chunk ops, so locks, the delete refusal and the rename job all apply. A class rename the job cannot carry refuses the whole rollback before anything is written. If another write lands mid-rollback, the rollback stops with `partially_applied` (HTTP 409, gRPC `FAILED_PRECONDITION`) and lists what it applied. `plan_required` and `plan_stale` carry the current fingerprint: in the 409 body on HTTP and MCP, and in the gRPC `ErrorInfo` metadata as `fingerprint` (`applied` for a partial rollback); the Python client raises them as `.fingerprint` and `.applied`. The rollback takes a `catch_up` release before its writes and a `rollback` release after them, and is audited as `ontology_change_applied` with op `rollback` on every transport. One rollback is capped at 500 changes.
 
 The answer's `matches` says whether the content version afterwards equals the release's. It can differ: an entry deleted since the release comes back under a new chunk id, and a class renamed back through the job keeps its `@renamed_from` line.
+
+**Rolling back from the Web UI.** On the Releases tab an operator sees **roll back to this release** on each release. It plans the rollback first and shows every change it would make (op, entry, risk, and what each one stales or destroys), with a warning when the risk is not none. Nothing is written until you press **Apply rollback**, which sends the plan's fingerprint. If the ontology changed in the meantime, the page plans again and shows the new plan for you to confirm; it never applies that plan on its own. If another write interrupts the rollback, the page lists what was applied: roll back again to finish. When it is done, the page shows the release the rollback took, and why the content version differs when it does. A class rename in a rollback starts a rename job, which appears in the job panel. Members see the releases but not the control.
 
 ### Node statistics — `node_stats` (RFC GM)
 
@@ -1983,3 +1993,5 @@ naming layer.
 versioned chunks — prose in Memory, structure in SQL Memory, named in the Path
 tree — so agents and humans can co-author and query a document the way they
 query a database, not diff a blob.
+
+
