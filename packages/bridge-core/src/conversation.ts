@@ -21,7 +21,11 @@ import {
   optionLabels,
   pickOption,
   VERB,
-  type CanonicalCard, type CardAction, type CardButton, type CardInput } from "./cards.js";
+  type CanonicalCard,
+  type CardAction,
+  type CardButton,
+  type CardInput,
+} from "./cards.js";
 import type { Health } from "./health.js";
 import { legacySubject, type RunAs, type Speaker } from "./identity.js";
 import type { PlatformCapabilities, PlatformInfo } from "./platform.js";

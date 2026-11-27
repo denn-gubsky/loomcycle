@@ -152,7 +152,7 @@ describe("a question that survives a bridge restart (RFC HG)", () => {
     const second = await restart(first);
 
     await second.onMessage(alice(), ref, "2");
-    await settle();
+    await waitFor(() => lc.runs.length === 2, "the session continued in a new run");
 
     expect(lc.callsTo("resolveInterrupt")).toHaveLength(0);
     expect(lc.reattaches).toHaveLength(0);
@@ -179,7 +179,7 @@ describe("a question that survives a bridge restart (RFC HG)", () => {
     lc.restartCalls = false;
     const second = await restart(first);
     await second.onMessage(alice(), ref, "2");
-    await settle();
+    await waitFor(() => lc.runs.length === 2, "the session continued in a new run");
     expect(lc.callsTo("resolveInterrupt")).toHaveLength(0);
     expect(lc.runs).toHaveLength(2);
   });
@@ -200,9 +200,12 @@ describe("a question that survives a bridge restart (RFC HG)", () => {
     await settle();
     expect((await saved())?.interruptId).toBe("q2");
     lc.runs[0]!.events.end();
-    await settle();
-    await settle();
-    expect(await saved()).toBeUndefined();
+    let left: unknown = "unread";
+    for (let i = 0; i < 100 && left !== undefined; i++) {
+      await settle();
+      left = await saved();
+    }
+    expect(left).toBeUndefined();
   });
 
   it("keeps nothing across a restart with the memory store", async () => {
