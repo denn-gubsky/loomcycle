@@ -120,6 +120,18 @@ func writeDOCX(ctx context.Context, w io.Writer, d *Doc, opts Options) error {
 	// The style's header and footer parts, decided before document.xml,
 	// whose section refers to them.
 	x.headerFooter = d.Style != nil && (d.Style.header() != "" || d.Style.footer() != "" || d.Style.pageNumbers())
+	var hdrSlots, ftrSlots pageSlots
+	if !d.Style.pageTextPlain() {
+		hdrSlots, ftrSlots = d.pageText()
+		x.headerFooter = !hdrSlots.empty() || !ftrSlots.empty()
+	}
+	hdrXML := func() string { return docxHeaderFooter("hdr", d.Style.header(), false) }
+	ftrXML := func() string { return docxHeaderFooter("ftr", d.Style.footer(), d.Style.pageNumbers()) }
+	if !d.Style.pageTextPlain() {
+		textTwips := pw - 2*docxMargin(d.Style)
+		hdrXML = func() string { return docxPageSlots("hdr", hdrSlots, textTwips) }
+		ftrXML = func() string { return docxPageSlots("ftr", ftrSlots, textTwips) }
+	}
 
 	// document.xml first: it decides the hyperlinks and lists the other
 	// parts name.
@@ -151,11 +163,11 @@ func writeDOCX(ctx context.Context, w io.Writer, d *Doc, opts Options) error {
 			struct {
 				name string
 				body string
-			}{"word/header1.xml", docxHeaderFooter("hdr", d.Style.header(), false)},
+			}{"word/header1.xml", hdrXML()},
 			struct {
 				name string
 				body string
-			}{"word/footer1.xml", docxHeaderFooter("ftr", d.Style.footer(), d.Style.pageNumbers())},
+			}{"word/footer1.xml", ftrXML()},
 		)
 	}
 	if d.Embed != nil {
@@ -908,6 +920,42 @@ func docxHeaderFooter(kind, line string, pageNumber bool) string {
 	}
 	if pageNumber {
 		b.WriteString(`<w:r><w:tab/></w:r><w:fldSimple w:instr=" PAGE "><w:r><w:rPr><w:color w:val="6E6E6E"/><w:sz w:val="16"/></w:rPr><w:t>1</w:t></w:r></w:fldSimple>`)
+	}
+	b.WriteString(`</w:p></` + root + `>`)
+	return b.String()
+}
+
+// docxPageSlots is a header or footer part with three slots (RFC HB D3):
+// left text, then a centre and a right tab stop. {page} and {pages} are a
+// PAGE and a NUMPAGES field, the writer's two fields: their instructions are
+// the writer's own, and no text of the document or the style reaches them.
+func docxPageSlots(kind string, p pageSlots, textTwips int) string {
+	root := "w:hdr"
+	if kind == "ftr" {
+		root = "w:ftr"
+	}
+	const rPr = `<w:rPr><w:color w:val="6E6E6E"/><w:sz w:val="16"/></w:rPr>`
+	var b strings.Builder
+	b.WriteString(xml.Header)
+	b.WriteString(`<` + root + ` xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:p><w:pPr>`)
+	b.WriteString(`<w:tabs><w:tab w:val="center" w:pos="` + strconv.Itoa(textTwips/2) + `"/><w:tab w:val="right" w:pos="` + strconv.Itoa(textTwips) + `"/></w:tabs>`)
+	b.WriteString(`<w:jc w:val="left"/></w:pPr>`)
+	for i, slot := range p {
+		// A tab reaches the centre stop, a second the right one; a slot
+		// left empty at the end needs no tab.
+		if (i == 1 && (len(p[1]) > 0 || len(p[2]) > 0)) || (i == 2 && len(p[2]) > 0) {
+			b.WriteString(`<w:r><w:tab/></w:r>`)
+		}
+		for _, seg := range slot {
+			switch seg.Field {
+			case fieldPage:
+				b.WriteString(`<w:fldSimple w:instr=" PAGE "><w:r>` + rPr + `<w:t>1</w:t></w:r></w:fldSimple>`)
+			case fieldPages:
+				b.WriteString(`<w:fldSimple w:instr=" NUMPAGES "><w:r>` + rPr + `<w:t>1</w:t></w:r></w:fldSimple>`)
+			default:
+				b.WriteString(`<w:r>` + rPr + `<w:t xml:space="preserve">` + xmlText(seg.Text) + `</w:t></w:r>`)
+			}
+		}
 	}
 	b.WriteString(`</w:p></` + root + `>`)
 	return b.String()
