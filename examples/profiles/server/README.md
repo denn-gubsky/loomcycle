@@ -79,7 +79,7 @@ commented out.
 running: it calls a model for every user with new chats. Uncomment
 `scheduled_runs` in the yaml to start it.
 
-**Tools that reach outside.** The bundled chat agents list `Bash`, `Bashbox`,
+**Tools that reach outside.** The bundled chat agents list `Workspace`,
 `Write`, `Edit`, `HTTP`, `WebFetch`, `WebSearch` and `Agent` in their tools,
 and any user of any tenant may run them. What those tools can do is decided by
 the commented lines at the end of `env.insecure`, and each of those is one
@@ -88,18 +88,18 @@ switch for the whole server, not per tenant:
 - `LOOMCYCLE_HTTP_HOST_ALLOWLIST` is a single list: the hosts every tenant's
   agents may fetch from. Name hosts; `*` lets any user's agent fetch any
   public URL. Private addresses stay blocked either way.
-- `LOOMCYCLE_BASH_ENABLED=1` is deprecated (a future release removes it;
-  `docs/MIGRATING-FROM-BASH.md`), and should stay off on a server with more than one
-  tenant. It gives every user's chat agent an unsandboxed shell in the shared
-  container once the agent has a writable volume. The shell starts in that
-  volume and is not confined to it: it reaches other tenants' directories by
-  absolute path, and the network. `Bashbox` is the shell for a shared server:
-  it needs no switch, is confined to the agent's volume and has no network.
 - `LOOMCYCLE_MCP_ALLOW_PRIVILEGED_TOOLS=1` lets an agent that an MCP client
-  registers ask for `Bash`, `Bashbox`, `Write` and `Edit`. On a server those
+  registers ask for `Write`, `Edit` and `Workspace`. On a server those
   clients are remote and hold tenant tokens; leave it off.
 
 No preset can turn any of these on: they exist only in the environment.
+
+`Workspace` does nothing until the yaml sets `workspace:`. On a shared server
+run commands on workspace workers on the `container` engine, never
+`workspace.mode: local`, whose worker runs commands as the runtime's own
+user, able to read its data and secrets (`docs/WORKERS.md`, "Workspace
+workers"). The `Bash` and
+`Bashbox` tools were removed in v1.172.0.
 
 ## Traces and metrics
 

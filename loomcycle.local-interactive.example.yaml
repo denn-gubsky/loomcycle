@@ -26,7 +26,11 @@
 #   The time-to-first-token and inter-token budgets are 10 minutes each;
 #   change them in this file with
 #     providers: { ollama-local: { options: { header_timeout_ms: 900000, idle_timeout_ms: 900000 } } }
-#   LOOMCYCLE_BASH_ENABLED=1   # if the agent runs shell (NOT a true sandbox)
+#
+# Commands: the agent runs them in a workspace (the Workspace tool) on a local
+# workspace worker the runtime starts as its own child (`workspace: {mode:
+# local}` below). That worker runs commands as YOUR user, with no isolation:
+# fine for your own workstation, nothing else (docs/WORKSPACES.md).
 #
 # Filesystem access (RFC AH Phase 3): declare a `volumes:` block — the legacy
 # LOOMCYCLE_READ_ROOT / WRITE_ROOT / BASH_CWD jail is retired (setting one stops
@@ -75,6 +79,10 @@ interruption:
   default_timeout_ms: 3600000     # 1h
   max_timeout_ms: 86400000        # 24h ceiling
 
+# ─── Workspaces (where the agent runs commands) ──────────────────────
+workspace:
+  mode: local
+
 # ─── Interactive local agents ────────────────────────────────────────
 agents:
 
@@ -107,13 +115,16 @@ agents:
     # (3) interruption — let the operator answer the agent's questions inline.
     interruption: { enabled: true }
 
-    tools: [Read, Write, Edit, Grep, Glob, Bash, Context]
+    tools: [Read, Write, Edit, Grep, Glob, Workspace, Context]
+    # Its own workspaces: read, write and run commands in them.
+    workspace: {ops: [read, write, exec], open: true}
     system_prompt: |
       You are an interactive coding agent running on a local model. Read
-      before you edit; make surgical changes; verify with Bash. Pass file
-      paths RELATIVE to the sandbox root (call Context op=self to see your
-      roots and which hosts you may reach). Keep tool output focused — a
-      large file read fills a small local context window fast.
+      before you edit; make surgical changes; verify by running the code in
+      a workspace (the Workspace tool). Pass file paths RELATIVE to your
+      volume's root (call Context op=self to see your roots and which hosts
+      you may reach). Keep tool output focused — a large file read fills a
+      small local context window fast.
 
 # ─── Concurrency (single-user / workstation defaults) ────────────────
 concurrency:
