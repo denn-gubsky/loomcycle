@@ -54,6 +54,30 @@ function button(label: string, id: string): InlineKeyboardButton {
   return { text: label, callback_data: id };
 }
 
+/** Telegram takes 4096 characters of message text; a card keeps well clear. */
+export const MAX_CARD_CHARS = 4000;
+/** A question is cut to make room for its context, but never below this. */
+const MIN_QUESTION_CHARS = 300;
+
+function clip(s: string, max: number): string {
+  return s.length <= max ? s : `${s.slice(0, Math.max(0, max - 1))}…`;
+}
+
+/** fitCard is a question card's text parts within MAX_CARD_CHARS. The
+ *  context ends with the numbered options and how to answer them
+ *  (bridge-core, RFC HG), so a long question is cut before it is. The cut is
+ *  made in the Markdown, before it becomes HTML: the HTML only drops markup
+ *  and its entities count as one character each, so the shown text is never
+ *  longer than the Markdown. */
+function fitCard(question: string, context: string | undefined, hint: string | undefined): string[] {
+  const fixed = hint ? hint.length + 2 : 0;
+  const ctx = context ?? "";
+  const room = MAX_CARD_CHARS - fixed - (ctx ? ctx.length + 2 : 0);
+  const q = clip(question, Math.max(MIN_QUESTION_CHARS, room));
+  const c = ctx ? clip(ctx, MAX_CARD_CHARS - fixed - (q ? q.length + 2 : 0)) : "";
+  return [q, c].filter((p) => !!p);
+}
+
 export interface RenderOptions {
   /** The card is drawn into a chat whose speakers are untrusted. */
   untrusted?: boolean;
@@ -67,11 +91,11 @@ export function renderCard(card: CanonicalCard, opts: RenderOptions = {}): Rende
       // button is not drawn and a prompt that opens the reply box follows.
       const freeText = card.options.length === 0;
       const buttons = card.buttons.filter((b) => !(freeText && b.action.verb === VERB.answer));
-      const parts = [card.question, card.context].filter((p): p is string => !!p);
       // A reply cannot answer in an untrusted chat, so a reply box would
       // invite a typed answer the core is bound to refuse.
       const replyable = freeText && !opts.untrusted;
       const hint = freeText && !replyable ? BUTTONS_ONLY_HINT : undefined;
+      const parts = fitCard(card.question, card.context, hint);
       const html = [...parts.map(markdownToHtml), ...(hint ? [`<i>${escapeHtml(hint)}</i>`] : [])].join("\n\n");
       const plain = [...parts, ...(hint ? [hint] : [])].join("\n\n");
       return {

@@ -72,7 +72,7 @@ There are three alternatives, and each was ruled out:
 auth:
   mode: token                  # stays token during the migration; strict in phase 6
   gates:
-    token:  { kind: token }    # the paste box, still needed during the migration
+    token:  { kind: token, label: "Access token" }   # the paste box, still needed during the migration
     cloud:
       kind: password
       label: "loomcycle.cloud account"
@@ -100,10 +100,12 @@ What `auth:manage` may not do, on any deployment (RFC FA §6.1.1):
 - **Touch a user above the floor** (an owner, or anyone in a group beyond the new-user groups), apart from the recovery switch above: no delete, disable, re-enable, demote, rename or credential removal.
 - **Disable, re-enable or approve** anyone but a floor member.
 
-`docker-compose.yaml`, on the `loomcycle` service:
-- `LOOMCYCLE_PUBLIC_URL=https://app.loomcycle.cloud`. It does two jobs. P2 builds invite and reset links from it, and a password gate refuses to load without it. P0 also reads it to recognise the TLS terminator: the tunnel delivers plain HTTP, but a request whose Host is `app.loomcycle.cloud` counts as HTTPS, so the session cookie is `__Host-lc_session; Secure`. Leave the tunnel's Host header as it is (don't set `httpHostHeader`).
+`docker-compose.yaml`:
+- On the `loomcycle` service, `LOOMCYCLE_PUBLIC_URL=https://app.loomcycle.cloud`. It does two jobs. P2 builds invite and reset links from it, and a password gate refuses to load without it. P0 also reads it to recognise the TLS terminator: the tunnel delivers plain HTTP, but a request whose Host is `app.loomcycle.cloud` counts as HTTPS, so the session cookie is `__Host-lc_session; Secure`. Leave the tunnel's Host header as it is (don't set `httpHostHeader`).
+- **An `edge` network** (`10.253.253.0/29`, dynamic allocation confined to `.4`–`.7`) that only cloudflared (fixed `10.253.253.2`) and the tailscale container (fixed `.3`) join; the tailscale container's `loomcycle-edge` alias resolves only there. The Cloudflare route for `app.loomcycle.cloud` targets `http://loomcycle-edge:8787`, so the tunnel's requests come from the one address loomcycle trusts. A new network rather than a pinned `loomnet` subnet, because changing `loomnet`'s subnet would make the existing network be recreated on deploy.
+- The landing's settings `LANDING_AUTH_GATE`, `LANDING_APP_URL` and `LANDING_SIGNUP_RETURN_TO` live in the host's `.env.insecure` (prefixed, because the runtime loads that file too); compose maps them to the landing's own names.
 
-**The website's credential:** an admin mints one operator token with `scopes: ["auth:manage"]`, for example named `cloud-landing`. It goes into `.env.secure` as **`LOOMCYCLE_AUTH_MANAGE_TOKEN`**. It replaces `LOOMCYCLE_ADMIN_TOKEN` in the landing service's environment (phase 5). Rotate it like any operator token.
+**The website's credential:** an admin mints one operator token with `scopes: ["auth:manage"]` (plus a `tenant_id` and `subject` it ignores), for example named `cloud-landing`. It goes into `.env.secure` as **`LOOMCYCLE_AUTH_MANAGE_TOKEN`**. It replaces `LOOMCYCLE_ADMIN_TOKEN` in the landing service's environment (phase 5). Rotate it like any operator token.
 
 ## Landing server (`landing/server.js`) — new routes
 
@@ -178,6 +180,7 @@ A legacy owner therefore lands on the subject their old tokens used, and their m
 
 - **`auth:manage` is a cross-tenant credential.** It cannot read data, start runs or mint tokens. A bug in the landing that took a tenant from the request would still let one owner manage another tenant's users. That is why the tenant comes only from the verified Access identity, and a test asserts it: a request carrying another tenant's id or subject gets a `404`.
 - **With `manager_may_recover_owners: true`, a leaked `LOOMCYCLE_AUTH_MANAGE_TOKEN` can take over any owner's account**, by issuing a reset link for them. It still cannot delete, disable or demote an owner, or re-bootstrap a tenant (RFC FA §6.1.1). The recovery events are audited with `recovery: true`, so alert on any that the landing did not initiate. Keep the token only in `.env.secure` and rotate it on any suspicion.
+- **The landing resets only the signed-in owner's own account among tenant-mode users.** loomcycle would let its token reset any owner, so a co-owner's reset is refused by the landing (`403 target_beyond_floor`).
 - **Invite and reset links are bearer-equivalent until redeemed.** They are single-use and short-lived, stored hashed by loomcycle, never logged by the landing, and shown only to the owner who asked for them.
 - **The landing still has no host port.** It is reachable only through the tunnel, with `/api/*` behind Cloudflare Access. Compared with today, its blast radius goes from "anything, anywhere" to "user records".
 - **Signup is a redirect, not an e-mail.** The person who proved the Google identity is the one who sets the password, in the same browser, within seconds. So no mailbox has to be trusted for the owner.

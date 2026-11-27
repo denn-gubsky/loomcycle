@@ -67,3 +67,31 @@ func TestKbAsk_UndatedTwinOfADatedQuestionStaysWithTheCascade(t *testing.T) {
 		})
 	}
 }
+
+// TestKbAsk_DateInASituationBeforeTheQuestionStaysWithTheCascade: a question
+// that tells a situation before it asks (ConditionalQA's shape) states when
+// something happened; that date does not bound what is asked. A date bound
+// counts only after a list head, in that head's sentence. Measured on
+// ConditionalQA: of 17 questions the dated rules took, 15 matched only a
+// period in the situation. Each of these goes to the classifiers like any
+// undated question.
+func TestKbAsk_DateInASituationBeforeTheQuestionStaysWithTheCascade(t *testing.T) {
+	for _, q := range []string{
+		"I moved to the UK in 2019 and have worked here since. Can I claim the benefit?",
+		"My husband died after 2019-03-01. What support can I get?",
+		"I started work in March 2021, and my employer has not paid me since last month. Am I entitled to holiday pay?",
+		"The office moved in 2019.",
+		"We have rented the flat since 2018, what can the landlord charge us for?",
+	} {
+		wantCascade(t, q)
+	}
+}
+
+// TestKbAsk_DatedClauseAfterASituationStillRoutesToTheWalker: a situation
+// with a date of its own does not stop a list-headed clause after it from
+// being dated: the bound in that clause still sends the question to the
+// walker with its dated note.
+func TestKbAsk_DatedClauseAfterASituationStillRoutesToTheWalker(t *testing.T) {
+	wantWalkerRoute(t, "I moved to the UK in 2019. Which benefits were introduced since 2020?", "dated", datedNote, false)
+	wantWalkerRoute(t, "We started the project in 2024. Which plans did we write in November 2026?", "dated", datedRangeNote, true)
+}

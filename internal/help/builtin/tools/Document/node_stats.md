@@ -242,8 +242,9 @@ documents placed after it was chosen.
 A level's **threshold** is set by `margins`, keyed by the level as a string:
 the default is `{"2": 0.03}`, so level 1 has none. A ranking is `eligible`
 when its margin is at least its level's threshold and the document is placed
-under none of the concepts compared at that level. A document placed under a
-sibling of the nearest is not eligible however large the margin: a second,
+under none of that level's concepts, compared or not. A document placed under a
+sibling of the nearest, or under a concept left out of the comparison for too
+few members, is not eligible however large the margin: a second,
 contradicting placement is what mode `misfits` weighs. With `propose: true`
 each eligible ranking, largest margin first, is filed (only the most specific
 one when a document is eligible at two levels of a scheme, since a placement

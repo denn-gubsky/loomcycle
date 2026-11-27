@@ -336,6 +336,41 @@ describe("voice messages (RFC GA)", () => {
     expect(platform.messages()[0]).toBe('🎙 "what is the weather"');
   });
 
+  describe("answering an open question (RFC HG)", () => {
+    async function ask(extra: Record<string, unknown>) {
+      await type("plan my week");
+      lc.runs[0]!.events.push({
+        type: "interruption_pending",
+        interruption: { interrupt_id: "q1", kind: "question", question: "When?", options: ["Monday", "Tuesday"], priority: "normal", ...extra },
+      });
+      await waitFor(() => platform.cards().length === 1, "question card");
+    }
+    const answers = () => lc.callsTo("resolveInterrupt").map((c) => c.args[2]);
+
+    it("takes a spoken option's text as that option", async () => {
+      await ask({});
+      lc.speech!.transcript = "tuesday";
+      await speak();
+      expect(answers()).toEqual([{ answer: "Tuesday", resolvedBy: "test-alice" }]);
+    });
+
+    it("takes a transcript as the person's own answer when the question allows one", async () => {
+      await ask({ allow_other: true });
+      lc.speech!.transcript = "neither, next week";
+      await speak();
+      expect(answers()).toEqual([{ answer: "neither, next week", resolvedBy: "test-alice" }]);
+      expect(lc.callsTo("sendRunInput")).toHaveLength(0);
+    });
+
+    it("asks for a number when a transcript is none of the options and others are not allowed", async () => {
+      await ask({});
+      lc.speech!.transcript = "neither, next week";
+      await speak();
+      expect(answers()).toHaveLength(0);
+      expect(platform.messages().at(-1)).toBe("Please reply with a number from 1 to 2.");
+    });
+  });
+
   it("lists /voice in /help only when voice is on", async () => {
     await type("/help");
     expect(platform.messages().at(-1)).toBe(`${HELP_TEXT}\n${VOICE_HELP_TEXT}`);

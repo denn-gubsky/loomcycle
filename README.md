@@ -22,7 +22,7 @@
 
 ---
 
-> 🌳 **Stable and in production.** loomcycle is past v1.0 (currently v1.169) — feature-complete, hardened, and distribution-ready (Homebrew, multi-arch Docker, a Claude Code plugin, TS + Python adapters, a TrueNAS app). **Validated by two months of continuous production operation at JobEmber.ai** under real user load, with multi-replica HA on Postgres. Development since v1.0 has been new primitives plus hardening — see [`REVISIONS.md`](REVISIONS.md) for recent releases and [the releases page](https://github.com/denn-gubsky/loomcycle/releases) for the full history. Apache-2.0. We welcome bug reports, security disclosures, feature contributions, downstream consumers, and forks. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
+> 🌳 **Stable and in production.** loomcycle is past v1.0 (currently v1.170) — feature-complete, hardened, and distribution-ready (Homebrew, multi-arch Docker, a Claude Code plugin, TS + Python adapters, a TrueNAS app). **Validated by two months of continuous production operation at JobEmber.ai** under real user load, with multi-replica HA on Postgres. Development since v1.0 has been new primitives plus hardening — see [`REVISIONS.md`](REVISIONS.md) for recent releases and [the releases page](https://github.com/denn-gubsky/loomcycle/releases) for the full history. Apache-2.0. We welcome bug reports, security disclosures, feature contributions, downstream consumers, and forks. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ---
 
@@ -214,16 +214,24 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.169.0) grows workspaces into a place an agent can
+The most recent line (v1.170.0) completes git workspaces: a workspace opened
+on a repository can fetch, pull and push its own branch, commit, diff and
+branch through typed ops, and fork with a branch of its own, over capped
+mirrors. The `agent-teams` bundle pushes through it with no token in a
+command. A subject's erasure reaches the kept ontology releases, and
+`File op=render` gains page counters and an inline style. Read the upgrade
+notes in [`REVISIONS.md`](REVISIONS.md).
+
+Before it, v1.169.0 grew workspaces into a place an agent can
 keep working in: a workspace can outlive its run (durable), travel in a
 snapshot, start from a template, serve a page to its user and take updates
 back from it, show the agent a screenshot of that page, open on a git branch
 over the tenant's mirror, and run on a user's own machine (personal workers).
 The `Bash` tool, Bashbox and the sandbox sidecar are deprecated in favour of
 workspaces. The tenant ontology gains releases, rollback and resumable rename
-jobs. Read the upgrade notes in [`REVISIONS.md`](REVISIONS.md).
+jobs.
 
-Before it, v1.168.0 let a person's own file reach the agent through the run
+Before that, v1.168.0 let a person's own file reach the agent through the run
 inbox and a chat bridge, let a new chat start with the person's recent chats
 with the same agent (`history_preload`), and gave Calc matrix powers and exact
 matrix products.
