@@ -207,17 +207,18 @@ export interface ConfigTeamStatus {
   detail?: string;
 }
 
-// One series of loomcycle_deprecated_use_total: how many runs this replica
-// gave a deprecated tool or field since it started.
+// One series of loomcycle_deprecated_use_total: how many runs on this replica
+// had a definition naming a tool or field v1.172.0 removed, since it started.
 export interface DeprecatedUseCount {
   kind: string;
   name: string;
   count: number;
 }
 
-// What a future release removes that this deployment still uses (RFC GW
-// P14): config is the load's lines (what boot and doctor print), runs this
-// replica's run counts, the only place a stored definition's use shows.
+// What v1.172.0 removed that stored definitions still name (RFC GW P15 Q3;
+// the P14 shape kept): config is always empty on a v1.172.0 server, since a
+// config naming a removed item does not load; runs is this replica's run
+// counts, the only place a stored definition's use shows.
 export interface ConfigDeprecations {
   config: string[];
   runs: DeprecatedUseCount[];
