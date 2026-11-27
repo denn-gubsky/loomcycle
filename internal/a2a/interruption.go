@@ -8,6 +8,7 @@ import (
 
 	a2asdk "github.com/a2aproject/a2a-go/v2/a2a"
 
+	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
@@ -46,6 +47,7 @@ type storeInterruptResolver struct {
 // so the A2A server package (internal/api/a2a) can compose it into the
 // store interface it requires of its caller. store.Store satisfies it.
 type InterruptStore interface {
+	InterruptGet(ctx context.Context, interruptID string) (store.InterruptRow, error)
 	InterruptListByRun(ctx context.Context, runID, statusFilter string) ([]store.InterruptRow, error)
 	InterruptResolve(ctx context.Context, interruptID, answer, resolvedBy string, answerMeta json.RawMessage) error
 }
@@ -70,7 +72,18 @@ func (r *storeInterruptResolver) Resolve(ctx context.Context, interruptID, answe
 	// context.WithoutCancel: the resolve must complete even though the
 	// triggering A2A request ctx may be torn down right after — same
 	// posture as the HTTP resolve handler and the Interruption tool.
-	if err := r.store.InterruptResolve(context.WithoutCancel(ctx), interruptID, answer, store.InterruptResolvedByAPI, nil); err != nil {
+	ctx = context.WithoutCancel(ctx)
+	// A peer's answer takes the same check as every other resolve path
+	// (RFC HG D5): one of the options, or its own only where the question
+	// allows other answers.
+	row, err := r.store.InterruptGet(ctx, interruptID)
+	if err != nil {
+		return err
+	}
+	if err := connector.CheckInterruptAnswer(row, answer); err != nil {
+		return err
+	}
+	if err := r.store.InterruptResolve(ctx, interruptID, answer, store.InterruptResolvedByAPI, nil); err != nil {
 		return err
 	}
 	if r.notify != nil {

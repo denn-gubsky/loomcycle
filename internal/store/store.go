@@ -7580,6 +7580,19 @@ type InterruptRow struct {
 	AllowOther bool `json:"allow_other,omitempty"`
 }
 
+// OptionList decodes a question's options. Nil, with no error, for a
+// free-text question (no options, or an empty list).
+func (r InterruptRow) OptionList() ([]string, error) {
+	if len(r.Options) == 0 || string(r.Options) == "null" {
+		return nil, nil
+	}
+	var opts []string
+	if err := json.Unmarshal(r.Options, &opts); err != nil {
+		return nil, fmt.Errorf("interrupt %s: options: %w", r.InterruptID, err)
+	}
+	return opts, nil
+}
+
 // ErrInterruptAlreadyTerminal is returned by InterruptResolve /
 // InterruptFinish when the row is already in a terminal status
 // (resolved / timed_out / cancelled). Distinct from ErrNotFound:

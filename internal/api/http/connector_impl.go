@@ -1813,23 +1813,9 @@ func (s *Server) InterruptionResolve(ctx context.Context, req connector.Interrup
 		return connector.InterruptionResolveResult{}, fmt.Errorf("interruption_resolve: expired")
 	}
 
-	// Option-list validation. Same shape as the HTTP handler.
-	if len(row.Options) > 0 {
-		var opts []string
-		if err := json.Unmarshal(row.Options, &opts); err == nil && len(opts) > 0 {
-			ok := false
-			for _, o := range opts {
-				if o == req.Answer {
-					ok = true
-					break
-				}
-			}
-			if !ok {
-				return connector.InterruptionResolveResult{}, fmt.Errorf("interruption_resolve: answer %q is not in declared options %v", req.Answer, opts)
-			}
-		}
-	} else if req.Answer == "" {
-		return connector.InterruptionResolveResult{}, fmt.Errorf("interruption_resolve: answer required for free-text interrupts")
+	// The one answer check every resolve path shares (RFC HG §3.2).
+	if err := connector.CheckInterruptAnswer(row, req.Answer); err != nil {
+		return connector.InterruptionResolveResult{}, err
 	}
 
 	if err := s.store.InterruptResolve(ctx, req.InterruptID, req.Answer, resolvedBy, nil); err != nil {
