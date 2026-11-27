@@ -15,7 +15,7 @@ package builtin
 //
 // PROPOSALS ONLY (D17, owner ruling 2026-11-20: every placement stays a proposal).
 // With propose, a ranking whose margin is at least its level's threshold, of a
-// document placed under none of the concepts compared at that level, is filed as a
+// document placed under none of that level's concepts (compared or not), is filed as a
 // `subject` proposal with method rule:assign and confidence = the margin (at most
 // 1), as misfits files: proposeOnly (the @auto_assert rule never asserts it), at most
 // limit per call, never a placement any reviewer rejected nor one already proposed or
@@ -23,9 +23,10 @@ package builtin
 // live: only a review rule the tenant writes on method rule:assign could, through
 // the existing review policy at filing.
 //
-// A document already placed under a compared concept is never filed at that level,
+// A document already placed under a concept of that level is never filed there,
 // even when a sibling is nearer by more than the threshold (owner ruling
-// 2026-11-23): a second, contradicting sibling placement is misfits' question, which
+// 2026-11-23), and also when its concept was left out of the comparison for too
+// few members: a second, contradicting sibling placement is misfits' question, which
 // weighs the placement the document has. Its own method keeps a review rule tuned
 // for one mode's margins off the other's proposals; rule:assign is not a prefix of
 // rule:centroid nor the reverse, so the review tool's method filter (a prefix)
@@ -106,8 +107,8 @@ type assignRanking struct {
 	// compared concepts: there is nothing to agree with.
 	Agrees *bool `json:"agrees,omitempty"`
 	// Threshold is the level's; Eligible marks a ranking the propose form would file:
-	// at or over the threshold, the document placed under none of the compared
-	// concepts.
+	// at or over the threshold, the document placed under none of the level's
+	// concepts, compared or not.
 	Threshold *float64 `json:"threshold,omitempty"`
 	Eligible  bool     `json:"eligible,omitempty"`
 	// With propose: the outcome, as misfits reports it.
@@ -331,8 +332,12 @@ func (a *assignPass) rank(doc string, s memrank.OntologyScheme) []assignRanking 
 			thr := t
 			rk.Threshold = &thr
 			// Placed under a compared concept: either the nearest (nothing to add)
-			// or a sibling (a contradicting placement, left to misfits).
-			rk.Eligible = rk.Margin >= t && !placed
+			// or a sibling (a contradicting placement, left to misfits). Placed
+			// under a concept of this level the ranker left out (too few members
+			// for a centroid) is placed all the same: the page already has its
+			// concept here, and the nearest compared one is only the nearest of
+			// the others (conditional-qa 2026-11-27: 11 such filings, none right).
+			rk.Eligible = rk.Margin >= t && !placed && !a.placedInGroup(doc, group)
 		}
 		out = append(out, rk)
 		for _, id := range a.groups[group] {
@@ -342,6 +347,17 @@ func (a *assignPass) rank(doc string, s memrank.OntologyScheme) []assignRanking 
 		}
 	}
 	return out
+}
+
+// placedInGroup says whether doc is placed live under any concept of group,
+// compared or not.
+func (a *assignPass) placedInGroup(doc, group string) bool {
+	for _, id := range a.groups[group] {
+		if a.member[doc][id] {
+			return true
+		}
+	}
+	return false
 }
 
 // NodeAssign runs mode assign over the tenant scope key names. The caller has
