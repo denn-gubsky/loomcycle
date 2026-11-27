@@ -7906,10 +7906,14 @@ agents:
         backlog_reads: 200,
         proposal_list: 1000,
         // The recurrence floor: a type on at least 3 rows in at least 2
-        // documents; a kind on at least 3 statements neither rejected nor
+        // documents, or on at least single_document_rows rows of one
+        // document (many entries of one shape, such as the posts of one
+        // launch plan: measured on dev, 56 rows of one document graded a
+        // class); a kind on at least 3 statements neither rejected nor
         // expired.
         min_rows: 3,
         min_documents: 2,
+        single_document_rows: 20,
         min_statements: 3,
         // A relation's domain and range: the dominant pair of end classes
         // when it holds at least 4/5 of the kind's statements. A starting
@@ -8140,7 +8144,7 @@ agents:
           c.populations.sort();
           out.push({
             section: "classes", name: c.name, proposal: c.proposal, count: c.rows,
-            floor: c.rows >= CONFIG.min_rows && c.documents >= CONFIG.min_documents,
+            floor: c.rows >= CONFIG.min_rows && (c.documents >= CONFIG.min_documents || c.rows >= CONFIG.single_document_rows),
             out: { section: "classes", name: c.name, signal: "undeclared_type", rows: c.rows, documents: c.documents,
                    tenant_scope: c.tenant, other_scopes: c.other, populations: c.populations, directives: {} }
           });
