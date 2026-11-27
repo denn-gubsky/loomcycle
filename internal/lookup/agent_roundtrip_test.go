@@ -35,6 +35,7 @@ func TestSubstrateAgentDef_ConfigRoundTripCoversEveryField(t *testing.T) {
 		"RegisteredSHA256": "RESOLVED, not content: a digest of the dynamic_agents row the definition was read from, stamped by lookup — an AgentDef version has no such row",
 		"Static":           "RESOLVED, not content: that the definition was read from the operator's static config, stamped by lookup — an AgentDef version is never static",
 		"TeamDefID":        "RESOLVED, not content: the team version a team's own agent was read from, stamped by whoever resolves it inside a walk — an AgentDef version is never one",
+		"RemovedFields":    "RESOLVED, not content: the removed fields (RFC GW P15) the stored JSON still holds, read from the raw row by lookup — no body may set it, and a new one may not hold the field at all",
 		"OperatorAuthored": "AUTHORITY, not content. It lives on the agent_defs ROW and is stamped from the ctx at the write site; carrying it through the definition body would let a def claim its own authorship — and would put it in the content hash, forking every existing row",
 	}
 

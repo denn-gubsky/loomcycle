@@ -4,19 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
-	"path/filepath"
-	"runtime"
-	"strings"
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/credential"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
-	"github.com/denn-gubsky/loomcycle/internal/tools"
-	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
 
 // sealedUnder stores names in tenant "t" sealed under key byte a, and
@@ -80,40 +74,5 @@ func TestCredentialBinding_AnUnopenableProviderKeyFailsInsteadOfTheOperatorKey(t
 	ctx := providers.WithCredentialResolver(runCtx(), b.providerKey)
 	if key, source, _, err := providers.ResolveKeyOrOperator(ctx, "ANTHROPIC_API_KEY", "sk-operator"); err != nil || key != "sk-operator" || source != "operator" {
 		t.Errorf("no KEK, no row: key=%q source=%q err=%v; want the operator key, unchanged", key, source, err)
-	}
-}
-
-// Through the real Bash tool: a tenant GITHUB_TOKEN sealed under another key
-// leaves the variable unset in the child — the operator's allowlisted host
-// GITHUB_TOKEN is removed, not passed through — and the output says why.
-func TestCredentialBinding_AnUnopenableEnvVarRemovesTheHostVar(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip()
-	}
-	t.Setenv("GITHUB_TOKEN", "operator-host-token")
-	b := sealedUnder(t, 1, 2, "GITHUB_TOKEN")
-	cwd, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	bash := &builtin.Bash{
-		Enabled:         true,
-		AllowedExtraEnv: []string{"GITHUB_TOKEN"},
-		AllowedCreds:    []string{"GITHUB_TOKEN"},
-		CredResolve:     b.envVar("bash"),
-	}
-	ctx := tools.UpdateRunPolicy(runCtx(), func(rp *tools.RunPolicy) {
-		rp.Volumes = tools.VolumePolicyValue{Active: true, Bindings: []tools.VolumeBinding{{Name: "default", Root: cwd, Default: true}}}
-	})
-	body, _ := json.Marshal(map[string]string{"command": "env"})
-	res, err := bash.Execute(ctx, body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(res.Text, "GITHUB_TOKEN=") {
-		t.Errorf("the child saw a GITHUB_TOKEN although the tenant's could not be opened: %q", res.Text)
-	}
-	if !strings.Contains(res.Text, "[GITHUB_TOKEN is not set:") || !strings.Contains(res.Text, "cannot be opened") {
-		t.Errorf("the output does not say why the variable is unset: %q", res.Text)
 	}
 }

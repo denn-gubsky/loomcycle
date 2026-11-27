@@ -1,6 +1,9 @@
 package config
 
 import (
+	"bytes"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"sort"
@@ -174,6 +177,27 @@ func removedItemsOfLayer(data []byte) map[string][]string {
 	return out
 }
 
+// RemovedItemsOf lists the removed tools and fields an agent definition
+// names, in table order: each tool it lists and each removed field a reader
+// of stored JSON found on it (AgentDef.RemovedFields). It is what a run of
+// that definition is not given.
+func RemovedItemsOf(def AgentDef) []Removal {
+	var out []Removal
+	for _, r := range removals {
+		switch r.Kind {
+		case RemovedKindTool:
+			if slices.Contains(def.Tools, r.Name) {
+				out = append(out, r)
+			}
+		case RemovedKindField:
+			if slices.Contains(def.RemovedFields, r.Name) {
+				out = append(out, r)
+			}
+		}
+	}
+	return out
+}
+
 // isRemovedEnv reports whether name is a removed variable.
 func isRemovedEnv(name string) bool {
 	_, ok := removedRow(RemovedKindEnv, name)
@@ -194,8 +218,80 @@ func removedItemsOfMarkdownAgent(a *agents.Agent) []string {
 			out = append(out, tool)
 		}
 	}
-	if a.ShellCredentials != nil {
-		out = append(out, "shell_credentials")
+	out = append(out, a.RemovedFields...)
+	return out
+}
+
+// RemovedFieldsInJSON names the removed fields a stored definition's JSON
+// still holds, in table order. A stored row keeps its bytes (and its content
+// hash) after the field left every Go type, so its readers ask the raw JSON:
+// each sets AgentDef.RemovedFields from this. The key is matched as
+// encoding/json matches a field, without case, and in either spelling a row
+// was written with: the substrate's snake_case (shell_credentials) and a
+// registered agent's Go field name (ShellCredentials). A null value is
+// absent: a registered agent's JSON wrote every unset pointer as null.
+func RemovedFieldsInJSON(raw []byte) []string {
+	var top map[string]json.RawMessage
+	if json.Unmarshal(raw, &top) != nil {
+		return nil
+	}
+	held := map[string]bool{}
+	for k, v := range top {
+		if string(bytes.TrimSpace(v)) == "null" {
+			continue
+		}
+		held[strings.ToLower(strings.ReplaceAll(k, "_", ""))] = true
+	}
+	var out []string
+	for _, r := range removals {
+		if r.Kind == RemovedKindField && held[strings.ToLower(strings.ReplaceAll(r.Name, "_", ""))] {
+			out = append(out, r.Name)
+		}
 	}
 	return out
+}
+
+// removedInertMessage is the run-start notice for a removed item a stored
+// definition names (InertToolGrants, gate RemovedGate).
+func removedInertMessage(r Removal) string {
+	what := fmt.Sprintf("`%s` is in this agent's tools but was removed in %s, so it is not given to this run", r.Name, RemovedIn)
+	if r.Kind == RemovedKindField {
+		what = fmt.Sprintf("`%s` is set on this agent but was removed in %s, so it does nothing", r.Name, RemovedIn)
+	}
+	return fmt.Sprintf("%s: %s (see %s#%s). Fork the definition without it.", what, r.Replacement, MigrationGuide, r.Section)
+}
+
+// RefuseRemovedAuthoring refuses a definition being authored (AgentDef create,
+// a fork's overlay, register_agent) that names a removed item: a tool in
+// tools, or a removed field among raw's keys (RFC GW P15 Q1). An author can
+// fix the request; a stored row cannot, which is why stored rows are only
+// told (InertToolGrants). One error names every item.
+func RefuseRemovedAuthoring(tools []string, raw []byte) error {
+	var lines []string
+	for _, r := range removals {
+		switch {
+		case r.Kind == RemovedKindTool && slices.Contains(tools, r.Name):
+			lines = append(lines, r.Line("tools names "+r.Name))
+		case r.Kind == RemovedKindField && slices.Contains(RemovedFieldsInJSON(raw), r.Name):
+			lines = append(lines, r.Line("the definition sets "+r.Name))
+		}
+	}
+	if len(lines) == 0 {
+		return nil
+	}
+	return errors.New(strings.Join(lines, "; "))
+}
+
+// WithoutRemovedTools is tools less every removed tool, and the names taken
+// out. A fork that only inherits one from the version it forks has it
+// stripped (RFC GW P15 Q1).
+func WithoutRemovedTools(tools []string) (kept, dropped []string) {
+	for _, t := range tools {
+		if _, ok := RemovedTool(t); ok {
+			dropped = append(dropped, t)
+			continue
+		}
+		kept = append(kept, t)
+	}
+	return kept, dropped
 }

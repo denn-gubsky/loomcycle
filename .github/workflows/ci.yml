@@ -154,17 +154,6 @@ jobs:
             (cd "$dir" && go build ./...)
           done
 
-      - name: Bashbox escape suite
-        # Bashbox's isolation is gbash's, and gbash is pre-1.0, so its escape
-        # suite is a named gate (RFC ES #10). It runs on every PR rather than
-        # only when go.mod's gbash line changes: it takes well under a minute,
-        # a path filter would miss a bump that arrives another way, and a
-        # change to bashbox.go can weaken containment just as well. The
-        # target fails if any case is skipped, so a runner missing git, curl,
-        # env or printenv cannot pass it vacuously. The race shards run the
-        # same tests again under -race.
-        run: make bashbox-escape
-
       # The release archives carry THIRD_PARTY_LICENSES (.goreleaser.yaml
       # before hook). Its Go half refuses a dependency whose license
       # go-licenses cannot classify; running it here makes such a dependency

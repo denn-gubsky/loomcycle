@@ -192,26 +192,10 @@ func (b *boot) buildToolsCore(httpTool *builtin.HTTP) {
 	// no BRAVE_API_KEY back-compat default) → WebSearch refuses "not configured".
 	searchRegistry, searchResolver, searchHostKeys := buildSearchProviders(cfg)
 
-	// Bashbox is a named var so its CredResolve can be late-bound after the
-	// credential engine is constructed below (RFC BD per-tenant repo token).
-	bashboxTool := &builtin.Bashbox{
-		FallbackCommands:     cfg.Env.BashboxFallbackCommands,
-		FallbackAllowedEnv:   cfg.Env.BashboxFallbackAllowedEnv,
-		FallbackAllowedCreds: cfg.Env.BashboxFallbackAllowedCreds,
-		OverlayMaxBytes:      cfg.Env.BashboxOverlayMaxBytes,
-	}
-
-	// Bash is likewise a named var so its CredResolve can be late-bound after
-	// the credential engine — it injects per-tenant creds into the raw child env.
-	bashTool := &builtin.Bash{
-		Enabled:      cfg.Env.BashEnabled,
-		AllowedCreds: cfg.Env.BashAllowedCreds,
-	}
-
 	b.allTools = []tools.Tool{
 		// The file/exec tools resolve their sandbox root per-call from the
 		// run's VolumePolicy (RFC AH); an agent bound to no volume is refused
-		// (sandbox-by-default — the legacy READ_ROOT/WRITE_ROOT/BASH_CWD jail
+		// (sandbox-by-default — the legacy READ_ROOT/WRITE_ROOT jail
 		// was retired in Phase 3).
 		&builtin.Read{},
 		&builtin.Write{},
@@ -222,14 +206,6 @@ func (b *boot) buildToolsCore(httpTool *builtin.HTTP) {
 		httpTool,
 		&builtin.WebFetch{HTTP: httpTool},
 		&builtin.WebSearch{Registry: searchRegistry, Resolver: searchResolver, HostKeys: searchHostKeys, ShowProvenance: cfg.Env.WebSearchProvenance},
-		// Bash — constructed above so CredResolve can be late-bound after the
-		// credential engine exists (per-tenant cred injection into the child env).
-		bashTool,
-		// Bashbox — a TRUE in-process sandbox (gbash): no OS process, paths
-		// rooted at the volume, no network, and read-only volumes are honored
-		// (writes hit an in-RAM overlay). Opt-in like Bash. Constructed above so
-		// CredResolve can be late-bound after the credential engine exists.
-		bashboxTool,
 		// SkillTool's Store is late-bound below (so DB-active SkillDef
 		// rows override the static Set body). Nil-Store before
 		// late-binding falls back to the static Set; the assignment
@@ -248,8 +224,6 @@ func (b *boot) buildToolsCore(httpTool *builtin.HTTP) {
 	b.searchRegistry = searchRegistry
 	b.searchResolver = searchResolver
 	b.searchHostKeys = searchHostKeys
-	b.bashboxTool = bashboxTool
-	b.bashTool = bashTool
 	b.skillTool = skillTool
 }
 
@@ -705,7 +679,7 @@ func (b *boot) logToolPosture() {
 	searchResolver := b.searchResolver
 
 	if len(cfg.Volumes) == 0 {
-		slog.Info("note: file tools (Read/Write/Edit/Glob/Grep/Bash) require a `volumes:` binding — none configured; agents with no volume binding have no filesystem access")
+		slog.Info("note: file tools (Read/Write/Edit/Glob/Grep) require a `volumes:` binding — none configured; agents with no volume binding have no filesystem access")
 	}
 	if root, ok := builtin.DynamicVolumeRoot(cfg); ok {
 		checkDynamicRootWritable(slog.Default(), root)
@@ -732,30 +706,6 @@ func (b *boot) logToolPosture() {
 		slog.Info(fmt.Sprintf("search: %d provider(s) configured; priority %v", len(searchRegistry.IDs()), searchResolver.Cascade(nil)),
 			"providers", len(searchRegistry.IDs()), "priority", searchResolver.Cascade(nil))
 	}
-	if cfg.Env.BashEnabled {
-		slog.Warn("Bash tool is enabled (LOOMCYCLE_BASH_ENABLED=1). This is NOT a true sandbox — run loomcycle inside a container or VM if you expose this to untrusted prompts.")
-		slog.Info("note: Bash requires a rw volume binding — it runs in the bound volume's root and refuses an agent with no rw volume")
-		if len(cfg.Env.BashAllowedCreds) > 0 {
-			slog.Warn("Bash injects these credentials into every command (LOOMCYCLE_BASH_ALLOWED_CREDS) — the model can read each one (a plain `env` prints it). Give Bash only credentials you would hand the model.", "credentials", strings.Join(cfg.Env.BashAllowedCreds, ","))
-		}
-	} else {
-		slog.Info("note: Bash tool is registered but disabled — set LOOMCYCLE_BASH_ENABLED=1 to enable (NOT a true sandbox; see docs)")
-	}
-	slog.Info("note: Bashbox tool is registered — a TRUE in-process sandbox (gbash): no OS process, paths rooted at the volume, no network; read-only volumes are honored. gbash is alpha: gate per agent via tools, and for mutually hostile tenants on one process also run loomcycle in a container.")
-	if len(cfg.Env.BashboxFallbackCommands) > 0 {
-		slog.Warn("Bashbox host-command fallback is enabled (LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS). These commands ESCAPE the sandbox and run on the real host shell (with host filesystem + network) — only allowlist commands you trust, and only enable for trusted prompts. Fallback requires a read-write volume.", "commands", strings.Join(cfg.Env.BashboxFallbackCommands, ","))
-		// RFC ES #9: the variables reach only the host child, but that
-		// child does what the model tells it, including printing them.
-		if len(cfg.Env.BashboxFallbackAllowedEnv) > 0 || len(cfg.Env.BashboxFallbackAllowedCreds) > 0 {
-			advice := "pass only values you would hand the model."
-			if len(cfg.Env.BashboxFallbackAllowedCreds) > 0 {
-				advice = "pass only credentials you would hand the model, and bind each stored credential to the one command that needs it (cmd:NAME in LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS)."
-			}
-			slog.Warn("the model can read every variable and credential given to Bashbox host commands (LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV, LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS): an allowlisted command can be told to print its environment (e.g. git -c alias.x='!env' x). So "+advice,
-				"allowed_env", strings.Join(cfg.Env.BashboxFallbackAllowedEnv, ","), "allowed_creds", strings.Join(cfg.Env.BashboxFallbackAllowedCreds, ","))
-		}
-	}
-
 	// Per-agent tool policy is default-deny: an agent with no tools
 	// in YAML gets ZERO tools at the dispatcher. Warn at startup so
 	// operators don't discover this only when an agent inexplicably can't

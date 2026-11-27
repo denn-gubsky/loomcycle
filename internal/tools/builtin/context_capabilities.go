@@ -2,7 +2,6 @@ package builtin
 
 import (
 	"context"
-	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/capabilities"
@@ -59,11 +58,6 @@ func (c *Context) execCapabilities(ctx context.Context) (tools.Result, error) {
 	// deployment probe.
 	out["limits"] = capabilityLimits(ctx, c.Cfg)
 
-	// sandbox: the sandboxed-code-execution surface arrives as MCP tools from a
-	// builder sidecar, so there is no config flag to read — presence in THIS
-	// run's tool list is the truth, and it is per-run by nature.
-	out["sandbox"] = map[string]any{"available": hasSandboxTools(c.Tools)}
-
 	return okJSON(out)
 }
 
@@ -83,14 +77,4 @@ func capabilityLimits(ctx context.Context, cfg *config.Config) map[string]any {
 	}
 	lim["memory_inject_max_tokens"] = inject
 	return lim
-}
-
-// hasSandboxTools reports whether this run carries the sandbox MCP toolset.
-func hasSandboxTools(ts []tools.Tool) bool {
-	for _, t := range ts {
-		if t != nil && strings.HasPrefix(t.Name(), "mcp__sandbox__") {
-			return true
-		}
-	}
-	return false
 }

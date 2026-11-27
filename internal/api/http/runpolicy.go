@@ -30,10 +30,6 @@ type runPolicySource struct {
 	CoreBlocks []config.CoreBlock
 	// Crypto is the run's key-scope grant.
 	Crypto tools.CryptoPolicyValue
-	// ShellCreds, when set, is the run's shell-credential narrowing from
-	// outside its definition (a resumed sub-run's, narrowed again against its
-	// recorded parent). nil: its definition's shell_credentials (RFC EW).
-	ShellCreds *tools.ShellCredsPolicyValue
 	// GitRemote, when set, is the run's Git network grant from outside its
 	// definition (a resumed sub-run's, narrowed again against its recorded
 	// parent). nil: its definition's git_remote (RFC FB).
@@ -129,13 +125,13 @@ func (s *Server) agentRunPolicy(ctx context.Context, def config.AgentDef, name s
 		Skill:            tools.NarrowSkillsByACL(ctx, acl, s.skillPolicyForAgent(def)),
 		Evaluation:       evPolicy,
 		Crypto:           src.Crypto,
-		ShellCreds:       shellCredsOf(def, src.ShellCreds),
 		GitRemote:        gitRemoteOf(def, src.GitRemote),
 		Workspace:        workspaceOf(def, src.Workspace),
 		StatementMethods: statementMethodsOf(def),
 		OperatorAuthored: def.OperatorAuthored,
 		ACL:              acl,
 		ACLRemovedTools:  src.ACLRemovedTools,
+		Removed:          removedNames(def),
 		LiveACL:          s.liveACLFor(acl),
 		FanoutCap:        max(src.FanoutCap, 0),
 		Overrides:        overridesOffer(src.Overrides),
@@ -199,13 +195,14 @@ func statementMethodsOf(def config.AgentDef) []string {
 	return out
 }
 
-// shellCredsOf is a run's shell-credential narrowing: the one given from
-// outside its definition when there is one, else its definition's own.
-func shellCredsOf(def config.AgentDef, given *tools.ShellCredsPolicyValue) tools.ShellCredsPolicyValue {
-	if given != nil {
-		return *given
+// removedNames names what v1.172.0 removed that def still names (RFC GW P15),
+// in table order; nil for none.
+func removedNames(def config.AgentDef) []string {
+	var out []string
+	for _, r := range config.RemovedItemsOf(def) {
+		out = append(out, r.Name)
 	}
-	return tools.ShellCredsFor(def.ShellCredentials)
+	return out
 }
 
 // narrowHistoryByACL drops the history scopes the principal may not read.

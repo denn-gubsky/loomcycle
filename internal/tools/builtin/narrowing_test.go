@@ -166,7 +166,7 @@ func TestNarrowHostsEmptyCallerDeniesAll(t *testing.T) {
 func TestNarrowHostsLeavesUnrelatedToolsAlone(t *testing.T) {
 	r := &Read{}
 	w := &Write{}
-	b := &Bash{Enabled: true}
+	b := &Grep{}
 	out := NarrowHosts([]tools.Tool{r, w, b}, []string{"x.example"}, "", false)
 	if len(out) != 3 {
 		t.Fatalf("len = %d, want 3", len(out))

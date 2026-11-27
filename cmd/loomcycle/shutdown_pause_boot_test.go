@@ -24,22 +24,27 @@ import (
 )
 
 // These boot the real binary (RFC ES F1): a SIGTERM pauses the runs in flight
-// instead of abandoning them. A run inside a Bash call has the call
-// interrupted — its process group killed — and parks; the next boot on the same
+// instead of abandoning them. A run inside a long command — a workspace exec
+// on the local worker's host engine (workspace.mode local), the one way a run
+// runs a command since the Bash tool was removed (RFC GW P15) — has the call
+// interrupted, its process group killed, and parks; the next boot on the same
 // data dir resumes it to completion.
 
-// shutdownPauseScript sleeps in Bash, recording its shell's pid (the process
-// group id: Bash puts each command in its own group). Interrupted, it catches
-// the failed call and runs a second one, so the resumed run ends on an answer
-// that names the interruption.
+// shutdownPauseScript sleeps in a workspace, recording its shell's pid (the
+// process group id: the host engine puts each command in its own group).
+// Interrupted, it catches the failed call and answers, so the resumed run
+// ends on an answer that names the interruption. The catch branch makes no
+// workspace call: the workspace was the stopped worker's. The python
+// toolchain is the one the local worker reports on a host with python3 on
+// PATH; a workspace naming none needs a worker with node too.
 const shutdownPauseScript = `
 function run(input) {
   try {
-    Bash({command: "echo $$ > sleeper.pid; sleep 30"});
+    Workspace({op: "open", name: "w", toolchain: "python"});
+    Workspace({op: "exec", name: "w", command: "echo $$ > sleeper.pid; sleep 30"});
     return "slept through";
   } catch (e) {
-    Bash({command: "echo again"});
-    return "resumed after interruption";
+    return "resumed after interruption: " + e;
   }
 }
 `
@@ -48,8 +53,9 @@ func shutdownPauseYAML(volume string) string {
 	var b strings.Builder
 	b.WriteString("provider_priority: [mock]\n")
 	b.WriteString("tiers:\n  middle:\n    - { provider: mock, model: mock-generic }\n")
-	fmt.Fprintf(&b, "volumes:\n  default: { path: %q, mode: rw, default: true }\n", volume)
-	b.WriteString("agents:\n  sleeper:\n    provider: code-js\n    tools: [Bash]\n    code: |\n")
+	b.WriteString("conversion:\n  mode: inprocess\n")
+	fmt.Fprintf(&b, "workspace:\n  mode: local\n  local:\n    root: %q\n", volume)
+	b.WriteString("agents:\n  sleeper:\n    provider: code-js\n    tools: [Workspace]\n    workspace: { ops: [exec], open: true }\n    code: |\n")
 	for _, line := range strings.Split(strings.TrimSpace(shutdownPauseScript), "\n") {
 		b.WriteString("      " + line + "\n")
 	}
@@ -124,7 +130,6 @@ func (b *shutdownPauseBoot) startOn(t *testing.T, port int, extra ...string) *ru
 		"LOOMCYCLE_DATA_DIR=" + b.dataDir,
 		"LOOMCYCLE_LISTEN_ADDR=" + net.JoinHostPort("127.0.0.1", fmt.Sprint(port)),
 		"LOOMCYCLE_MOCK_ENABLED=1",
-		"LOOMCYCLE_BASH_ENABLED=1",
 		"LOOMCYCLE_SHUTDOWN_PAUSE_TIMEOUT_MS=6000",
 	}, extra...)
 	cmd := exec.Command(b.bin, "--config", b.cfgPath)
@@ -155,11 +160,25 @@ func (b *shutdownPauseBoot) startOn(t *testing.T, port int, extra ...string) *ru
 		}
 		_ = resp.Body.Close()
 		if resp.StatusCode == http.StatusOK {
+			waitForLocalWorker(t, rb)
 			return rb
 		}
 	}
 	t.Fatalf("binary did not serve /healthz within 90s\n%s", out.String())
 	return nil
+}
+
+// waitForLocalWorker waits for the local workspace worker to attach: it
+// starts beside the server and attaches a moment after /healthz answers, and
+// a run that opens a workspace before then finds no worker.
+func waitForLocalWorker(t *testing.T, rb *runningBoot) {
+	t.Helper()
+	for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+		if strings.Contains(rb.out.String(), "workspace worker attached") {
+			return
+		}
+	}
+	t.Fatalf("the local workspace worker did not attach within 30s\n%s", rb.out.String())
 }
 
 // startRun posts the run and reads its stream in the background, as a client
@@ -193,7 +212,7 @@ func TestBoot_ShutdownPausesRunAndRestartResumesIt(t *testing.T) {
 	first := b.start(t)
 	first.startRun(t, "shutdown-pause-1")
 
-	pgid := waitForSleeper(t, b.volume, first)
+	pgid := waitForSleeper(t, b.volume, first, b.dataDir, "shutdown-pause-1")
 	shutDownParked(t, first, pgid)
 
 	run := readRun(t, b.dataDir, "shutdown-pause-1")
@@ -224,6 +243,16 @@ func TestBoot_ShutdownPausesRunAndRestartResumesIt(t *testing.T) {
 	if text := runText(t, b.dataDir, run.ID); !strings.Contains(text, "resumed after interruption") {
 		t.Errorf("resumed run's answer = %q, want the interrupted branch's answer", text)
 	}
+}
+
+// readRunMaybe is readRun for a diagnostic: an error, not a failure.
+func readRunMaybe(dataDir, agentID string) (store.Run, error) {
+	st, err := storesqlite.Open(filepath.Join(dataDir, "loomcycle.db"))
+	if err != nil {
+		return store.Run{}, err
+	}
+	defer st.Close()
+	return st.GetRunByAgentID(context.Background(), agentID)
 }
 
 func readRun(t *testing.T, dataDir, agentID string) store.Run {
@@ -285,13 +314,19 @@ func runStatus(t *testing.T, base, runID string) string {
 	return ""
 }
 
-// waitForSleeper waits for the run's Bash call to be running — its shell has
-// written its pid, which is its process group id — and returns that group.
-func waitForSleeper(t *testing.T, volume string, rb *runningBoot) int {
+// waitForSleeper waits for the run's workspace exec to be running — its shell
+// has written its pid, which is its process group id, in the workspace under
+// root — and returns that group.
+func waitForSleeper(t *testing.T, root string, rb *runningBoot, dataDir, agentID string) int {
 	t.Helper()
-	pidFile := filepath.Join(volume, "sleeper.pid")
 	for deadline := time.Now().Add(30 * time.Second); ; {
-		if raw, err := os.ReadFile(pidFile); err == nil {
+		pidFiles, _ := filepath.Glob(filepath.Join(root, "*", "*", "sleeper.pid"))
+		more, _ := filepath.Glob(filepath.Join(root, "*", "sleeper.pid"))
+		pidFiles = append(pidFiles, more...)
+		if len(pidFiles) == 0 {
+			pidFiles = []string{filepath.Join(root, "sleeper.pid")}
+		}
+		if raw, err := os.ReadFile(pidFiles[0]); err == nil {
 			if n, err := strconv.Atoi(strings.TrimSpace(string(raw))); err == nil && n > 0 {
 				if err := syscall.Kill(-n, 0); err != nil {
 					t.Fatalf("the sleep's process group %d is not alive before shutdown: %v", n, err)
@@ -300,14 +335,20 @@ func waitForSleeper(t *testing.T, volume string, rb *runningBoot) int {
 			}
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("the Bash call never started\n%s", rb.out.String())
+			if run, err := readRunMaybe(dataDir, agentID); err == nil {
+				t.Logf("the run: status=%s error=%q answer=%q", run.Status, run.ErrorMsg, runText(t, dataDir, run.ID))
+			}
+			var files []string
+			_ = filepath.WalkDir(root, func(p string, _ os.DirEntry, _ error) error { files = append(files, p); return nil })
+			t.Fatalf("the workspace exec never started; under the root: %v\n%s", files, rb.out.String())
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
 }
 
 // shutDownParked sends SIGTERM and asserts a bounded clean exit that paused the
-// run, interrupted its Bash call, and took the call's process group with it.
+// run, interrupted its workspace exec, and took the command's process group
+// with it.
 func shutDownParked(t *testing.T, rb *runningBoot, pgid int) {
 	t.Helper()
 	sent := time.Now()

@@ -317,12 +317,6 @@ export const agentDefRegistry: DefRegistry = {
     { key: "tool_modes", label: "Tool modes", group: "Capabilities", type: "json",
       hint: "Narrows a granted tool to its read operations, as a JSON map, e.g. {\"Document\": \"read\", \"Path\": \"read\"}: a write op is refused before it runs. Only Document and Path take a mode, and each must be in tools. A fork can add a read mode and cannot remove one.",
       placeholder: '{"Document": "read"}', unsetMeans: "every tool whole" },
-    // A JSON control, not a string list: the string-list control clears to
-    // unset when its last entry is removed, and unset here means EVERY
-    // credential, the opposite of what clearing the list would intend.
-    { key: "shell_credentials", label: "Shell credentials", group: "Capabilities", type: "json",
-      hint: "Which of the operator's shell credentials the agent's Bash and Bashbox host commands receive, as a JSON list of names. [] means none. Never adds a credential the operator did not list. A sub-agent gets only the names its parent also allows.",
-      placeholder: '["GITHUB_TOKEN"], or [] for none', unsetMeans: "every credential the operator lists" },
     // A string list is enough here: unset and [] both mean no network, so a
     // list cleared to unset means what clearing it intends.
     { key: "git_remote", label: "Git network", group: "Capabilities", type: "string-list",

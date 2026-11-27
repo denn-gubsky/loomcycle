@@ -124,22 +124,3 @@ func TestCalcAndCryptoVolumeRefs_RefusalsNameNoHostPath(t *testing.T) {
 		assertRefusedWithoutHostPath(t, "crypto hash "+from, res, root)
 	}
 }
-
-// A host command run through the Bashbox fallback maps the script's working
-// directory back onto the volume; one that is gone is refused on stderr, and
-// that refusal is in the tool result.
-func TestBashbox_FallbackCwdRefusalNamesNoHostPath(t *testing.T) {
-	skipIfNoHostCmd(t, "git")
-	root, _ := hostPathVolume(t)
-	b := &Bashbox{FallbackCommands: []string{"git"}}
-	res := runBashbox(t, b, bashCtx(root), "mkdir d && cd d && rmdir /d && git --version")
-	if !strings.Contains(res.Text, "working directory") {
-		t.Fatalf("the fallback did not refuse the missing working directory: %q", res.Text)
-	}
-	assertRefusedWithoutHostPath(t, "bashbox cwd", tools.Result{Text: res.Text, IsError: true}, root)
-	if got, err := fallbackHostCwd(root, "/linkdir"); err == nil {
-		t.Fatalf("a cwd through a link out of the volume mapped to %q", got)
-	} else if strings.Contains(err.Error(), filepath.Dir(root)) {
-		t.Errorf("refusal names a host path: %v", err)
-	}
-}

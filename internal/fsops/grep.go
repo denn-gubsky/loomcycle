@@ -171,7 +171,7 @@ func grepWalk(vfs *VolumeFS, fence, start string, re *regexp.Regexp, glob, mode 
 		if d.Type()&fs.ModeSymlink != 0 {
 			// Symlink containment: the walk never descends a symlinked DIR,
 			// but it still yields a symlinked FILE entry. An in-root symlink
-			// to /etc/passwd (plantable via a rw Bash/Bashbox, or pre-existing
+			// to /etc/passwd (plantable via a rw volume, or pre-existing
 			// in a mounted dir) must not leak out-of-root file CONTENTS.
 			// Resolve the entry and re-assert it is inside the root: an
 			// in-root symlink resolves to its real in-root path (still

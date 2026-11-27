@@ -118,25 +118,6 @@ func TestStaticVolume_DoesNotReachTheDynamicRoot(t *testing.T) {
 			t.Errorf("%s: Grep with path under the dynamic root = %q, want a refusal", label, res.Text)
 		}
 
-		// Bashbox sees an empty directory there: nothing read, nothing kept.
-		// Its own files are still read and written.
-		box := &builtin.Bashbox{}
-		res := call(box, c, map[string]any{"volume": "default", "command": "cat notes.txt; cat dynamic/_ephemeral/run-1/work/secret.txt; echo x > dynamic/_ephemeral/run-1/work/x.txt; echo ok > mine2.txt"})
-		if strings.Contains(res.Text, "another") || !strings.Contains(res.Text, "of my own") {
-			t.Errorf("%s: Bashbox = %q, want notes.txt and not the dynamic root", label, res.Text)
-		}
-		if _, err := os.Stat(filepath.Join(eph, "x.txt")); err == nil {
-			t.Errorf("%s: a Bashbox write landed in the ephemeral volume", label)
-		}
-		if _, err := os.Stat(filepath.Join(top, "mine2.txt")); err != nil {
-			t.Errorf("%s: a Bashbox write to the static volume's own files was not kept: %v", label, err)
-		}
-		if label != "implicit default" {
-			if res := call(box, c, map[string]any{"volume": "pool", "command": "cat _ephemeral/run-1/work/secret.txt"}); !res.IsError || strings.Contains(res.Text, "needle") {
-				t.Errorf("%s: Bashbox in the dynamic root itself = %q, want a refusal", label, res.Text)
-			}
-		}
-
 		// The static volume still serves its own files.
 		if res := call(&builtin.Write{}, c, map[string]any{"volume": "default", "path": "mine.txt", "content": "ok"}); res.IsError {
 			t.Errorf("%s: a write to the static volume's own files was refused: %s", label, res.Text)

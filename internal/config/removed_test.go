@@ -232,3 +232,40 @@ func TestRemoved_EveryLineLinksASectionOfTheGuide(t *testing.T) {
 		}
 	}
 }
+
+// A stored row names shell_credentials in either spelling it was written
+// with; a null (a registered agent's unset pointer) is not holding it.
+func TestRemovedFieldsInJSON_ReadsBothSpellingsAndSkipsNull(t *testing.T) {
+	for raw, want := range map[string]bool{
+		`{"shell_credentials":["A"]}`: true,
+		`{"shell_credentials":[]}`:    true,
+		`{"ShellCredentials":["A"]}`:  true,
+		`{"ShellCredentials":null}`:   false,
+		`{"tools":["Read"]}`:          false,
+		`not json`:                    false,
+	} {
+		got := len(RemovedFieldsInJSON([]byte(raw))) == 1
+		if got != want {
+			t.Errorf("RemovedFieldsInJSON(%s) holds the field = %v, want %v", raw, got, want)
+		}
+	}
+}
+
+// The run-start notice: one capability_inert grant per removed item, gate
+// "removed", naming the item and the migration guide.
+func TestInertToolGrants_NamesEachRemovedItem(t *testing.T) {
+	got := InertToolGrants(AgentDef{Tools: []string{"Read", "Bash"}, RemovedFields: []string{"shell_credentials"}})
+	var names []string
+	for _, g := range got {
+		if g.Gate != RemovedGate {
+			continue
+		}
+		names = append(names, g.Tool)
+		if !strings.Contains(g.Message, "removed in "+RemovedIn) || !strings.Contains(g.Message, MigrationGuide) {
+			t.Errorf("notice %q does not say it was removed and where to read", g.Message)
+		}
+	}
+	if strings.Join(names, ",") != "Bash,shell_credentials" {
+		t.Errorf("removed notices = %v, want [Bash shell_credentials]", names)
+	}
+}

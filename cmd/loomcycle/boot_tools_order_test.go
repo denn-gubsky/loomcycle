@@ -21,7 +21,7 @@ var buildToolsStepOrder = []string{
 // order.
 var buildToolsCatalog = []string{
 	"Read", "Write", "Edit", "Grep", "Glob", "NotebookEdit", "HTTP", "WebFetch",
-	"WebSearch", "Bash", "Bashbox", "Skill", "Calc", "Memory", "Recall", "Channel",
+	"WebSearch", "Skill", "Calc", "Memory", "Recall", "Channel",
 	"AgentDef", "SkillDef", "TeamDef", "VolumeDef", "File", "Git",
 	"Workspace", "CredentialDef", "Crypto", "Path", "Document", "History", "Evaluation",
 	"Interruption", "Context", "Identity",
@@ -66,6 +66,18 @@ func TestBuildTools_EgressRouteDefIsNotAnAgentTool(t *testing.T) {
 	for _, tool := range b.allTools {
 		if tool.Name() == "EgressRouteDef" {
 			t.Fatal("EgressRouteDef is in the agent tool catalog; an agent could write its own egress route")
+		}
+	}
+}
+
+// RFC GW P15: no tool v1.172.0 removed is in the catalog. The guard reads the
+// removed table, not a list of its own.
+func TestBuildTools_RegistersNoRemovedTool(t *testing.T) {
+	b := &boot{cfg: &config.Config{Conversion: config.ConversionConfig{Mode: config.ConversionInProcess}}, pr: &providerResolver{}, secrets: &secretSink{}}
+	b.buildTools()
+	for _, tool := range b.allTools {
+		if r, removed := config.RemovedTool(tool.Name()); removed {
+			t.Errorf("%s is in the agent tool catalog, but %s removed it", r.Name, config.RemovedIn)
 		}
 	}
 }

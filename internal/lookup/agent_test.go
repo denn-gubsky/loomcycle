@@ -329,7 +329,6 @@ func TestAgent_DriftDetection(t *testing.T) {
 		"evaluation_scopes":        true, // F14 — Evaluation tool scope gate
 		"crypto_scopes":            true, // Crypto tool key-scope gate (authority, not hashed)
 		"tool_modes":               true, // read-only tool grant, RFC GL (authority, not hashed)
-		"shell_credentials":        true, // RFC EW shell-credential narrowing (authority, not hashed)
 		"git_remote":               true, // RFC FB Git tool network grant (authority, not hashed)
 		"workspace":                true, // RFC GW workspace grant (authority, not hashed)
 		"statement_methods":        true, // relation methods a code-js agent may stamp (authority, not hashed)

@@ -158,14 +158,11 @@ func TestResume_SubRunPolicyMatchesItsLiveSpawn(t *testing.T) {
 	h := newReviewHarness(t)
 	locked := false
 	target := 20
-	// The child declares a shell credential its parent withholds; live it
-	// gets only the one both allow, and a resume must not hand the other back.
-	// Likewise it may push by its definition while its parent may only fetch:
+	// It may push by its definition while its parent may only fetch:
 	// live it only fetches, and a resume must not hand push back. And it may
 	// write, open and accept the host engine while its parent may only read
 	// and exec, in containers: a resume must not hand the rest back. Of its
 	// routes it holds only the two its parent holds too (RFC GW P4).
-	childShellCreds := config.CredentialNames{"DEPLOY_KEY", "NPM_TOKEN"}
 	recallOn := true
 	def := config.AgentDef{
 		Model: "stub-model", SystemPrompt: "c", Tools: []string{"Agent", "Interruption"},
@@ -173,7 +170,6 @@ func TestResume_SubRunPolicyMatchesItsLiveSpawn(t *testing.T) {
 		MaxConcurrentChildren: 2,
 		Interruption:          config.AgentInterruptionACL{Enabled: true, Kinds: []string{"question"}, MaxPending: 5},
 		CryptoScopes:          []string{"run", "user"},
-		ShellCredentials:      &childShellCreds,
 		GitRemote:             []string{"fetch", "push"},
 		Workspace:             &config.AgentWorkspace{Ops: []string{"read", "write", "exec"}, Open: true, Egress: []string{"pypi", "crm", "npm"}, Engine: "host"},
 		Compaction:            &config.Compaction{TargetPercentage: &target},
@@ -197,7 +193,6 @@ func TestResume_SubRunPolicyMatchesItsLiveSpawn(t *testing.T) {
 		Hosts:             tools.HostPolicyValue{AllowedHosts: []string{"api.example.com"}, HasList: true},
 		FanoutCap:         8,
 		Crypto:            tools.CryptoPolicyValue{Scopes: []string{"run"}},
-		ShellCreds:        tools.ShellCredsPolicyValue{Set: true, Names: []string{"GITHUB_TOKEN", "NPM_TOKEN"}},
 		GitRemote:         tools.GitRemotePolicyValue{Fetch: true},
 		Workspace:         tools.WorkspacePolicyValue{Read: true, Exec: true, Egress: []string{"npm", "pypi"}, Engine: "container"},
 		EphemeralWritable: false, // read-only, which the child keeps
@@ -246,7 +241,6 @@ func TestResume_SubRunPolicyMatchesItsLiveSpawn(t *testing.T) {
 	// exercising them fails rather than comparing two zeros.
 	if !live.Hosts.NarrowOnly || live.FanoutCap != 2 || live.Interruption.Load().MaxPending != 1 ||
 		!slices.Equal(live.Crypto.Scopes, []string{"run"}) || live.EphemeralWritable ||
-		!live.ShellCreds.Set || !slices.Equal(live.ShellCreds.Names, []string{"NPM_TOKEN"}) ||
 		live.GitRemote != (tools.GitRemotePolicyValue{Fetch: true}) ||
 		!reflect.DeepEqual(live.Workspace, tools.WorkspacePolicyValue{Read: true, Exec: true, Egress: []string{"pypi", "npm"}, Engine: "container"}) ||
 		live.Compaction == nil || live.Compaction.KeepLastN != nil ||

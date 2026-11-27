@@ -16,12 +16,6 @@ require (
 	github.com/denn-gubsky/loomcycle/internal/otel v0.0.0
 	github.com/denn-gubsky/loomcycle/internal/providers v0.0.0
 	github.com/dop251/goja v0.0.0-20260311135729-065cd970411c
-	// gbash is Bashbox's sandbox and pre-1.0. A PR that bumps it runs
-	// `make bashbox-escape` and quotes the upstream changes to path resolution,
-	// the filesystem layer and command dispatch (docs/TOOLS.md, Bashbox).
-	github.com/ewhauser/gbash v0.0.41
-	github.com/ewhauser/gbash/contrib/awk v0.0.41
-	github.com/ewhauser/gbash/contrib/jq v0.0.41
 	github.com/go-git/go-billy/v5 v5.9.2
 	github.com/go-git/go-git/v5 v5.19.3
 	github.com/go-jose/go-jose/v4 v4.1.9
@@ -95,7 +89,6 @@ require (
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.31.0 // indirect
 	github.com/hhrutter/tiff v1.0.7 // indirect
-	github.com/itchyny/timefmt-go v0.1.7 // indirect
 	github.com/jackc/pgerrcode v0.0.0-20220416144525-469b46aa5efa // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect

@@ -827,7 +827,7 @@ func storeRunToConnector(r store.Run) connector.Run {
 // --- 2. Agent management ---
 
 // RegisterAgent persists a dynamic agent in store.dynamic_agents.
-// Privileged tools (Bash/Bashbox/Write/Edit) are stripped unless the operator
+// Privileged tools (Write/Edit/Workspace) are stripped unless the operator
 // has set LOOMCYCLE_MCP_ALLOW_PRIVILEGED_TOOLS=1. Collisions with
 // static agents (from yaml / discovery) are rejected.
 func (s *Server) RegisterAgent(ctx context.Context, req connector.RegisterAgentRequest) (connector.AgentDescriptor, error) {
@@ -843,6 +843,12 @@ func (s *Server) RegisterAgent(ctx context.Context, req connector.RegisterAgentR
 	if err := config.ValidateToolRemovals(req.Tools); err != nil {
 		return connector.AgentDescriptor{}, err
 	}
+	// A new registration naming a removed tool is refused with the line to
+	// change (RFC GW P15 Q1). A removed field never reaches here: the
+	// request type has none, so each transport asks its raw request.
+	if err := config.RefuseRemovedAuthoring(req.Tools, nil); err != nil {
+		return connector.AgentDescriptor{}, err
+	}
 	// A "-Name" removal alone grants nothing, so it is the empty list here.
 	if grants, _ := config.SplitTools(req.Tools); len(grants) == 0 {
 		return connector.AgentDescriptor{}, fmt.Errorf("tools required (default-deny model)")
@@ -853,9 +859,6 @@ func (s *Server) RegisterAgent(ctx context.Context, req connector.RegisterAgentR
 		return connector.AgentDescriptor{}, err
 	}
 	if err := config.ValidateCryptoScopes(req.CryptoScopes); err != nil {
-		return connector.AgentDescriptor{}, err
-	}
-	if err := config.ValidateShellCredentials(req.ShellCredentials); err != nil {
 		return connector.AgentDescriptor{}, err
 	}
 	if err := config.ValidateGitRemote(req.GitRemote); err != nil {
@@ -910,7 +913,6 @@ func (s *Server) RegisterAgent(ctx context.Context, req connector.RegisterAgentR
 		Interruption:     req.Interruption,
 		CryptoScopes:     req.CryptoScopes,
 		ToolModes:        req.ToolModes,
-		ShellCredentials: req.ShellCredentials,
 		GitRemote:        req.GitRemote,
 		Workspace:        req.Workspace.Clone(),
 		StatementMethods: req.StatementMethods,
@@ -1851,13 +1853,11 @@ func (s *Server) InterruptionResolve(ctx context.Context, req connector.Interrup
 
 // --- Helpers ---
 
-// stripPrivilegedTools removes Bash/Bashbox/Write/Edit/Workspace from the requested
+// stripPrivilegedTools removes Write/Edit/Workspace from the requested
 // tools when the operator hasn't opted into privileged-tool
 // dynamic registration. Default-deny matches v0.8.7 / v0.8.8 pattern.
-// Bashbox is here because it is registered on every server: without this a
-// registered agent would get a shell, and whatever host commands the operator
-// allowlisted for its fallback, by naming it. Workspace runs commands on a
-// worker's host engine, so it is a shell too (RFC GW).
+// Workspace runs commands on a worker's host engine, so it is a shell
+// (RFC GW).
 func stripPrivilegedTools(requested []string, allowPrivileged bool) []string {
 	if allowPrivileged {
 		return append([]string(nil), requested...)
@@ -1865,7 +1865,7 @@ func stripPrivilegedTools(requested []string, allowPrivileged bool) []string {
 	out := make([]string, 0, len(requested))
 	for _, t := range requested {
 		switch t {
-		case "Bash", "Bashbox", "Write", "Edit", "Workspace":
+		case "Write", "Edit", "Workspace":
 			continue
 		default:
 			out = append(out, t)
