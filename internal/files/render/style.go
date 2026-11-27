@@ -44,6 +44,12 @@ type Style struct {
 	Header      PageLine    `json:"header,omitzero"`
 	Footer      PageLine    `json:"footer,omitzero"`
 	PageNumbers *bool       `json:"page_numbers,omitempty"`
+	// Photo places a picture beside or above the title (RFC HB D4).
+	Photo *StylePhoto `json:"photo,omitempty"`
+	// PhotoImage is that picture, an image of the Doc by name. Set by the
+	// core (the call's photo, or the document's first picture), never by
+	// the JSON.
+	PhotoImage string `json:"photo_image,omitempty"`
 	// Headings sets the look of heading levels 1–4 (RFC HB D2).
 	Headings    *StyleHeadings `json:"headings,omitempty"`
 	LogoWidthMM float64        `json:"logo_width_mm,omitempty"`
@@ -148,8 +154,8 @@ func ParseStyle(body string) (*Style, error) {
 	if dec.More() {
 		return nil, fmt.Errorf("%w: more than one JSON value", ErrBadStyle)
 	}
-	if s.Logo != "" || s.Source != "" || s.Date != "" {
-		return nil, fmt.Errorf("%w: logo, source and date are not keys of a style (the logo is the document's first picture; {date} prints the render day or the call's page_text date)", ErrBadStyle)
+	if s.Logo != "" || s.Source != "" || s.Date != "" || s.PhotoImage != "" {
+		return nil, fmt.Errorf("%w: logo, source, date and photo_image are not keys of a style (the logo is the document's first picture; {date} prints the render day or the call's page_text date)", ErrBadStyle)
 	}
 	if err := s.check(); err != nil {
 		return nil, err
@@ -226,6 +232,12 @@ func (s *Style) check() error {
 	}
 	if s.LogoWidthMM != 0 && (s.LogoWidthMM < minLogoMM || s.LogoWidthMM > maxLogoMM) {
 		return bad("logo_width_mm", fmt.Sprintf("between %g and %g", minLogoMM, maxLogoMM))
+	}
+	if err := s.Photo.check(); err != nil {
+		return err
+	}
+	if s.PhotoImage != "" && !imageNameRe.MatchString(s.PhotoImage) {
+		return bad("photo_image", "a picture of the document")
 	}
 	if s.Logo != "" && !imageNameRe.MatchString(s.Logo) {
 		return bad("logo", "a picture of the document")
@@ -387,6 +399,9 @@ func (s *Style) cssOverrides(scope string) string {
 	}
 	if !s.pageTextPlain() {
 		b.WriteString(".style-slots{display:flex;gap:1em}.style-slots span{flex:1}.style-slots span:nth-child(2){text-align:center}.style-slots span:nth-child(3){text-align:right}\n")
+	}
+	if s.Photo != nil || s.PhotoImage != "" {
+		fmt.Fprintf(&b, "img.photo{width:%gmm;max-width:40%%;height:auto}img.photo-right{float:right;margin:0 0 1em 1.5em}img.photo-left{float:left;margin:0 1.5em 1em 0}img.photo-above{display:block;margin:0 0 1em}img.photo-circle{aspect-ratio:1;object-fit:cover;border-radius:50%%}p.photo-clear{clear:both;margin:0}\n", s.photoMM())
 	}
 	fmt.Fprintf(&b, "img.logo{width:%gmm;max-width:100%%;height:auto;display:block;margin:0 0 1em}\n", s.logoMM())
 	return b.String()

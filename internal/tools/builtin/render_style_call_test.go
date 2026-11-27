@@ -2,6 +2,8 @@ package builtin
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -91,5 +93,63 @@ func TestFileRender_AnInlineStyleIsNamedByItsHash(t *testing.T) {
 	}
 	if !strings.HasPrefix(a, "inline:") || a == j.style.Source {
 		t.Errorf("sources %q and %q", a, j.style.Source)
+	}
+}
+
+// The call's photo, a picture in the run's inbox, goes beside the title as
+// the style places it (RFC HB D4); a file that is not a PNG or JPEG, or one
+// outside the inbox, is refused.
+func TestFileRender_PlacesTheCallsPhoto(t *testing.T) {
+	f, ctx, docs := noDocsRun(t)
+	kept := inbox.Capture(ctx, inbox.Item{Name: "portrait.png", Origin: "mcp:jobs/getUploadedFile"}, testPNG(t))
+	page, _, res := renderHTML(t, f, ctx, map[string]any{"path": "volume:docs:cv.md", "photo": kept.Record.Ref,
+		"style": map[string]any{"loomcycle_style": 1, "photo": map[string]any{"place": "left", "width_mm": 25}}})
+	if res.IsError {
+		t.Fatal(res.Text)
+	}
+	if !strings.Contains(page, `<img class="photo photo-left" src="data:image/png`) || !strings.Contains(page, "img.photo{width:25mm") {
+		t.Errorf("page:\n%s", page)
+	}
+
+	// No style at all: the photo goes right, at the default width.
+	if page, _, res := renderHTML(t, f, ctx, map[string]any{"path": "volume:docs:cv.md", "photo": kept.Record.Ref}); res.IsError || !strings.Contains(page, `class="photo photo-right"`) {
+		t.Errorf("photo without a style: %s", res.Text)
+	}
+
+	text := inbox.Capture(ctx, inbox.Item{Name: "notes.txt", Origin: "mcp:x/y"}, []byte("not a picture"))
+	if err := os.WriteFile(filepath.Join(docs, "p.png"), testPNG(t), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for name, c := range map[string]struct{ ref, want string }{
+		"not a picture": {text.Record.Ref, "not a PNG or JPEG"},
+		"outside inbox": {"volume:docs:p.png", "in the run's inbox"},
+		"missing":       {"volume:inbox:documents/none.png", "photo:"},
+		"not a ref":     {"portrait.png", "in the run's inbox"},
+	} {
+		if _, _, res := renderHTML(t, f, ctx, map[string]any{"path": "volume:docs:cv.md", "photo": c.ref}); !res.IsError || !strings.Contains(res.Text, c.want) {
+			t.Errorf("%s: %s, want %q", name, res.Text, c.want)
+		}
+	}
+}
+
+// A document render takes the document's first picture before its first
+// heading as the photo when the style places one, and draws it once.
+func TestFileRender_TakesTheDocumentsFirstPictureAsThePhoto(t *testing.T) {
+	f, ctx, d := styleRun(t)
+	md := "# Ann Lee\n\n![portrait](data:image/png;base64," + base64.StdEncoding.EncodeToString(testPNG(t)) + ")\n\nEngineer.\n\n## Experience\n\nAcme.\n"
+	b, _ := json.Marshal(map[string]any{"op": "import_md", "scope": "user", "markdown": md})
+	_, r := docExec(t, d, ctx, string(b))
+	if r.IsError {
+		t.Fatal(r.Text)
+	}
+	var doc map[string]any
+	_ = json.Unmarshal([]byte(r.Text), &doc)
+	page, _, res := renderHTML(t, f, ctx, map[string]any{"document": doc["document_id"],
+		"style": map[string]any{"loomcycle_style": 1, "photo": map[string]any{"place": "right"}}})
+	if res.IsError {
+		t.Fatal(res.Text)
+	}
+	if strings.Count(page, "<img") != 1 || !strings.Contains(page, `class="photo photo-right"`) {
+		t.Errorf("page:\n%s", page)
 	}
 }

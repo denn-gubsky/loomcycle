@@ -61,6 +61,12 @@ again (with `to`, copied there).
   JSON itself as an object, which needs no document (and so works on a
   server without SQL Memory). Default: the tenant's `/render/styles/default`
   when it exists. See "House styles" below.
+- `photo` — a PNG or JPEG in the run's inbox (e.g. a picture an MCP tool
+  returned), at most 5 MiB, placed beside or above the title as the style's
+  `photo` key says (default: right, 32 mm), with or without a style. Without
+  it, a style with a `photo` key takes the document's first picture before
+  its first heading (alone in the root's text, or an image chunk that comes
+  first) and draws it there instead of in the text.
 - `page_text` — the header and footer for this render only, replacing the
   style's: `{"header": …, "footer": …, "date": …}`, each line a string or
   `{left, center, right}` with the placeholders below. `date` is what
@@ -177,6 +183,15 @@ shown above the title. Every key but `loomcycle_style` is optional:
   and HTML keep the text in its own case, so a reader of the file's text gets
   "Experience"; a PDF draws the capitals themselves. Word has no semibold
   and draws it bold. A level not named keeps the built-in bold heading.
+
+- `photo`: `{"place": "left"|"right"|"above", "width_mm": 15–60,
+  "shape": "square"|"circle"}` (defaults right, 32, square). Left or right,
+  the picture sits beside the title, its meta line and the text before the
+  first heading: a float in HTML and EPUB, a picture anchored with text
+  wrapped around it in Word (never a table), a frame in ODT, a two-column
+  grid in a PDF (with `title_page` or `toc`, beside the title only). `above`
+  puts it above the title, under any logo. Word and ODT draw a circle as a
+  square.
 
 A header or footer line may hold four placeholders:
 

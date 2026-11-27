@@ -158,7 +158,33 @@ func (x *odtWriter) body() {
 			x.s(`</text:p>`)
 		}
 	}
+	// The photo (RFC HB D4): above the title, or a frame anchored to the
+	// title's paragraph at its left or right, text running beside it. ODT
+	// draws a circle as a square.
+	photo, photoOK := d.photo()
+	photoOK = photoOK && x.media[photo.Name].ok
+	if photoOK && d.Style.photoPlace() == "above" {
+		x.s(`<text:p text:style-name="Standard">`)
+		x.imageWidth(Node{Kind: KindImage, Asset: photo.Name, Alt: "photo"}, d.Style.photoMM()/10)
+		x.s(`</text:p>`)
+		photoOK = false
+	}
 	x.s(`<text:p text:style-name="Title">`)
+	if photoOK {
+		m := x.media[photo.Name]
+		wcm := d.Style.photoMM() / 10
+		hcm := wcm
+		if m.w > 0 {
+			hcm = float64(m.h) * wcm / float64(m.w)
+		}
+		x.frames++
+		style := "FrPhotoRight"
+		if d.Style.photoPlace() == "left" {
+			style = "FrPhotoLeft"
+		}
+		x.s(`<draw:frame draw:style-name="` + style + `" draw:name="Picture` + strconv.Itoa(x.frames) + `" text:anchor-type="paragraph" svg:width="` + cm(wcm) + `" svg:height="` + cm(hcm) + `" draw:z-index="0">`)
+		x.s(`<draw:image xlink:href="Pictures/` + photo.Name + `" xlink:type="simple" xlink:show="embed" xlink:actuate="onLoad"/><svg:title>photo</svg:title></draw:frame>`)
+	}
 	x.bookmarkStart(d.Anchor)
 	x.text(oneLine(d.Title))
 	if l := statusLabel(d.Status); l != "" {
@@ -561,6 +587,12 @@ func (x *odtWriter) contentHead() string {
 	b.WriteString(`<style:style style:name="Tbl" style:family="table"><style:table-properties style:width="` + cm(x.textCm) + `" table:align="left" fo:margin-top="0.2cm" fo:margin-bottom="0.2cm"/></style:style>`)
 	b.WriteString(`<style:style style:name="TblCell" style:family="table-cell"><style:table-cell-properties fo:padding="0.1cm" fo:border="0.5pt solid #d6d3d1"/></style:style>`)
 	b.WriteString(`<style:style style:name="FrPic" style:family="graphic"><style:graphic-properties style:vertical-pos="top" style:vertical-rel="baseline"/></style:style>`)
+	if _, ok := x.d.photo(); ok {
+		// The photo beside the title (RFC HB D4): text wraps on its other side.
+		for _, side := range []string{"Right", "Left"} {
+			b.WriteString(`<style:style style:name="FrPhoto` + side + `" style:family="graphic"><style:graphic-properties style:wrap="parallel" style:number-wrapped-paragraphs="no-limit" fo:margin-left="0.3cm" fo:margin-right="0.3cm" fo:margin-bottom="0.2cm" style:vertical-pos="top" style:vertical-rel="paragraph" style:horizontal-pos="` + strings.ToLower(side) + `" style:horizontal-rel="paragraph"/></style:style>`)
+		}
+	}
 	b.WriteString(odtListStyles)
 	b.WriteString(`</office:automatic-styles><office:body><office:text>`)
 	return b.String()

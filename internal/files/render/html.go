@@ -72,6 +72,7 @@ func writeHTML(ctx context.Context, w io.Writer, d *Doc, opts Options) error {
 	}
 	h.s(">\n")
 	h.logo()
+	h.photo()
 	h.s("<h1>" + esc(oneLine(d.Title)))
 	if l := statusLabel(d.Status); l != "" {
 		h.s(` <span class="status">` + l + `</span>`)
@@ -94,6 +95,7 @@ func writeHTML(ctx context.Context, w io.Writer, d *Doc, opts Options) error {
 		h.s("</nav>\n")
 	}
 	h.blocks(d.Blocks, 0)
+	h.photoClear()
 	for _, s := range d.Sections {
 		h.section(s)
 	}
@@ -342,12 +344,17 @@ func (h *htmlWriter) image(n Node) {
 		if h.d.Style != nil && img.Name == h.d.Style.Logo && n.Alt == "logo" {
 			cls = ` class="logo"`
 		}
+		if c := h.photoClass(img, n); c != "" {
+			cls = ` class="` + c + `"`
+		}
 		h.s(`<img` + cls + ` src="../` + epubImageDir + img.Name + `"` + shownSize(img) + ` alt="` + h.esc(oneLine(n.Alt)) + `"/>`)
 		return
 	}
 	h.s(`<img` + shownSize(img))
 	if h.d.Style != nil && img.Name == h.d.Style.Logo && n.Alt == "logo" {
 		h.s(` class="logo"`)
+	} else if c := h.photoClass(img, n); c != "" {
+		h.s(` class="` + c + `"`)
 	}
 	h.s(` src="data:` + img.MediaType + `;base64,`)
 	if h.w.err == nil {
@@ -420,5 +427,33 @@ func (h *htmlWriter) webLine(class string, footer bool, escape func(string) stri
 		h.s(`<p class="` + class + `">` + escape(t[0]) + "</p>\n")
 	default:
 		h.s(`<p class="` + class + ` style-slots"><span>` + escape(t[0]) + `</span><span>` + escape(t[1]) + `</span><span>` + escape(t[2]) + "</span></p>\n")
+	}
+}
+
+// photo writes the style's photo beside or above the title (RFC HB D4): a
+// floated picture, cleared after the title block (photoClear).
+func (h *htmlWriter) photo() {
+	if im, ok := h.d.photo(); ok {
+		h.image(Node{Kind: KindImage, Asset: im.Name, Alt: "photo"})
+	}
+}
+
+// photoClass is the photo's classes, "" for any other picture.
+func (h *htmlWriter) photoClass(img Image, n Node) string {
+	st := h.d.Style
+	if st == nil || img.Name != st.PhotoImage || n.Alt != "photo" {
+		return ""
+	}
+	c := "photo photo-" + st.photoPlace()
+	if st.photoCircle() {
+		c += " photo-circle"
+	}
+	return c
+}
+
+// photoClear ends a floated photo's title block, before the first heading.
+func (h *htmlWriter) photoClear() {
+	if _, ok := h.d.photo(); ok && h.d.Style.photoPlace() != "above" {
+		h.s(`<p class="photo-clear"></p>` + "\n")
 	}
 }

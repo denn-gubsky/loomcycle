@@ -306,6 +306,27 @@ func (t *typWriter) document() {
 			t.s("#block(below: 0.8em)[#image(" + typString(TypstImagePath(im.Name)) + ", width: " + typNum(st.logoMM()) + "mm, alt: \"logo\")]\n")
 		}
 	}
+	// The photo (RFC HB D4): above the title, or beside the title block in
+	// a two-column grid (Typst has no text wrap around a float). A page
+	// break cannot sit in a grid, so with a title page or contents the
+	// grid holds the title and its meta line only.
+	photo, beside := t.photo()
+	inGridBlocks := beside != "" && !t.opts.TitlePage && !(t.opts.TOC && len(d.Sections) > 0)
+	switch beside {
+	case "left":
+		t.s("#grid(columns: (" + typNum(st.photoMM()) + "mm, 1fr), column-gutter: 1.2em, [" + photo + "], [\n")
+	case "right":
+		t.s("#grid(columns: (1fr, " + typNum(st.photoMM()) + "mm), column-gutter: 1.2em, [\n")
+	}
+	closeGrid := func() {
+		switch beside {
+		case "left":
+			t.s("])\n\n")
+		case "right":
+			t.s("], [" + photo + "])\n\n")
+		}
+		beside = ""
+	}
 	// The title, with the Draft or Review label beside it (D15).
 	t.s("#block(below: 0.8em)[#text(size: 20pt, weight: \"bold\")[")
 	t.str(oneLine(d.Title))
@@ -330,6 +351,9 @@ func (t *typWriter) document() {
 		t.str(strings.Join(meta, " · "))
 		t.s("]]\n\n")
 	}
+	if !inGridBlocks {
+		closeGrid()
+	}
 	if t.opts.TitlePage {
 		t.s("#pagebreak()\n\n")
 	}
@@ -337,6 +361,7 @@ func (t *typWriter) document() {
 		t.s("#outline(title: none, depth: 6)\n\n")
 	}
 	t.blocks(d.Blocks, 0)
+	closeGrid()
 	for _, s := range d.Sections {
 		t.section(s, 0)
 	}
@@ -629,4 +654,28 @@ func typSlots(p pageSlots) string {
 	}
 	b.WriteString(")")
 	return b.String()
+}
+
+// photo is the style's photo as Typst content, and where it goes beside the
+// title block ("left" or "right"); a photo above the title is written here
+// and reported as "". No photo, or one that does not decode, is "", "".
+func (t *typWriter) photo() (string, string) {
+	im, ok := t.d.photo()
+	if !ok {
+		return "", ""
+	}
+	if _, decodes := t.images[im.Name]; !decodes {
+		return "", ""
+	}
+	st := t.d.Style
+	w := typNum(st.photoMM()) + "mm"
+	img := "#image(" + typString(TypstImagePath(im.Name)) + ", width: " + w + ", alt: \"photo\")"
+	if st.photoCircle() {
+		img = "#box(clip: true, radius: 50%)[#image(" + typString(TypstImagePath(im.Name)) + ", width: " + w + ", height: " + w + ", fit: \"cover\", alt: \"photo\")]"
+	}
+	if st.photoPlace() == "above" {
+		t.s("#block(below: 0.8em)[" + img + "]\n")
+		return "", ""
+	}
+	return img, st.photoPlace()
 }

@@ -218,6 +218,12 @@ func styledFixture(t *testing.T) *Doc {
 		t.Fatal(err)
 	}
 	st.Logo = d.Images[0].Name
+	// A photo beside the title (RFC HB D4), so the office suite and
+	// epubcheck open an anchored picture and a floated one.
+	st.Photo = &StylePhoto{Place: "right", WidthMM: 30}
 	d.Style = st
+	if !d.AddPhoto("image/png", tinyPNG) {
+		t.Fatal("the fixture took no photo")
+	}
 	return d
 }
