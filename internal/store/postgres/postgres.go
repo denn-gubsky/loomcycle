@@ -4579,20 +4579,20 @@ func (s *Store) InterruptCreate(ctx context.Context, r store.InterruptRow) (stri
 			question, options, context_data, priority,
 			answer, answer_meta,
 			created_at, expires_at, resolved_at, resolved_by,
-			user_id, agent_id, agent_name
+			user_id, agent_id, agent_name, allow_other
 		) VALUES (
 			$1, $2, $3, $4,
 			$5, $6::jsonb, $7, $8,
 			$9, $10::jsonb,
 			$11, $12, NULL, $13,
-			$14, $15, $16
+			$14, $15, $16, $17
 		)
 	`,
 		r.InterruptID, r.RunID, r.Kind, r.Status,
 		nullableStringArg(r.Question), nullableJSONArg(r.Options), nullableStringArg(r.ContextData), r.Priority,
 		nullableStringArg(r.Answer), nullableJSONArg(r.AnswerMeta),
 		createdAt, nullableTimePtr(r.ExpiresAt), nullableStringArg(r.ResolvedBy),
-		nullableStringArg(r.UserID), nullableStringArg(r.AgentID), nullableStringArg(r.AgentName),
+		nullableStringArg(r.UserID), nullableStringArg(r.AgentID), nullableStringArg(r.AgentName), r.AllowOther,
 	)
 	if err != nil {
 		return "", fmt.Errorf("interrupts: create: %w", err)
@@ -4606,7 +4606,7 @@ func (s *Store) InterruptGet(ctx context.Context, interruptID string) (store.Int
 		       question, options::text, context_data, priority,
 		       answer, answer_meta::text,
 		       created_at, expires_at, resolved_at, resolved_by,
-		       user_id, agent_id, agent_name
+		       user_id, agent_id, agent_name, allow_other
 		FROM interrupts
 		WHERE interrupt_id = $1
 	`, interruptID)
@@ -4634,7 +4634,7 @@ func (s *Store) scanInterruptRow(row pgRowScanner) (store.InterruptRow, error) {
 		&question, &options, &contextData, &r.Priority,
 		&answer, &answerMeta,
 		&r.CreatedAt, &expiresAt, &resolvedAt, &resolvedBy,
-		&userID, &agentID, &agentName,
+		&userID, &agentID, &agentName, &r.AllowOther,
 	); err != nil {
 		return store.InterruptRow{}, err
 	}
@@ -4757,7 +4757,7 @@ func (s *Store) InterruptListByUser(ctx context.Context, userID, tenantID, statu
 		       i.question, i.options::text, i.context_data, i.priority,
 		       i.answer, i.answer_meta::text,
 		       i.created_at, i.expires_at, i.resolved_at, i.resolved_by,
-		       i.user_id, i.agent_id, i.agent_name
+		       i.user_id, i.agent_id, i.agent_name, i.allow_other
 		FROM interrupts i`
 	args := []any{userID}
 	if tenantID != "" {
@@ -4800,7 +4800,7 @@ func (s *Store) interruptList(ctx context.Context, col, val, statusFilter string
 		       question, options::text, context_data, priority,
 		       answer, answer_meta::text,
 		       created_at, expires_at, resolved_at, resolved_by,
-		       user_id, agent_id, agent_name
+		       user_id, agent_id, agent_name, allow_other
 		FROM interrupts
 		WHERE ` + col + ` = $1`
 	args := []any{val}

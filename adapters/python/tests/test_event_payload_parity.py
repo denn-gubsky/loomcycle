@@ -73,3 +73,24 @@ def test_every_team_decision_field_is_decoded():
     for name, want in values.items():
         assert getattr(got, name, None) == want, f"TeamDecision.{name} is not decoded"
     assert AgentEvent._from_proto(pb.Event(type="text", text="x")).team_decision is None
+
+
+def test_the_interruption_payload_is_decoded():
+    # RFC HG D6: the question an interruption_pending frame carries, with its
+    # options and whether an answer outside them is accepted.
+    from google.protobuf.timestamp_pb2 import Timestamp
+
+    at = Timestamp()
+    at.FromJsonString("2026-11-27T12:00:00Z")
+    ev = pb.Event(type="interruption_pending", interruption=pb.InterruptionInfo(
+        interrupt_id="intr_1", kind="question", question="Which?", options=["A", "B"],
+        context="two left", priority="high", expires_at=at, allow_other=True))
+    got = AgentEvent._from_proto(ev).interruption
+    assert got is not None
+    assert (got.interrupt_id, got.kind, got.question, got.options) == ("intr_1", "question", "Which?", ("A", "B"))
+    assert (got.context, got.priority, got.expires_at, got.allow_other) == ("two left", "high", "2026-11-27T12:00:00Z", True)
+
+    free = AgentEvent._from_proto(pb.Event(type="interruption_pending", interruption=pb.InterruptionInfo(
+        interrupt_id="intr_2", question="Why?"))).interruption
+    assert free is not None and free.options == () and free.allow_other is False and free.expires_at == ""
+    assert AgentEvent._from_proto(pb.Event(type="text", text="x")).interruption is None

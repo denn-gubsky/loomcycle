@@ -10889,14 +10889,14 @@ func (s *Store) InterruptCreate(ctx context.Context, r store.InterruptRow) (stri
 			question, options, context_data, priority,
 			answer, answer_meta,
 			created_at, expires_at, resolved_at, resolved_by,
-			user_id, agent_id, agent_name
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)
+			user_id, agent_id, agent_name, allow_other
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)
 	`,
 		r.InterruptID, r.RunID, r.Kind, r.Status,
 		question, options, contextData, r.Priority,
 		answer, answerMeta,
 		createdAt.UnixNano(), nanosOrNull(r.ExpiresAt), resolvedBy,
-		userID, agentID, agentName,
+		userID, agentID, agentName, r.AllowOther,
 	)
 	if err != nil {
 		return "", fmt.Errorf("interrupts: create: %w", err)
@@ -10910,7 +10910,7 @@ func (s *Store) InterruptGet(ctx context.Context, interruptID string) (store.Int
 		       question, options, context_data, priority,
 		       answer, answer_meta,
 		       created_at, expires_at, resolved_at, resolved_by,
-		       user_id, agent_id, agent_name
+		       user_id, agent_id, agent_name, allow_other
 		FROM interrupts
 		WHERE interrupt_id = ?
 	`, interruptID)
@@ -10942,7 +10942,7 @@ func scanInterruptRow(row rowScanner) (store.InterruptRow, error) {
 		&question, &options, &contextData, &r.Priority,
 		&answer, &answerMeta,
 		&createdAtNS, &expiresAtNS, &resolvedAtNS, &resolvedBy,
-		&userID, &agentID, &agentName,
+		&userID, &agentID, &agentName, &r.AllowOther,
 	); err != nil {
 		return store.InterruptRow{}, err
 	}
@@ -11067,7 +11067,7 @@ func (s *Store) InterruptListByUser(ctx context.Context, userID, tenantID, statu
 		       i.question, i.options, i.context_data, i.priority,
 		       i.answer, i.answer_meta,
 		       i.created_at, i.expires_at, i.resolved_at, i.resolved_by,
-		       i.user_id, i.agent_id, i.agent_name
+		       i.user_id, i.agent_id, i.agent_name, i.allow_other
 		FROM interrupts i`
 	args := []any{userID}
 	if tenantID != "" {
@@ -11114,7 +11114,7 @@ func (s *Store) interruptList(ctx context.Context, col, val, statusFilter string
 		       question, options, context_data, priority,
 		       answer, answer_meta,
 		       created_at, expires_at, resolved_at, resolved_by,
-		       user_id, agent_id, agent_name
+		       user_id, agent_id, agent_name, allow_other
 		FROM interrupts
 		WHERE ` + col + ` = ?`
 	args := []any{val}

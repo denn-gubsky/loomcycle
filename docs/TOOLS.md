@@ -1463,8 +1463,9 @@ References: `internal/hooks/`, `internal/api/http/hooks.go` (registration routes
 The human bridge in the v0.8.x substrate. Three ops:
 
 ```
-Interruption.ask(question, options?, context?, timeout_ms?, priority?)
+Interruption.ask(question, options?, allow_other?, context?, timeout_ms?, priority?)
   → blocks the loop; tool result carries the human's answer
+    (with "other": true when it is not one of the options)
 Interruption.notify(message, priority?)
   → fire-and-forget message
 Interruption.cancel(interruption_id)
@@ -1538,18 +1539,18 @@ The Web UI inbox subscribes to `_system/interrupts/pending` via the existing Cha
 
 | Endpoint | Purpose |
 |---|---|
-| `POST /v1/runs/{run_id}/interrupts/{interrupt_id}/resolve` | Submit an answer. Validates options (422), expiry (410), already-terminal (409). |
+| `POST /v1/runs/{run_id}/interrupts/{interrupt_id}/resolve` | Submit an answer. Validates options (422: with options, the answer must be one of them unless the ask set `allow_other`, when any non-empty answer of at most 4000 characters is accepted), expiry (410), already-terminal (409). The same check runs on gRPC (`InvalidArgument`), MCP `interruption_resolve` and an A2A resume. |
 | `GET /v1/runs/{run_id}/interrupts?status=<pending\|resolved\|...>` | List per-run interrupts (audit trail). |
 | `GET /v1/users/{user_id}/interrupts?status=pending` | User-scoped inbox (drives the Web UI). |
 | `mcp__loomcycle__interruption_resolve` | 21st LoomCycle MCP meta-tool. Lets an external orchestrator (Claude Code) act as the answerer for any pending interrupt. |
 
 ### Storage
 
-New `interrupts` table (migration 0011). Columns: `interrupt_id`, `run_id`, `kind` (closed enum), `status` (`pending`/`resolved`/`timed_out`/`cancelled`), `question`, `options` (JSON array), `context_data`, `priority`, `answer`, `answer_meta` (JSON; future-kind discriminated), timestamps, `resolved_by`, and denormalised `user_id` / `agent_id` / `agent_name` for the listing queries.
+New `interrupts` table (migration 0011). Columns: `interrupt_id`, `run_id`, `kind` (closed enum), `status` (`pending`/`resolved`/`declined`/`timed_out`/`cancelled`), `question`, `options` (JSON array), `allow_other` (migration 0146: an answer outside the options is accepted too), `context_data`, `priority`, `answer`, `answer_meta` (JSON; future-kind discriminated), timestamps, `resolved_by`, and denormalised `user_id` / `agent_id` / `agent_name` for the listing queries.
 
 ### SSE event
 
-`EventInterruptionPending` (type `interruption_pending`) on the run's SSE stream with `interruption: {interrupt_id, kind, question, options, context, priority, expires_at}`. Web UI consumers use this for real-time modal rendering without a follow-up fetch.
+`EventInterruptionPending` (type `interruption_pending`) on the run's SSE stream with `interruption: {interrupt_id, kind, question, options, allow_other, context, priority, expires_at}`. Web UI consumers use this for real-time modal rendering without a follow-up fetch; with `allow_other` they offer an "Other answer" box beside the options. gRPC clients get the same payload as `Event.interruption` (`InterruptionInfo`, field 27).
 
 ### Architecture references
 

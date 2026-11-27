@@ -5,7 +5,7 @@ import {
   type PendingInterrupt,
   type RunStatus,
 } from "../hooks/useRunStream";
-import { type TranscriptEvent } from "../api";
+import { OTHER_ANSWER_MAX_CHARS, type TranscriptEvent } from "../api";
 import { settledToolIds } from "../lib/toolSettlement";
 import { metricsFromEvents } from "../lib/runMetrics";
 import RunMetricsBar from "./RunMetricsBar";
@@ -286,7 +286,7 @@ function InterruptPrompt({
       {pending.context && (
         <div className="live-run-interrupt-context">{pending.context}</div>
       )}
-      {hasOptions ? (
+      {hasOptions && (
         <div className="live-run-interrupt-options">
           {pending.options!.map((opt) => (
             <button
@@ -299,14 +299,19 @@ function InterruptPrompt({
             </button>
           ))}
         </div>
-      ) : (
+      )}
+      {/* RFC HG: a question with options that allows other answers also
+          takes the person's own, beside the option buttons. */}
+      {(!hasOptions || pending.allowOther) && (
         <form className="live-run-interrupt-form" onSubmit={submit}>
           <input
             type="text"
             value={text}
             onChange={(e) => setText(e.target.value)}
-            placeholder="Type your answer…"
-            autoFocus
+            placeholder={hasOptions ? "Other answer…" : "Type your answer…"}
+            aria-label={hasOptions ? "Other answer" : undefined}
+            maxLength={hasOptions ? OTHER_ANSWER_MAX_CHARS : undefined}
+            autoFocus={!hasOptions}
           />
           <button type="submit" disabled={!text.trim()}>
             Answer

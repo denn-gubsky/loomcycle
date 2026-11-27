@@ -26,7 +26,17 @@
 # builds every arch; this only COPYs it) and the same nonroot uid 65532.
 # Debian 13 (trixie), not 12: merman's release binary needs glibc 2.38 and
 # bookworm has 2.36 (RFC GR P4d).
-FROM debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2
+#
+# Two targets. The default (the last stage) is the conversion worker above.
+# `ws-worker` adds the docker client for a workspace worker on the container
+# engine (RFC GW P3): `loomcycle worker --role workspace` with
+# LOOMCYCLE_WORKSPACE_ENGINE=container drives the host's daemon through its
+# socket. Published as loomcycle-ws-worker.
+
+# The docker client only; docker:cli's binary is static, so it runs on Debian.
+FROM docker:cli@sha256:34507eb5069d8be82c95dd3b6987d4250fd5fee49b82e2509b7d7a7030740d6d AS docker-cli
+
+FROM debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2 AS worker
 
 # Typst is a pinned release, its archive checked against the sha256 GitHub
 # publishes for it, one per architecture. It never fetches a package: the
@@ -110,3 +120,15 @@ ENV LOOMCYCLE_WORKER_SCRATCH=/scratch \
 USER 65532:65532
 WORKDIR /scratch
 ENTRYPOINT ["/usr/local/bin/loomcycle", "worker"]
+
+# A workspace worker on the container engine: the worker plus the docker
+# client. Run it with the daemon's socket, its group (group_add), and its
+# workspace root mounted at the same path inside and out (docs/WORKERS.md).
+FROM worker AS ws-worker
+COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
+ENV DOCKER_CONFIG=/scratch/.docker \
+    TMPDIR=/scratch
+
+# The default target stays the conversion worker (release.yml's patch build
+# and every existing deployment build it without --target).
+FROM worker

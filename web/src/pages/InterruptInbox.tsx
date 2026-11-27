@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { InterruptRow, listUserInterrupts, resolveInterrupt } from "../api";
+import { InterruptRow, listUserInterrupts, OTHER_ANSWER_MAX_CHARS, resolveInterrupt } from "../api";
 import { useRunsUserId } from "../components/Layout";
 
 // Auto-refresh interval. Polls /v1/users/{user_id}/interrupts because
@@ -126,7 +126,7 @@ interface AnswerModalProps {
   onResolved: () => void;
 }
 
-function AnswerModal({ row, onClose, onResolved }: AnswerModalProps) {
+export function AnswerModal({ row, onClose, onResolved }: AnswerModalProps) {
   const [answer, setAnswer] = useState<string>("");
   const [submitting, setSubmitting] = useState(false);
   const [submitErr, setSubmitErr] = useState<string | null>(null);
@@ -167,6 +167,20 @@ function AnswerModal({ row, onClose, onResolved }: AnswerModalProps) {
                 {opt}
               </button>
             ))}
+            {/* RFC HG: the question also takes an answer of the person's
+                own. Typing here replaces any option chosen above. */}
+            {row.allow_other && (
+              <input
+                type="text"
+                className="modal-other"
+                aria-label="Other answer"
+                placeholder="Other answer…"
+                value={row.options!.includes(answer) ? "" : answer}
+                onChange={(e) => setAnswer(e.target.value)}
+                maxLength={OTHER_ANSWER_MAX_CHARS}
+                disabled={submitting}
+              />
+            )}
           </div>
         ) : (
           <textarea

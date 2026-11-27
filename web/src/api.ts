@@ -468,12 +468,14 @@ export interface EventPayload {
   // raised a question via the Interruption tool and is now blocked. The run's
   // SSE stream stays open and resumes once the interrupt is resolved (POST
   // /v1/runs/{run_id}/interrupts/{interrupt_id}/resolve). `options`, when
-  // present, is the fixed answer set the resolve must match.
+  // present, is the fixed answer set the resolve must match unless
+  // `allow_other` is set, when an answer of the person's own is accepted too.
   interruption?: {
     interrupt_id: string;
     kind?: string;
     question?: string;
     options?: string[];
+    allow_other?: boolean;
     context?: string;
     priority?: string;
     expires_at?: string;
@@ -999,6 +1001,10 @@ async function residentAction(runId: string, op: "close" | "cancel"): Promise<un
 
 // ---- Interruption (v0.8.16) ----------------------------------------
 
+// OTHER_ANSWER_MAX_CHARS mirrors the server's cap on an answer outside a
+// question's options (connector.MaxInterruptOtherAnswerChars, RFC HG).
+export const OTHER_ANSWER_MAX_CHARS = 4000;
+
 export interface InterruptRow {
   interrupt_id: string;
   run_id: string;
@@ -1006,6 +1012,7 @@ export interface InterruptRow {
   status: string;
   question?: string;
   options?: string[]; // server stores as JSON array
+  allow_other?: boolean; // RFC HG: with options, an answer outside them is accepted too
   context_data?: string;
   priority: string;
   answer?: string;

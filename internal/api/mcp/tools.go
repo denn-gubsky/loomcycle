@@ -679,7 +679,7 @@ func baseToolDescriptors() []loommcp.ToolDescriptor {
 					"run_id":       {"type": "string", "description": "The run that owns the pending interrupt."},
 					"interrupt_id": {"type": "string", "description": "The intr_... id surfaced via _system/interrupts/pending or EventInterruptionPending."},
 					"kind":         {"type": "string", "enum": ["question"], "description": "Discriminator. v0.8.16 supports only 'question'. Optional; defaults to 'question'."},
-					"answer":       {"type": "string", "description": "The human's answer. When the original ask declared options, MUST be one of them (server-side validated)."},
+					"answer":       {"type": "string", "description": "The human's answer. When the original ask declared options, MUST be one of them (server-side validated) \u2014 unless the interrupt allows other answers (allow_other), when any non-empty answer of at most 4000 characters is accepted."},
 					"resolved_by":  {"type": "string", "description": "Audit attribution for who resolved it (free-form). Defaults to 'mcp' when surfaced via this tool."}
 				}
 			}`),
