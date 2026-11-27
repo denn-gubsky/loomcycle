@@ -357,10 +357,10 @@ type Config struct {
 	// but its capability gate is unset, so every call default-denies" footgun
 	// (e.g. Memory without memory_scopes — F21). Not in YAML.
 	Warnings []string `yaml:"-"`
-	// Deprecations are the warnings among Warnings about what a future
-	// release removes (RFC GW §9, deprecated.go), kept apart so `doctor` can
-	// report them under their own check rather than as advisories.
-	Deprecations []string `yaml:"-"`
+	// mdRemovedUses lists, per markdown agent, the removed tools and fields
+	// its front matter names (removed.go). Set by discovery, read once by the
+	// load, which refuses them.
+	mdRemovedUses map[string][]string
 	// bundledWorkspace names the agents whose workspace grant an embedded
 	// bundle gave and no operator layer changed (bundledWorkspaceGrants).
 	bundledWorkspace map[string]bool
@@ -1975,7 +1975,7 @@ type AgentDef struct {
 
 	// Volumes is the RFC AH Phase 1 filesystem-volume binding list — the
 	// names of top-level `volumes:` entries the agent's file/exec tools
-	// (Read/Write/Edit/Glob/Grep/Bash/NotebookEdit) may resolve paths
+	// (Read/Write/Edit/Glob/Grep/NotebookEdit) may resolve paths
 	// against. Validated at config-load to reference declared volumes
 	// (mirrors how tools validates against registered tools). An
 	// agent that declares NO volumes is implicitly bound to [default]
@@ -2364,22 +2364,12 @@ type AgentDef struct {
 	// part of content_sha256, like crypto_scopes.
 	ToolModes map[string]string `yaml:"tool_modes"`
 
-	// ShellCredentials narrows which credentials the Bash tool and the Bashbox
-	// host-command fallback inject into this agent's commands (RFC EW). The
-	// operator's LOOMCYCLE_BASH_ALLOWED_CREDS and
-	// LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS say which credentials a shell
-	// may receive at all; this keeps only the names listed here. It never adds
-	// a name the operator did not list, and a "cmd:NAME" binding in the
-	// fallback list stays bound to its command.
-	//
-	// Absent (nil) narrows nothing: every credential the operator lists, as
-	// before the field existed. `[]` means none. A pointer, so the two stay
-	// apart through every copy and merge.
-	//
-	// A sub-agent receives only the names both it and its parent run allow.
-	// Not per-run overridable. Authority, not content: not part of
-	// content_sha256.
-	ShellCredentials *CredentialNames `yaml:"shell_credentials"`
+	// RemovedFields names the removed fields (removed.go) a stored or
+	// registered definition still holds, e.g. shell_credentials: set only by
+	// the readers of stored JSON, never from yaml (where such a field refuses
+	// the start), and read once per run to say what it was not given (RFC GW
+	// P15 Q2). Not part of any wire, hash or override.
+	RemovedFields []string `yaml:"-" json:"-"`
 
 	// GitRemote says which network operations the agent's Git tool may
 	// perform (RFC FB): "fetch" (clone, fetch, pull, ls_remote) and "push".
@@ -3449,8 +3439,8 @@ type Volume struct {
 	// absolute path at config-load and validated to exist + be a dir.
 	Path string `yaml:"path"`
 	// Mode is "rw" (read+write) or "ro" (read-only). Empty defaults to
-	// "rw" — validated to one of the two. Write/Edit/NotebookEdit and
-	// Bash require "rw"; Read/Glob/Grep operate on either.
+	// "rw" — validated to one of the two. Write/Edit/NotebookEdit require
+	// "rw"; Read/Glob/Grep operate on either.
 	Mode string `yaml:"mode"`
 	// Default marks this volume as the one a tool call uses when it omits
 	// the `volume` argument. At most one volume may set this (validated).
@@ -4510,51 +4500,6 @@ type Env struct {
 	// WebSearch result naming which search provider answered + any fallover
 	// (RFC BB). Off by default (byte-identical output); LOOMCYCLE_WEBSEARCH_PROVENANCE=1.
 	WebSearchProvenance bool
-	// BashEnabled gates the Bash tool. Defaults to false. Even when
-	// true the tool is NOT a true sandbox — it restricts cwd, scrubs
-	// env, bounds output, and times out, but cannot prevent the spawned
-	// process from reaching arbitrary files via absolute paths or making
-	// network calls. Operators wanting real isolation should run
-	// loomcycle inside a container or VM.
-	BashEnabled bool
-	// BashAllowedCreds names RFC AR credentials (by CredentialDef name, e.g.
-	// GITHUB_TOKEN) injected into the raw Bash tool's child env — a PER-TENANT
-	// counterpart to the operator-shared env allowlist: each is resolved for the
-	// run's own (tenant, user, agent) identity via the credential engine, so a
-	// tenant's own GITHUB_TOKEN reaches the command instead of one shared
-	// operator host var. A resolved cred overrides a same-named host env var.
-	// Sourced from LOOMCYCLE_BASH_ALLOWED_CREDS (comma-separated). Requires a KEK
-	// (LOOMCYCLE_SECRET_KEY) for the engine to resolve; empty (default) = none.
-	BashAllowedCreds []string
-	// BashboxFallbackCommands is the operator allowlist of host commands that
-	// gbash does NOT implement (e.g. git, gh) and that may ESCAPE the Bashbox
-	// sandbox to run on the real host shell (RFC AJ §13). Empty (default) = no
-	// fallback. Only these names reach the host; every other command stays
-	// sandboxed. Requires a rw volume. Sourced from
-	// LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS (comma-separated).
-	BashboxFallbackCommands []string
-	// BashboxFallbackAllowedEnv names env vars passed into fallback commands
-	// (e.g. GH_TOKEN, HOME, SSH_AUTH_SOCK) — injected only into the host child,
-	// never the sandbox. PATH always passes. Sourced from
-	// LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV (comma-separated).
-	BashboxFallbackAllowedEnv []string
-	// BashboxFallbackAllowedCreds names RFC AR credentials (by CredentialDef name,
-	// e.g. GITHUB_TOKEN) injected into fallback commands' env — a PER-TENANT
-	// counterpart to BashboxFallbackAllowedEnv: each is resolved for the run's own
-	// (tenant, user, agent) identity via the credential engine, so a tenant's own
-	// GITHUB_TOKEN reaches git/gh instead of one shared operator host token. A
-	// resolved cred overrides a same-named host env var. An entry is a bare NAME
-	// (every fallback command) or "cmd:NAME" (only that allowlisted command; see
-	// ParseBashboxFallbackCred). Sourced from
-	// LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS (comma-separated). Requires a KEK
-	// (LOOMCYCLE_SECRET_KEY) for the engine to resolve.
-	BashboxFallbackAllowedCreds []string
-	// BashboxOverlayMaxBytes caps what one Bashbox call may write into
-	// in-memory files — a read-only volume's write overlay and the shadow
-	// over a dynamic-volume root — which live in loomcycle's own heap. A
-	// write past it fails with "no space left on device". Sourced from
-	// LOOMCYCLE_BASHBOX_OVERLAY_MAX_BYTES; default BashboxOverlayMaxBytesDefault.
-	BashboxOverlayMaxBytes int64
 	// GitPushHosts is the operator's allowlist of hosts the Git tool may push
 	// to (RFC FB). Empty (default): no push anywhere, whatever an agent's
 	// git_remote says. Sourced from LOOMCYCLE_GIT_PUSH_HOSTS (comma-separated).
@@ -4891,8 +4836,8 @@ type Env struct {
 	ShutdownPauseTimeoutMs int64
 
 	// MCPAllowPrivilegedTools — v0.8.15. When true, dynamically-
-	// registered agents may include Bash/Bashbox/Write/Edit in their
-	// tools. Default false: those four are stripped from
+	// registered agents may include Write/Edit in their
+	// tools. Default false: those are stripped from
 	// any register_agent request, matching the v0.8.7/v0.8.8
 	// default-deny pattern for new tool surfaces. Env:
 	// LOOMCYCLE_MCP_ALLOW_PRIVILEGED_TOOLS.
@@ -4902,9 +4847,8 @@ type Env struct {
 	// (POST /v1/_mcpserverdef, the `mcpserverdef` tool) may register a
 	// `transport: stdio` server at runtime. Default false: dynamic
 	// registration is http/streamable-http only, because a stdio server
-	// runs an ARBITRARY LOCAL COMMAND (a second local-exec path alongside
-	// Bash, with no outbound-host-allowlist mediation). Like BashEnabled,
-	// this is operator-gated and off by default; static yaml `mcp_servers:`
+	// runs an ARBITRARY LOCAL COMMAND (with no outbound-host-allowlist
+	// mediation). It is operator-gated and off by default; static yaml `mcp_servers:`
 	// stdio entries are unaffected (operator-authored = trusted). Env:
 	// LOOMCYCLE_MCP_ALLOW_DYNAMIC_STDIO.
 	MCPAllowDynamicStdio bool
@@ -5187,9 +5131,12 @@ func LoadLayersWith(opts LoadOptions, layers ...Layer) (*Config, error) {
 		return nil, fmt.Errorf("retired environment variables are set to something this version does not apply (a tighter bound, a feature kept off, another store, data kept or deleted differently, or a setting that moved to the yaml and is not there), and ignoring them would change this deployment; act on each, then remove its line: %s", strings.Join(refused, " | "))
 	}
 	cfg.Warnings = append(cfg.Warnings, retiredEnvWarnings(os.Environ())...)
-	// What a later release removes, while it still works (RFC GW §9).
-	cfg.Deprecations = append(deprecatedEnvWarnings(os.Environ()), deprecationWarnings(cfg, layers)...)
-	cfg.Warnings = append(cfg.Warnings, cfg.Deprecations...)
+	// What v1.172.0 removed (RFC GW §9 step 4): an operator's agent that
+	// still names it stops the start, every use in one error. The variables
+	// are refused above, as retired ones.
+	if uses := removedUseErrors(layers, cfg.mdRemovedUses); len(uses) > 0 {
+		return nil, joinRemoved(uses)
+	}
 	cfg.bundledWorkspace = bundledWorkspaceGrants(cfg, layers)
 	cfg.bundledGitRemote = bundledGitRemotes(cfg, layers)
 
@@ -5410,59 +5357,54 @@ func loadAgentFiles(cfg *Config, primaryPath string) error {
 // read. It replaces cfg.Env whole, so it runs before every applyEnv block.
 func applyEnvCore(cfg *Config) {
 	cfg.Env = Env{
-		OpenAIAPIKey:                os.Getenv("OPENAI_API_KEY"),
-		VoyageAPIKey:                os.Getenv("VOYAGE_API_KEY"),
-		OllamaBaseURL:               getenvDefault("OLLAMA_BASE_URL", "http://localhost:11434"),
-		OllamaAPIKey:                os.Getenv("OLLAMA_API_KEY"),
-		OllamaCloudBaseURL:          getenvDefault("OLLAMA_CLOUD_BASE_URL", "https://ollama.com"),
-		DeepSeekBaseURL:             os.Getenv("DEEPSEEK_BASE_URL"),
-		GeminiAPIKey:                os.Getenv("GEMINI_API_KEY"),
-		GeminiBaseURL:               os.Getenv("GEMINI_BASE_URL"),
-		ListenAddr:                  getenvDefault("LOOMCYCLE_LISTEN_ADDR", "127.0.0.1:8787"),
-		PublicURL:                   strings.TrimRight(strings.TrimSpace(os.Getenv("LOOMCYCLE_PUBLIC_URL")), "/"),
-		AuthMode:                    strings.TrimSpace(os.Getenv("LOOMCYCLE_AUTH_MODE")),
-		UIInsecureCookies:           os.Getenv("LOOMCYCLE_UI_INSECURE_COOKIES") == "1",
-		WebUIDir:                    strings.TrimSpace(os.Getenv("LOOMCYCLE_WEBUI_DIR")),
-		WebUIBundleURL:              strings.TrimSpace(os.Getenv("LOOMCYCLE_WEBUI_BUNDLE_URL")),
-		WebUIBundleSHA256:           strings.TrimSpace(os.Getenv("LOOMCYCLE_WEBUI_BUNDLE_SHA256")),
-		AuthToken:                   os.Getenv("LOOMCYCLE_AUTH_TOKEN"),
-		OperatorTokenPepper:         os.Getenv("LOOMCYCLE_OPERATOR_TOKEN_PEPPER"),
-		SecretKey:                   os.Getenv("LOOMCYCLE_SECRET_KEY"),
-		SecretKeyPrevious:           os.Getenv("LOOMCYCLE_SECRET_KEY_PREVIOUS"),
-		AuditLogPath:                os.Getenv("LOOMCYCLE_AUDIT_LOG_PATH"),
-		OperatorKeyRestriction:      os.Getenv("LOOMCYCLE_OPERATOR_KEY_RESTRICTION") == "1",
-		ACLMode:                     os.Getenv("LOOMCYCLE_ACL"),
-		ACLCacheTTLSeconds:          getenvInt("LOOMCYCLE_ACL_CACHE_TTL_SECONDS", 5),
-		TokenAuthorityInherit:       os.Getenv("LOOMCYCLE_TOKEN_AUTHORITY_INHERIT") == "1",
-		ACLLive:                     os.Getenv("LOOMCYCLE_ACL_LIVE") == "1",
-		PublicConfig:                os.Getenv("LOOMCYCLE_PUBLIC_CONFIG") == "1",
-		AllowOpenMode:               os.Getenv("LOOMCYCLE_ALLOW_OPEN_MODE") == "1",
-		DataDir:                     getenvDefault("LOOMCYCLE_DATA_DIR", "./data"),
-		HTTPHostAllowlist:           splitCSV(os.Getenv("LOOMCYCLE_HTTP_HOST_ALLOWLIST")),
-		HTTPPrivateHostAllowlist:    splitCSV(os.Getenv("LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST")),
-		MCPAllowPrivateIPs:          getenvBool("LOOMCYCLE_MCP_ALLOW_PRIVATE_IPS", true),
-		HTTPCallerAuthoritative:     os.Getenv("LOOMCYCLE_HTTP_CALLER_AUTHORITATIVE") == "1",
-		TeamSubscriptions:           os.Getenv("LOOMCYCLE_TEAM_SUBSCRIPTIONS") == "1",
-		MaxInteractiveChildren:      getenvInt("LOOMCYCLE_MAX_INTERACTIVE_CHILDREN", 0),
-		MaxLiveChildrenPerRun:       getenvInt("LOOMCYCLE_MAX_LIVE_CHILDREN_PER_RUN", 0),
-		BraveAPIKey:                 os.Getenv("BRAVE_API_KEY"),
-		SerperAPIKey:                os.Getenv("SERPER_API_KEY"),
-		ExaAPIKey:                   os.Getenv("EXA_API_KEY"),
-		TavilyAPIKey:                os.Getenv("TAVILY_API_KEY"),
-		WebSearchProvenance:         os.Getenv("LOOMCYCLE_WEBSEARCH_PROVENANCE") == "1",
-		BashEnabled:                 os.Getenv("LOOMCYCLE_BASH_ENABLED") == "1",
-		BashAllowedCreds:            splitCSV(os.Getenv("LOOMCYCLE_BASH_ALLOWED_CREDS")),
-		BashboxFallbackCommands:     splitCSV(os.Getenv("LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS")),
-		BashboxFallbackAllowedEnv:   splitCSV(os.Getenv("LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV")),
-		BashboxFallbackAllowedCreds: splitCSV(os.Getenv("LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS")),
-		GitPushHosts:                splitCSV(os.Getenv("LOOMCYCLE_GIT_PUSH_HOSTS")),
-		GitAuthorName:               strings.TrimSpace(os.Getenv("LOOMCYCLE_GIT_AUTHOR_NAME")),
-		GitAuthorEmail:              strings.TrimSpace(os.Getenv("LOOMCYCLE_GIT_AUTHOR_EMAIL")),
-		SkillsRoot:                  defaultedRoot(cfg, "LOOMCYCLE_SKILLS_ROOT", "skills"),
-		AgentsRoot:                  defaultedRoot(cfg, "LOOMCYCLE_AGENTS_ROOT", "agents"),
-		HelpRoot:                    defaultedRoot(cfg, "LOOMCYCLE_HELP_ROOT", "help"),
-		ConfiguredRunTTL:            24 * time.Hour,
-		MaxConfiguredRunsPerUser:    100,
+		OpenAIAPIKey:             os.Getenv("OPENAI_API_KEY"),
+		VoyageAPIKey:             os.Getenv("VOYAGE_API_KEY"),
+		OllamaBaseURL:            getenvDefault("OLLAMA_BASE_URL", "http://localhost:11434"),
+		OllamaAPIKey:             os.Getenv("OLLAMA_API_KEY"),
+		OllamaCloudBaseURL:       getenvDefault("OLLAMA_CLOUD_BASE_URL", "https://ollama.com"),
+		DeepSeekBaseURL:          os.Getenv("DEEPSEEK_BASE_URL"),
+		GeminiAPIKey:             os.Getenv("GEMINI_API_KEY"),
+		GeminiBaseURL:            os.Getenv("GEMINI_BASE_URL"),
+		ListenAddr:               getenvDefault("LOOMCYCLE_LISTEN_ADDR", "127.0.0.1:8787"),
+		PublicURL:                strings.TrimRight(strings.TrimSpace(os.Getenv("LOOMCYCLE_PUBLIC_URL")), "/"),
+		AuthMode:                 strings.TrimSpace(os.Getenv("LOOMCYCLE_AUTH_MODE")),
+		UIInsecureCookies:        os.Getenv("LOOMCYCLE_UI_INSECURE_COOKIES") == "1",
+		WebUIDir:                 strings.TrimSpace(os.Getenv("LOOMCYCLE_WEBUI_DIR")),
+		WebUIBundleURL:           strings.TrimSpace(os.Getenv("LOOMCYCLE_WEBUI_BUNDLE_URL")),
+		WebUIBundleSHA256:        strings.TrimSpace(os.Getenv("LOOMCYCLE_WEBUI_BUNDLE_SHA256")),
+		AuthToken:                os.Getenv("LOOMCYCLE_AUTH_TOKEN"),
+		OperatorTokenPepper:      os.Getenv("LOOMCYCLE_OPERATOR_TOKEN_PEPPER"),
+		SecretKey:                os.Getenv("LOOMCYCLE_SECRET_KEY"),
+		SecretKeyPrevious:        os.Getenv("LOOMCYCLE_SECRET_KEY_PREVIOUS"),
+		AuditLogPath:             os.Getenv("LOOMCYCLE_AUDIT_LOG_PATH"),
+		OperatorKeyRestriction:   os.Getenv("LOOMCYCLE_OPERATOR_KEY_RESTRICTION") == "1",
+		ACLMode:                  os.Getenv("LOOMCYCLE_ACL"),
+		ACLCacheTTLSeconds:       getenvInt("LOOMCYCLE_ACL_CACHE_TTL_SECONDS", 5),
+		TokenAuthorityInherit:    os.Getenv("LOOMCYCLE_TOKEN_AUTHORITY_INHERIT") == "1",
+		ACLLive:                  os.Getenv("LOOMCYCLE_ACL_LIVE") == "1",
+		PublicConfig:             os.Getenv("LOOMCYCLE_PUBLIC_CONFIG") == "1",
+		AllowOpenMode:            os.Getenv("LOOMCYCLE_ALLOW_OPEN_MODE") == "1",
+		DataDir:                  getenvDefault("LOOMCYCLE_DATA_DIR", "./data"),
+		HTTPHostAllowlist:        splitCSV(os.Getenv("LOOMCYCLE_HTTP_HOST_ALLOWLIST")),
+		HTTPPrivateHostAllowlist: splitCSV(os.Getenv("LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST")),
+		MCPAllowPrivateIPs:       getenvBool("LOOMCYCLE_MCP_ALLOW_PRIVATE_IPS", true),
+		HTTPCallerAuthoritative:  os.Getenv("LOOMCYCLE_HTTP_CALLER_AUTHORITATIVE") == "1",
+		TeamSubscriptions:        os.Getenv("LOOMCYCLE_TEAM_SUBSCRIPTIONS") == "1",
+		MaxInteractiveChildren:   getenvInt("LOOMCYCLE_MAX_INTERACTIVE_CHILDREN", 0),
+		MaxLiveChildrenPerRun:    getenvInt("LOOMCYCLE_MAX_LIVE_CHILDREN_PER_RUN", 0),
+		BraveAPIKey:              os.Getenv("BRAVE_API_KEY"),
+		SerperAPIKey:             os.Getenv("SERPER_API_KEY"),
+		ExaAPIKey:                os.Getenv("EXA_API_KEY"),
+		TavilyAPIKey:             os.Getenv("TAVILY_API_KEY"),
+		WebSearchProvenance:      os.Getenv("LOOMCYCLE_WEBSEARCH_PROVENANCE") == "1",
+		GitPushHosts:             splitCSV(os.Getenv("LOOMCYCLE_GIT_PUSH_HOSTS")),
+		GitAuthorName:            strings.TrimSpace(os.Getenv("LOOMCYCLE_GIT_AUTHOR_NAME")),
+		GitAuthorEmail:           strings.TrimSpace(os.Getenv("LOOMCYCLE_GIT_AUTHOR_EMAIL")),
+		SkillsRoot:               defaultedRoot(cfg, "LOOMCYCLE_SKILLS_ROOT", "skills"),
+		AgentsRoot:               defaultedRoot(cfg, "LOOMCYCLE_AGENTS_ROOT", "agents"),
+		HelpRoot:                 defaultedRoot(cfg, "LOOMCYCLE_HELP_ROOT", "help"),
+		ConfiguredRunTTL:         24 * time.Hour,
+		MaxConfiguredRunsPerUser: 100,
 		// Retention defaults: every family's mode is off, and the definitions
 		// family keeps 5 versions. applyRetention overrides these from the
 		// yaml `retention:` block.
@@ -6526,6 +6468,12 @@ func discoverAgents(cfg *Config, root string, defaulted bool) error {
 	}
 	for _, name := range set.Names() {
 		discovered, _ := set.Get(name)
+		if uses := removedItemsOfMarkdownAgent(discovered); len(uses) > 0 {
+			if cfg.mdRemovedUses == nil {
+				cfg.mdRemovedUses = map[string][]string{}
+			}
+			cfg.mdRemovedUses[name] = uses
+		}
 		base := agentFromDiscovered(discovered)
 		// yaml-as-override: if cfg.Agents[name] already exists from
 		// the yaml unmarshal, the yaml fields beat the discovered
@@ -6588,7 +6536,6 @@ func agentFromDiscovered(d *agents.Agent) AgentDef {
 		EvaluationScopes: d.EvaluationScopes,
 		CryptoScopes:     d.CryptoScopes,
 		ToolModes:        d.ToolModes,
-		ShellCredentials: (*CredentialNames)(d.ShellCredentials),
 		GitRemote:        d.GitRemote,
 		Workspace:        workspaceFromDiscovered(d.Workspace),
 		StatementMethods: d.StatementMethods,
@@ -6829,9 +6776,6 @@ func mergeAgentDef(base, override AgentDef) AgentDef {
 	if override.ToolModes != nil {
 		out.ToolModes = override.ToolModes
 	}
-	if override.ShellCredentials != nil {
-		out.ShellCredentials = override.ShellCredentials
-	}
 	if override.GitRemote != nil {
 		out.GitRemote = override.GitRemote
 	}
@@ -6976,12 +6920,6 @@ func addSkillToolDefaults(cfg *Config) {
 // model calls finish.
 const DefaultShutdownPauseTimeoutMs = 7000
 
-// BashboxOverlayMaxBytesDefault is the per-call cap on Bashbox's in-memory
-// writes when LOOMCYCLE_BASHBOX_OVERLAY_MAX_BYTES is unset. 64 MiB holds any
-// scratch file a script reasonably makes on a read-only volume; gbash's
-// in-memory files cost about 2-2.6x the bytes written in heap.
-const BashboxOverlayMaxBytesDefault = 64 << 20
-
 // The inbox caps (RFC FF): one kept file, and a run tree's whole inbox.
 const (
 	FileMaxBytesDefault      = 64 << 20
@@ -7121,7 +7059,7 @@ func looksLikeAnOverrideOnly(a AgentDef) bool {
 	}
 	return len(a.MemoryScopes) > 0 || len(a.SqlScopes) > 0 || len(a.HistoryScope) > 0 ||
 		len(a.Volumes) > 0 || len(a.EvaluationScopes) > 0 || len(a.CryptoScopes) > 0 ||
-		a.ShellCredentials != nil || len(a.GitRemote) > 0 || a.Workspace.Grants() || len(a.StatementMethods) > 0
+		len(a.GitRemote) > 0 || a.Workspace.Grants() || len(a.StatementMethods) > 0
 }
 
 // sqlScopeNames renders validSqlScopes for an error message. Derived from the
@@ -7274,38 +7212,6 @@ func IsCryptoScope(s string) bool { return validCryptoScopes[s] }
 // One function for every place a definition is authored — operator yaml, the
 // AgentDef substrate overlay, register_agent — so a value refused at boot is
 // not quietly kept by a runtime write.
-// CredentialNames is a list of credential names: an agent's
-// shell_credentials (RFC EW). There, a present but empty list means "none"
-// while an absent one means "every credential the operator lists", so a nil
-// list must never be written as JSON null, which reads back as absent and
-// would widen the agent to every credential. It always encodes as a list.
-type CredentialNames []string
-
-// MarshalJSON writes a nil list as [] (see CredentialNames).
-func (n CredentialNames) MarshalJSON() ([]byte, error) {
-	if n == nil {
-		return []byte("[]"), nil
-	}
-	return json.Marshal([]string(n))
-}
-
-// ValidateShellCredentials refuses a shell_credentials entry that is not a
-// credential name (RFC EW). A well-formed name the operator does not list is
-// not an error: the operator's lists are deployment settings that may change
-// under a stored definition, so it is reported as an inert grant instead
-// (InertShellCredentials).
-func ValidateShellCredentials(names *CredentialNames) error {
-	if names == nil {
-		return nil
-	}
-	for i, n := range *names {
-		if !bashboxFallbackCredNameRe.MatchString(n) {
-			return fmt.Errorf("shell_credentials[%d]: %q is not a credential name (want ^[A-Za-z0-9_-]{1,128}$)", i, n)
-		}
-	}
-	return nil
-}
-
 // ValidateGitRemote refuses a git_remote list (RFC FB) holding a value other
 // than "fetch" or "push", a duplicate, or "push" without "fetch". One function
 // for every place a definition is authored — operator yaml, the AgentDef
@@ -7376,32 +7282,6 @@ func StatementMethodKnown(m string) bool {
 // any agent may be granted them.
 func StatementMethodCodeOnly(m string) bool {
 	return m == "rule" || m == "extractor" || m == "judge" || m == "annotate" || m == "ontology"
-}
-
-// InertShellCredentials returns the names in an agent's shell_credentials
-// that neither LOOMCYCLE_BASH_ALLOWED_CREDS nor
-// LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS lists: names that keep nothing,
-// since the field only narrows the operator's lists.
-func (e Env) InertShellCredentials(names *CredentialNames) []string {
-	if names == nil {
-		return nil
-	}
-	listed := map[string]bool{}
-	for _, n := range e.BashAllowedCreds {
-		listed[n] = true
-	}
-	for _, entry := range e.BashboxFallbackAllowedCreds {
-		if _, n, err := ParseBashboxFallbackCred(entry); err == nil {
-			listed[n] = true
-		}
-	}
-	var inert []string
-	for _, n := range *names {
-		if !listed[n] {
-			inert = append(inert, n)
-		}
-	}
-	return inert
 }
 
 func ValidateCryptoScopes(scopes []string) error {
@@ -8603,49 +8483,6 @@ func ValidateEphemeralVolumes(v string) error {
 	return fmt.Errorf("ephemeral_volumes: unknown value %q (the only value is %q; leave it unset for a volume's own mode)", v, EphemeralVolumesReadOnly)
 }
 
-// bashboxFallbackCredNameRe is the CredentialDef name grammar (the name a
-// $cred: reference takes), so a name outside it could never resolve.
-var bashboxFallbackCredNameRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
-
-// ParseBashboxFallbackCred splits one LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS
-// entry. A bare "NAME" is injected into every fallback command; "cmd:NAME"
-// only into the host command the operator allowlisted as cmd (RFC ES #9), so
-// a token one tool needs is not handed to every other allowlisted tool.
-func ParseBashboxFallbackCred(entry string) (command, name string, err error) {
-	command, name, bound := strings.Cut(entry, ":")
-	if !bound {
-		command, name = "", command
-	} else if command == "" {
-		return "", "", fmt.Errorf("%q: the command before ':' is empty", entry)
-	}
-	if !bashboxFallbackCredNameRe.MatchString(name) {
-		return "", "", fmt.Errorf("%q: the credential name must match ^[A-Za-z0-9_-]{1,128}$", entry)
-	}
-	return command, name, nil
-}
-
-// validateBashboxFallbackCreds refuses an entry that could never be injected:
-// a malformed one, or one bound to a command that has no fallback proxy. The
-// host-variable list has no per-command form, so a "cmd:NAME" there named no
-// variable and was dropped without a word; it is refused too.
-func validateBashboxFallbackCreds(c *Config) error {
-	for _, e := range c.Env.BashboxFallbackAllowedEnv {
-		if strings.Contains(e, ":") {
-			return fmt.Errorf("LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV: %q is not a variable name; binding to one command (cmd:NAME) is only for stored credentials in LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS", e)
-		}
-	}
-	for _, e := range c.Env.BashboxFallbackAllowedCreds {
-		cmd, _, err := ParseBashboxFallbackCred(e)
-		if err != nil {
-			return fmt.Errorf("LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS: %w", err)
-		}
-		if cmd != "" && !slices.Contains(c.Env.BashboxFallbackCommands, cmd) {
-			return fmt.Errorf("LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS: %q binds a credential to %q, which is not in LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS", e, cmd)
-		}
-	}
-	return nil
-}
-
 // validateAWSSecretAllowlists refuses, while any provider authenticates with
 // AWS credentials, an operator env allowlist that would pass loomcycle's own
 // AWS secrets to something an agent or a trigger runs (RFC EM §9.3). Without
@@ -8666,7 +8503,6 @@ func validateAWSSecretAllowlists(c *Config) error {
 		env   string
 		names []string
 	}{
-		{"LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV", c.Env.BashboxFallbackAllowedEnv},
 		{"LOOMCYCLE_SCHEDULER_ENV_ALLOWLIST", c.Env.SchedulerEnvAllowlist},
 		{"LOOMCYCLE_WEBHOOKS_ENV_ALLOWLIST", c.Env.WebhooksEnvAllowlist},
 	}
@@ -8678,24 +8514,6 @@ func validateAWSSecretAllowlists(c *Config) error {
 		}
 	}
 	return nil
-}
-
-// shellCredentialWarnings advises on an agent's shell_credentials (RFC EW),
-// never fatally: the field only narrows the operator's two lists, so a name
-// neither lists keeps nothing, and the field reaches nothing on an agent that
-// holds neither shell tool.
-func shellCredentialWarnings(name string, a AgentDef, env Env) []string {
-	if a.ShellCredentials == nil {
-		return nil
-	}
-	var out []string
-	if inert := env.InertShellCredentials(a.ShellCredentials); len(inert) > 0 {
-		out = append(out, fmt.Sprintf("agent %q: shell_credentials lists %s, which neither LOOMCYCLE_BASH_ALLOWED_CREDS nor LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS names; the field only keeps credentials the operator lists, so these keep nothing", name, strings.Join(inert, ", ")))
-	}
-	if !slices.Contains(a.Tools, "Bash") && !slices.Contains(a.Tools, "Bashbox") {
-		out = append(out, fmt.Sprintf("agent %q: shell_credentials is set but neither Bash nor Bashbox is in tools, so it narrows nothing", name))
-	}
-	return out
 }
 
 // gitRemoteWarnings advises on an agent's git_remote (RFC FB), never fatally:

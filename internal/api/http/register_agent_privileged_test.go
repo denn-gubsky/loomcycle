@@ -10,18 +10,18 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/lookup"
 )
 
-// Bashbox is registered on every server, so a registered agent must not get
-// a shell (and, where the operator allowlisted host fallback commands, real
-// host processes) by naming it. It is stripped with Bash, Write and Edit
-// unless the operator let registered agents keep privileged tools.
-func TestRegisterAgent_StripsBashboxUnlessPrivilegedToolsAreAllowed(t *testing.T) {
+// A registered agent must not get a shell (Workspace) or file writes by
+// naming them: they are stripped unless the operator let registered agents
+// keep privileged tools. (Bash and Bashbox were removed in v1.172.0 and a
+// registration naming one is refused: TestServer_RegisterAgent_NamingARemovedItemIsRefused.)
+func TestRegisterAgent_StripsPrivilegedToolsUnlessAllowed(t *testing.T) {
 	for _, tc := range []struct {
 		label string
 		allow bool
 		want  []string
 	}{
 		{"not allowed", false, []string{"Read", "Memory"}},
-		{"allowed", true, []string{"Read", "Bashbox", "Bash", "Write", "Edit", "Workspace", "Memory"}},
+		{"allowed", true, []string{"Read", "Write", "Edit", "Workspace", "Memory"}},
 	} {
 		t.Run(tc.label, func(t *testing.T) {
 			srv, cfg, st := newRegisterAgentFixture(t)
@@ -31,7 +31,7 @@ func TestRegisterAgent_StripsBashboxUnlessPrivilegedToolsAreAllowed(t *testing.T
 			got, err := srv.RegisterAgent(ctx, connector.RegisterAgentRequest{
 				Name:         "shell-dyn",
 				SystemPrompt: "p",
-				Tools:        []string{"Read", "Bashbox", "Bash", "Write", "Edit", "Workspace", "Memory"},
+				Tools:        []string{"Read", "Write", "Edit", "Workspace", "Memory"},
 			})
 			if err != nil {
 				t.Fatalf("RegisterAgent: %v", err)
@@ -45,7 +45,7 @@ func TestRegisterAgent_StripsBashboxUnlessPrivilegedToolsAreAllowed(t *testing.T
 			}
 			// The resolved definition also carries the tools every agent is
 			// given, so it is asked only about the ones in question.
-			for _, name := range []string{"Bashbox", "Bash", "Write", "Edit", "Workspace"} {
+			for _, name := range []string{"Write", "Edit", "Workspace"} {
 				if slices.Contains(def.Tools, name) != tc.allow {
 					t.Errorf("stored tools = %v: %s present = %v, want %v", def.Tools, name, !tc.allow, tc.allow)
 				}

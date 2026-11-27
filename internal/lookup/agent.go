@@ -256,6 +256,7 @@ func resolveDynamicTiers(ctx context.Context, s AgentStore, tenantID, name strin
 		var def config.AgentDef
 		if uerr := json.Unmarshal(row.Definition, &def); uerr == nil {
 			NormalizeAgentDef(&def)
+			def.RemovedFields = config.RemovedFieldsInJSON(row.Definition)
 			def.OwnerTenant = tenantID
 			def.RegisteredSHA256 = registeredDigest(row.Definition)
 			return def, true, nil
@@ -310,6 +311,9 @@ func AgentFromDefRow(row store.AgentDefRow) (config.AgentDef, bool) {
 	}
 	def := sd.ToConfigDef()
 	NormalizeAgentDef(&def)
+	// What the row holds of a removed field (RFC GW P15): the field left
+	// SubstrateAgentDef, so only the raw JSON shows it.
+	def.RemovedFields = config.RemovedFieldsInJSON(row.Definition)
 	// From the ROW, not the definition body: authorship is authority and is
 	// deliberately not part of the persisted def (nor of its content hash), so
 	// a def cannot claim it by containing it.
@@ -453,11 +457,6 @@ type SubstrateAgentDef struct {
 	// builtin.mergedDef: dropped on the read, a stored read-only agent would
 	// come back holding Document or Path whole. Not part of content_sha256.
 	ToolModes map[string]string `json:"tool_modes,omitempty"`
-	// ShellCredentials mirrors config.AgentDef.ShellCredentials (RFC EW). Kept
-	// in sync with builtin.mergedDef: dropped on the read, a stored agent that
-	// narrowed its shell's credentials would come back with every credential
-	// the operator lists. A pointer, so `[]` (none) survives the read as none.
-	ShellCredentials *config.CredentialNames `json:"shell_credentials,omitempty"`
 	// GitRemote mirrors config.AgentDef.GitRemote (RFC FB). Kept in sync
 	// with builtin.mergedDef: dropped on the read, a stored agent's Git tool
 	// would lose its network grant. Absent and [] both mean none, so a plain
@@ -577,7 +576,6 @@ func SubstrateAgentDefFromConfig(def config.AgentDef) SubstrateAgentDef {
 		EvaluationScopes:       def.EvaluationScopes,
 		CryptoScopes:           def.CryptoScopes,
 		ToolModes:              def.ToolModes,
-		ShellCredentials:       def.ShellCredentials,
 		GitRemote:              def.GitRemote,
 		Workspace:              def.Workspace.Clone(),
 		StatementMethods:       def.StatementMethods,
@@ -654,7 +652,6 @@ func (s SubstrateAgentDef) ToConfigDef() config.AgentDef {
 		EvaluationScopes:      s.EvaluationScopes,
 		CryptoScopes:          s.CryptoScopes,
 		ToolModes:             s.ToolModes,
-		ShellCredentials:      s.ShellCredentials,
 		GitRemote:             s.GitRemote,
 		Workspace:             s.Workspace.Clone(),
 		StatementMethods:      s.StatementMethods,

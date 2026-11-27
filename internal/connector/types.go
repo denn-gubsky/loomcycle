@@ -525,10 +525,6 @@ type RegisterAgentRequest struct {
 	// (config.AgentDef.ToolModes, RFC GL): {Document: read, Path: read}.
 	// Absent = every tool whole.
 	ToolModes map[string]string `json:"tool_modes,omitempty"`
-	// ShellCredentials narrows which operator-listed credentials the agent's
-	// Bash and Bashbox host commands receive (config.AgentDef.ShellCredentials,
-	// RFC EW). Absent = every credential the operator lists; [] = none.
-	ShellCredentials *config.CredentialNames `json:"shell_credentials,omitempty"`
 	// GitRemote is the Git tool's network grant (config.AgentDef.GitRemote,
 	// RFC FB): [fetch] or [fetch, push]. Absent or [] = none.
 	GitRemote []string `json:"git_remote,omitempty"`

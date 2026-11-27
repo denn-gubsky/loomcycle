@@ -119,9 +119,11 @@ func Deployment(in Inputs) map[string]any {
 	if in.Cfg != nil {
 		env = in.Cfg.Env
 	}
-	out["bash"] = map[string]any{"available": env.BashEnabled}
-	// Bashbox is always registered; with no config, report it unconfirmed.
-	out["bashbox"] = map[string]any{"available": in.Cfg != nil}
+	// Bash and Bashbox were removed in v1.172.0 (RFC GW P15). The keys stay
+	// one release as unavailable (P15 Q4), so an agent prompt that checks
+	// them reads "no" rather than a missing key; commands run in a workspace.
+	out["bash"] = map[string]any{"available": false}
+	out["bashbox"] = map[string]any{"available": false}
 	// The scheduler and webhook loops run whenever there is a store; mirror
 	// that boot condition, or a caller authoring a ScheduleDef is told it will
 	// fire when it never will.

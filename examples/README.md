@@ -33,11 +33,10 @@ exp6.8 is the local-models variant (ollama solver population + cloud-sonnet meta
 
 (The repo also ships `cluster/`, `observability/`, and `python-cli/` examples.)
 
-The `Bash` tool and Bashbox are deprecated (RFC GW §9; `docs/MIGRATING-FROM-BASH.md`).
+The `Bash` tool and Bashbox were removed in v1.172.0 (RFC GW; `docs/MIGRATING-FROM-BASH.md`).
 exp1 and exp9 run their commands in a workspace on the local worker
-(`workspace.mode: local`), and exp8 clones with the `Git` tool. exp4 still drives
-`git push` through Bash; it moves to git workspaces once RFC GW P11's git operations
-ship. exp10 benchmarks Bash against Bashbox, both of which RFC GW P15 removes.
+(`workspace.mode: local`), and exp4 and exp8 work their repositories with the
+`Git` tool.
 
 ## Quick start (any of exp1–exp3)
 ```bash

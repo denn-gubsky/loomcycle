@@ -40,7 +40,7 @@ func TestBoot_ClusterReplicaResumesRunsAStoppedReplicaParked(t *testing.T) {
 	// The new replica is up before the old one stops, as with maxSurge.
 	newer := b.startOn(t, freePort(t), cluster("f1-new")...)
 	old.startRun(t, "cluster-pause-1")
-	pgid := waitForSleeper(t, b.volume, old)
+	pgid := waitForSleeper(t, b.volume, old, "", "")
 	shutDownParked(t, old, pgid)
 
 	pool := clusterPool(t, clusterDSN)

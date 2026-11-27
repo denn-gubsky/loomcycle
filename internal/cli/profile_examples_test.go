@@ -109,7 +109,6 @@ func TestProfileExamples_EveryVariableIsOneTheRuntimeReads(t *testing.T) {
 // loosening are the variables that widen what an agent or a caller may do.
 // A profile example may show one only as a commented line that says so.
 var loosening = []string{
-	"LOOMCYCLE_BASH_ENABLED", "LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS", "LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV",
 	"LOOMCYCLE_HTTP_HOST_ALLOWLIST", "LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST", "LOOMCYCLE_HTTP_CALLER_AUTHORITATIVE",
 	"LOOMCYCLE_MCP_ALLOW_PRIVILEGED_TOOLS", "LOOMCYCLE_MCP_ALLOW_DYNAMIC_STDIO",
 	"LOOMCYCLE_PUBLIC_CONFIG", "LOOMCYCLE_UI_INSECURE_COOKIES", "LOOMCYCLE_ANTHROPIC_OAUTH_DEV_ENABLED",

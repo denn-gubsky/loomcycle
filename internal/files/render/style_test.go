@@ -28,14 +28,14 @@ func TestParseStyle_TakesTheShapeAndAFencedBlock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !s.serif() || s.BaseSize() != 12 || s.headScale() != 1.2 || s.linkColor() != "#778899" || s.marginMM() != 20 ||
+	if !(s.Font == "serif") || s.BaseSize() != 12 || s.headScale() != 1.2 || s.linkColor() != "#778899" || s.marginMM() != 20 ||
 		s.PageSize("") != "letter" || s.PageSize("a4") != "a4" || !s.pageNumbers() || s.logoMM() != 40 {
 		t.Errorf("parsed style = %+v", s)
 	}
 	if _, err := ParseStyle("```json\n{\"loomcycle_style\": 1, \"font\": \"sans\"}\n```"); err != nil {
 		t.Errorf("a fenced block: %v", err)
 	}
-	if s, err := ParseStyle(`{"loomcycle_style": 1}`); err != nil || s.BaseSize() != 10.5 || s.serif() || s.pageNumbers() != true {
+	if s, err := ParseStyle(`{"loomcycle_style": 1}`); err != nil || s.BaseSize() != 10.5 || (s.Font == "serif") || s.pageNumbers() != true {
 		t.Errorf("an empty style is the built-in look: %+v %v", s, err)
 	}
 }
@@ -218,6 +218,12 @@ func styledFixture(t *testing.T) *Doc {
 		t.Fatal(err)
 	}
 	st.Logo = d.Images[0].Name
+	// A photo beside the title (RFC HB D4), so the office suite and
+	// epubcheck open an anchored picture and a floated one.
+	st.Photo = &StylePhoto{Place: "right", WidthMM: 30}
 	d.Style = st
+	if !d.AddPhoto("image/png", tinyPNG) {
+		t.Fatal("the fixture took no photo")
+	}
 	return d
 }

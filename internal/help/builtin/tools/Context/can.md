@@ -18,7 +18,7 @@ answers for you, never for anyone else.
   `volume`, `skill`, `mcp`, `memory`, `sqlmem`, `document`, `history`,
   `channel`, `team`, `credential`, `model`, `tier`, `run`, `principal`, ...).
   `id` is its name in that kind's shape: an agent `chat/support`, a tool
-  `Bash`, a memory scope `tenant`, a document `tenant:/kb/pricing`, a
+  `Workspace`, a memory scope `tenant`, a document `tenant:/kb/pricing`, a
   credential `user:github`. Omit `id` to ask about the kind as a whole.
 - `queries` — instead of `action` and `resource`, a list of up to 32
   `{action, resource}` questions, answered in order.
@@ -72,6 +72,6 @@ Several questions at once, before planning a task:
 
 ```json
 {"op": "can", "queries": [
-  {"action": "invoke", "resource": {"type": "tool", "id": "Bash"}},
+  {"action": "invoke", "resource": {"type": "tool", "id": "Workspace"}},
   {"action": "write", "resource": {"type": "memory", "id": "tenant"}}]}
 ```

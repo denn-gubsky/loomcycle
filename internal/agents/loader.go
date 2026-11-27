@@ -152,10 +152,10 @@ type Agent struct {
 	// config.AgentDef.ToolModes, RFC GL). Authority, not content: not part of
 	// the content hash, like CryptoScopes.
 	ToolModes map[string]string
-	// ShellCredentials narrows the credentials Bash and the Bashbox fallback
-	// inject (see config.AgentDef.ShellCredentials, RFC EW). nil = absent.
-	// Authority, not content: not part of the content hash.
-	ShellCredentials *[]string
+	// RemovedFields names the fields RFC GW P15 removed that the front matter
+	// still sets (shell_credentials). The load refuses such an agent with
+	// the line to change; nothing else reads it.
+	RemovedFields []string
 	// GitRemote is the Git tool's network grant (see
 	// config.AgentDef.GitRemote, RFC FB). Authority, not content: not part
 	// of the content hash.
@@ -553,7 +553,7 @@ type frontmatter struct {
 	EvaluationScopes      []string                   `yaml:"evaluation_scopes"`
 	CryptoScopes          []string                   `yaml:"crypto_scopes"`
 	ToolModes             map[string]string          `yaml:"tool_modes"`
-	ShellCredentials      *[]string                  `yaml:"shell_credentials"`
+	ShellCredentials      yaml.Node                  `yaml:"shell_credentials"` // removed (RFC GW P15): presence only
 	GitRemote             []string                   `yaml:"git_remote"`
 	Workspace             *AgentWorkspace            `yaml:"workspace"`
 	StatementMethods      []string                   `yaml:"statement_methods"`
@@ -645,7 +645,9 @@ func parseAgent(raw []byte) (*Agent, error) {
 	a.EvaluationScopes = fm.EvaluationScopes
 	a.CryptoScopes = fm.CryptoScopes
 	a.ToolModes = fm.ToolModes
-	a.ShellCredentials = fm.ShellCredentials
+	if !fm.ShellCredentials.IsZero() {
+		a.RemovedFields = []string{"shell_credentials"}
+	}
 	a.GitRemote = fm.GitRemote
 	a.Workspace = fm.Workspace
 	a.StatementMethods = fm.StatementMethods

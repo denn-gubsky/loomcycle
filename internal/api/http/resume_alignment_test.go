@@ -157,13 +157,24 @@ func TestResume_EmitsTheStartTimeWarnings(t *testing.T) {
 	e := aclResumeFixture(t, true, map[string][][]providers.Event{"worker": {endTurn(), endTurn()}})
 	run := e.startAs(t, "worker", "a_warn_resume")
 	inert := string(providers.EventCapabilityInert)
-	if got := eventsOf(t, e.st, run, inert); len(got) != 1 || !strings.Contains(got[0], "Bash") {
+	// The ACL's notices only: the fixture's Bash is also a removed tool (RFC
+	// GW P15), which has its own notice at each start.
+	aclInert := func() []string {
+		var out []string
+		for _, ev := range eventsOf(t, e.st, run, inert) {
+			if strings.Contains(ev, `"gate":"acl"`) {
+				out = append(out, ev)
+			}
+		}
+		return out
+	}
+	if got := aclInert(); len(got) != 1 || !strings.Contains(got[0], "Bash") {
 		t.Fatalf("fixture: the live run's warnings = %v, want Bash withheld", got)
 	}
 	parkForResume(t, e.srv, run.ID)
 	resumeOne(t, e.srv)
 	waitLoopGone(t, e.srv, run)
-	if got := eventsOf(t, e.st, run, inert); len(got) != 2 || !strings.Contains(got[1], "Bash") {
+	if got := aclInert(); len(got) != 2 || !strings.Contains(got[1], "Bash") {
 		t.Errorf("warnings after the resume = %v, want the resumed run to say Bash is withheld too", got)
 	}
 }

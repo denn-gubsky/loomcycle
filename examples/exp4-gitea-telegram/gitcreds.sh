@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Configure a clone with:
-#   git config credential.helper "$PWD/gitcreds.sh"; git config credential.useHttpPath false
+# Use it for one command, without saving it in the repository (README "Setup"):
+#   git -c credential.helper="$PWD/gitcreds.sh" -c credential.useHttpPath=false clone ...
 # git calls `gitcreds.sh get`; we reply username/password from env (or .env.local).
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

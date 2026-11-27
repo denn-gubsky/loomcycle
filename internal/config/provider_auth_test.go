@@ -77,7 +77,7 @@ func TestProviderAuth_RefusesAllowlistsThatLeakAWSSecrets(t *testing.T) {
 	withAuth := bedrockProviderYAML("bedrock",
 		"    driver: anthropic\n    base_url: https://bedrock-runtime.eu-central-1.amazonaws.com/anthropic\n"+
 			"    auth: {type: aws_sigv4, region: eu-central-1}\n")
-	for _, env := range []string{"LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV", "LOOMCYCLE_SCHEDULER_ENV_ALLOWLIST", "LOOMCYCLE_WEBHOOKS_ENV_ALLOWLIST"} {
+	for _, env := range []string{"LOOMCYCLE_SCHEDULER_ENV_ALLOWLIST", "LOOMCYCLE_WEBHOOKS_ENV_ALLOWLIST"} {
 		t.Run(env, func(t *testing.T) {
 			t.Setenv(env, "HOME, AWS_SESSION_TOKEN")
 			if _, err := loadYAMLString(t, withAuth); err == nil || !strings.Contains(err.Error(), "AWS_SESSION_TOKEN") {

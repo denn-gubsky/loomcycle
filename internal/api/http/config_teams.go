@@ -79,7 +79,7 @@ func (s *Server) handleConfigTeams(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	body := configTeamsResponse(teams, rows, s.configTeamsLast.Load())
-	body["deprecations"] = deprecationsReport(s.cfg().Deprecations, s.deprecatedUse.snapshot())
+	body["deprecations"] = deprecationsReport(s.deprecatedUse.snapshot())
 	writeJSONOK(w, body)
 }
 

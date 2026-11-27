@@ -55,7 +55,7 @@ create and fork agents — but **you still can't escalate**:
   lacks.
 - **Every other grant follows the same rule.** `memory_scopes`,
   `sql_scopes`, `history_scope`, `core_blocks`, `volumes`, `channels`,
-  `interruption`, `evaluation_scopes`, `crypto_scopes`, `shell_credentials`, `git_remote`, `workspace`, `skills` and the `*_def_scopes`
+  `interruption`, `evaluation_scopes`, `crypto_scopes`, `git_remote`, `workspace`, `skills` and the `*_def_scopes`
   of an agent you create must be within your own (`Context op=self`
   shows them). A fork may also keep what the version it forks already
   has. An unset `memory_scopes` or `sql_scopes` takes the ordinary
@@ -76,7 +76,7 @@ create and fork agents — but **you still can't escalate**:
   document, a team run bound to a board chunk). It does not stop writes a
   tool makes by its own means: Memory set with a path adds a Path-tree
   name, Document held whole adds its own Path-tree names, and Write,
-  Edit, Bash or Git change files.
+  Edit, Git or a Workspace command change files.
 - `statement_methods` (`rule`, `extractor`, `judge`, `annotate` and
   `ontology` for a `provider: code-js` agent; `link` and `remember` for any agent) is stricter:
   a new agent may list only what you may stamp, and a fork only what

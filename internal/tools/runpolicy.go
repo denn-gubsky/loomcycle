@@ -18,10 +18,9 @@ import (
 // evaluation or key scope, no ephemeral write, no Git network operation, not
 // operator-authored. The fields that NARROW something the operator configured
 // rather than grant it — Hosts, Decision, CoreBlocks, FanoutCap, Overrides,
-// Compaction, Context, ShellCreds — fall back to that floor when zero: the
-// operator's host list and decision models, no core blocks to guard, the
-// definition's fan-out width, no inherited override, no compaction or context
-// setting, every shell credential the operator lists.
+// Compaction, Context — fall back to that floor when zero: the operator's host
+// list and decision models, no core blocks to guard, the definition's fan-out
+// width, no inherited override, no compaction or context setting.
 //
 // Before RunPolicy each of these rode its own ctx key with its own setter, and
 // a child inherited whatever its spawn path forgot to restamp: a per-spawn
@@ -85,9 +84,6 @@ type RunPolicy struct {
 	Skill      SkillPolicyValue
 	Evaluation EvaluationPolicyValue
 	Crypto     CryptoPolicyValue
-	// ShellCreds narrows which operator-listed credentials the Bash tool and
-	// the Bashbox host-command fallback inject (RFC EW). Zero: all of them.
-	ShellCreds ShellCredsPolicyValue
 	// GitRemote is what the Git tool may do over the network (RFC FB). Zero:
 	// nothing, local repository work only.
 	GitRemote GitRemotePolicyValue
@@ -112,6 +108,10 @@ type RunPolicy struct {
 	// ACLRemovedTools names the tools this run's definition granted and its
 	// ACL removed, for Context op=self; each hop's own.
 	ACLRemovedTools []string
+	// Removed names what v1.172.0 removed that this run's definition still
+	// names (config.RemovedItemsOf, RFC GW P15): a tool it was not given, or
+	// a field that does nothing. Context op=self reports it.
+	Removed []string
 	// LiveACL, set only under LOOMCYCLE_ACL_LIVE=1, re-reads the caller's
 	// set during the run and holds the policy PolicyOf returns to the current
 	// rules within ACL (see aclive.go). nil: the set is frozen at the start.
@@ -248,13 +248,13 @@ var inheritRules = map[string]inheritRule{
 	"Skill":              ruleOwn,     //
 	"Evaluation":         ruleOwn,     //
 	"Crypto":             ruleNarrow,  // the child's own scopes its parent also holds
-	"ShellCreds":         ruleNarrow,  // the credential names both the parent and the child allow (RFC EW)
 	"GitRemote":          ruleNarrow,  // each network op only when both the parent and the child allow it (RFC FB)
 	"Workspace":          ruleNarrow,  // ops and open only when both allow them, the stricter engine (RFC GW)
 	"StatementMethods":   ruleOwn,     // each agent's own: a child is code itself or stamps nothing
 	"OperatorAuthored":   ruleOwn,     //
 	"ACL":                ruleInherit, // the originating principal's set binds the whole tree (RFC EY)
 	"ACLRemovedTools":    ruleOwn,     // what this hop's definition lost to the ACL
+	"Removed":            ruleOwn,     // what this hop's definition names that v1.172.0 removed
 	"LiveACL":            ruleOwn,     // each run's own view, built from the set it was spawned with
 	"FanoutCap":          ruleNarrow,  // min(parent, child) when both are set, else the one set
 	"Overrides":          ruleInherit, // only a child of the same definition takes them
@@ -307,13 +307,13 @@ func (p RunPolicy) Inherit(c ChildGrant) RunPolicy {
 		Skill:             own.Skill,
 		Evaluation:        own.Evaluation,
 		Crypto:            CryptoPolicyValue{Scopes: NarrowCryptoScopes(p.Crypto.Scopes, own.Crypto.Scopes)},
-		ShellCreds:        NarrowShellCreds(p.ShellCreds, own.ShellCreds),
 		GitRemote:         NarrowGitRemote(p.GitRemote, own.GitRemote),
 		Workspace:         NarrowWorkspace(p.Workspace, own.Workspace),
 		StatementMethods:  own.StatementMethods,
 		OperatorAuthored:  own.OperatorAuthored,
 		ACL:               p.ACL,
 		ACLRemovedTools:   own.ACLRemovedTools,
+		Removed:           own.Removed,
 		LiveACL:           own.LiveACL,
 		FanoutCap:         NarrowFanoutCap(p.FanoutCap, own.FanoutCap),
 		Overrides:         p.Overrides,

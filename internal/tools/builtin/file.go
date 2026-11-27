@@ -170,6 +170,7 @@ func (f *File) InputSchema() json.RawMessage {
 			"title_page":    {"type": "boolean", "description": "render: put the title on a page of its own. Default false: the title, a Draft or Review label and a provenance and date line head the first page."},
 			"provenance":    {"type": "boolean", "description": "render: for an imported document, say where it came from under the title. Default true."},
 			"style":         {"anyOf": [{"type": "string"}, {"type": "object"}], "description": "render: the house style to write the file in: the Path of a style document in the tenant's tree, none for the built-in look, or the style JSON itself as an object (e.g. {\"loomcycle_style\": 1, \"font\": \"serif\", \"footer\": \"Page {page} of {pages}\"}), which needs no document. Help topic File/render lists its keys. Default: the tenant's /render/styles/default when it exists."},
+			"photo":         {"type": "string", "description": "render: a PNG or JPEG picture in the run's inbox (e.g. volume:inbox:documents/portrait.jpg, at most 5 MiB) placed beside or above the title as the style's photo key says (default: right, 32 mm). Without it, a style with a photo key takes the document's first picture before its first heading."},
 			"page_text":     {"type": "object", "additionalProperties": false, "description": "render: the header and footer for this render only, replacing the style's. Each is one line or {left, center, right}, and may use {page}, {pages}, {title} and {date}; {{ is a brace. date is what {date} prints (default: today, YYYY-MM-DD). Printed as text, never kept.", "properties": {
 				"header": {"anyOf": [{"type": "string"}, {"type": "object", "properties": {"left": {"type": "string"}, "center": {"type": "string"}, "right": {"type": "string"}}}]},
 				"footer": {"anyOf": [{"type": "string"}, {"type": "object", "properties": {"left": {"type": "string"}, "center": {"type": "string"}, "right": {"type": "string"}}}]},
@@ -260,6 +261,9 @@ type fileInput struct {
 	// PageText replaces the style's header and footer for this render, and
 	// gives {date} its text (RFC HB D3).
 	PageText *renderPageText `json:"page_text"`
+	// Photo is a picture in the run's inbox placed beside the title
+	// (RFC HB D4).
+	Photo string `json:"photo"`
 	// checkout (file_checkout.go): the documents to take, by Path folder or
 	// by id. commit reads its dry_run from the raw input (true unless
 	// false is given).

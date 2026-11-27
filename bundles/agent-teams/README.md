@@ -7,7 +7,7 @@ Agents for **building** and **running** agent teams (RFC AP + RFC BD), plus the
 |-------|--------------|
 | `agent/assistant` | Helps you design + author a specialized **AgentDef** — the reusable building block a team routes between (role, least-privilege tools, tier, skills, scopes). |
 | `team/assistant`  | Assembles a **TeamDef** (a workflow state machine) from agents that *already exist*. Renders the Mermaid diagram, gets your sign-off, commits, and can `TeamDef op=run` to test. Does **not** create agents — points you at `agent/assistant`. |
-| `team/orchestrator` | **(RFC BD) the LLM team lead + human contact point.** An interactive, steerable run that *drives* a team: reads the TeamDef as its map, moves a Document task board through the states, spawns each state's handler agent, decides routing, and — for software teams — sets up an ephemeral repo volume + opens a PR. |
+| `team/orchestrator` | **(RFC BD) the LLM team lead + human contact point.** An interactive, steerable run that *drives* a team: reads the TeamDef as its map, moves a Document task board through the states, spawns each state's handler agent, decides routing, and — for software teams — opens a git workspace on the repository + opens a PR. |
 
 `team/orchestrator` complements the deterministic **`TeamDef op=run`** autopilot:
 op=run is headless/linear and code-driven; the orchestrator is intelligent,
@@ -39,17 +39,13 @@ workspace grant; without one it reports the pushed branch. Marketing/accounting/
 teams need none of this — the workspace is domain-pluggable (Documents, SQL
 Memory, or external SQL/Excel in a workspace or through an MCP tool).
 
-Where workspaces are off, `team/repo` falls back to the old path until RFC GW
-P15 removes it: `git`+`gh` on the host image,
-`LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS=git,gh`,
-`LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV=GITHUB_TOKEN` (+ `GITHUB_TOKEN` in the host
-env), and a volume marked `dynamic_root: true`.
+Where workspaces are off, a software team cannot run: the Bashbox host-command
+fallback `team/repo` had was removed in v1.172.0 with Bashbox
+(`docs/MIGRATING-FROM-BASH.md`).
 
 `team/orchestrator` also holds `Workspace` and a workspace grant (read, write,
 exec, open; RFC GW P14): it runs a data team's scripts in a workspace, and the
-handlers it spawns open their own workspaces under it. It keeps `Bashbox` until
-RFC GW P15 removes it, as `team/repo`'s fallback on installs without workspaces
-(`workspace.mode`).
+handlers it spawns open their own workspaces under it.
 
 ## What's inside
 

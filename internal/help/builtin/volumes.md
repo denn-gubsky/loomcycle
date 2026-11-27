@@ -3,7 +3,7 @@ name: volumes
 description: filesystem volumes — the named ro/rw roots your file/exec tools resolve paths against, and the optional `volume` tool argument.
 ---
 A **volume** is a named filesystem root your file/exec tools
-(Read / Write / Edit / Glob / Grep / Bash / Bashbox / NotebookEdit) resolve
+(Read / Write / Edit / Glob / Grep / NotebookEdit) resolve
 paths against. The operator binds you to a set of volumes; each is either
 read-write (`rw`) or read-only (`ro`). Volumes are the *only* way you get
 filesystem access — they let one runtime confine different agents to
@@ -21,7 +21,7 @@ server; you never need that, since paths are relative to the volume. If you're b
 
 ## The `volume` tool argument
 
-Read / Write / Edit / Glob / Grep / Bash / Bashbox / NotebookEdit accept an
+Read / Write / Edit / Glob / Grep / NotebookEdit accept an
 optional `"volume"` string:
 
 - **Omit it** → the call uses your *default* volume (the one marked
@@ -41,18 +41,13 @@ resolves inside that root. A `..` that climbs out of a volume is rejected
 - **Read / Glob / Grep** work on any volume you're bound to.
 - **Write / Edit / NotebookEdit** require a `rw` volume — a `ro` target is
   refused.
-- **Bash** also requires a `rw` volume. It cannot enforce read-only (a
-  shell can write via absolute paths and redirection), so it refuses a
-  `ro` volume rather than pretend otherwise. Bash's working directory is
-  set to the chosen volume's root.
-- **Bashbox** (the true in-process sandbox) is the exception: it **honors**
-  `ro` volumes. A `ro` binding mounts under an in-RAM write overlay, so a
-  script's writes succeed inside the run but never touch the host. Prefer
-  Bashbox over Bash when you only have a `ro` volume. See the `bashbox` topic.
+- Commands do not run on a volume: they run in a workspace (the
+  `Workspace` tool), and the `File` tool copies files between a volume and
+  a workspace.
 - **Dynamic and ephemeral volumes are reached by their own name.** If one of
   your volumes contains the directory that holds them, Read, Write, Edit,
-  NotebookEdit, Glob and Grep refuse paths inside it through that volume,
-  and Bashbox shows it as an empty directory. Name the volume itself in the
+  NotebookEdit, Glob and Grep refuse paths inside it through that volume.
+  Name the volume itself in the
   `volume` argument.
 
 ## Sub-agents

@@ -105,16 +105,13 @@ the create fails instead of following it out of the dynamic root.
   can be used again.
 - **set_mode** `{name, mode: "ro"}` — make one of this run's **ephemeral**
   volumes read-only. It applies at once to every agent of the run, you
-  included, and to sub-agents already running: their next `Write`, `Edit` or
-  `Bash` on the volume is refused, while `Read`, `Grep` and `Glob` go on
+  included, and to sub-agents already running: their next `Write` or `Edit`
+  on the volume is refused, while `Read`, `Grep` and `Glob` go on
   working. **It cannot be undone**: `mode: "rw"` is refused, and so is
   re-creating the volume. Use it after you have filled a volume and before
   you hand it to agents that must not change it. It is not for a persistent
   volume (re-create that with the mode you want), and it works only inside a
-  run. Under `Bashbox` a write to a read-only volume appears to succeed
-  inside one command and is not kept. `Bash`, and host commands that
-  `Bashbox` runs outside its sandbox, are not held to it: from a read-write
-  volume they can reach the volume's directory by its absolute path.
+  run.
 - **get** `{name}` / **list** — inspect your tenant's dynamic volumes.
   A volume owned by another tenant is reported as not-found.
 - **delete** `{name}` — remove the mapping but **LEAVE the files on disk**.

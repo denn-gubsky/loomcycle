@@ -61,7 +61,7 @@ func validateSearchProviders(c *Config) (map[string]bool, error) {
 }
 
 // validateProviderRegistry checks the declared providers against the
-// compiled-in drivers, then the AWS and Bashbox credential allowlists. Part
+// compiled-in drivers, then the AWS credential allowlists. Part
 // of validate.
 func validateProviderRegistry(c *Config) error {
 	// RFC BF provider registry (P2a): structural + registry-aware validation. Each
@@ -102,9 +102,6 @@ func validateProviderRegistry(c *Config) error {
 		}
 	}
 	if err := validateAWSSecretAllowlists(c); err != nil {
-		return err
-	}
-	if err := validateBashboxFallbackCreds(c); err != nil {
 		return err
 	}
 	return nil
