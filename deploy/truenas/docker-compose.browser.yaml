@@ -1,75 +1,69 @@
-# loomcycle on TrueNAS SCALE — BROWSER + SANDBOX variant (paste compose).
+# loomcycle on TrueNAS SCALE — BROWSER + WORKSPACE variant (paste compose).
 #
-# This is the serve-and-test variant of ./docker-compose.yaml: the runtime runs the
-# DISTROLESS **loomcycle-browser** image (loomcycle + the PinchTab MCP client) and the
-# app ships two extra sidecars — a code-execution sandbox (`builder-sidecar`) and a
-# headless browser (`pinchtab`) — wired so an agent can build a feature in an isolated
-# sandbox session, SERVE it, and TEST it in the browser, all in one run.
+# The ./docker-compose.yaml app plus a place for agents to run commands and a
+# headless browser: the runtime runs the DISTROLESS **loomcycle-browser** image
+# (loomcycle + the PinchTab MCP client) and the app ships two extra services —
+# a workspace worker on the container engine (`workspace-worker`) and a headless
+# browser (`pinchtab`).
 #
-# HOW SERVE-AND-TEST WORKS: the `dev/exec` agent opens a throwaway session in the
-# builder-sidecar. With `expose:<alias>` in its envelope the sidecar attaches that
-# session to the dedicated `loom-dev` network under a --network-alias, and pinchtab
-# (also on loom-dev) reaches the session's dev server at http://<alias>:<port>.
+# HOW IT WORKS: an agent with the Workspace tool (the `dev-workspace` preset's
+# dev/exec, or any agent with a `workspace:` grant) opens a workspace; the worker
+# runs each workspace's commands in a container of its own (the
+# loomcycle-workspace-browser session image: Python, Node, git, Chromium) with a
+# read-only root, no capabilities and no network but the runtime's egress routes.
+# An agent whose grant holds exec and connect looks at the page its own server
+# serves with `Workspace op=screenshot`. pinchtab is for browsing the web
+# (mcp__browser__*). docs/WORKERS.md "Workspace workers" is the guide.
 #
 # ── DIFFERENCE FROM ./docker-compose.yaml ─────────────────────────────────────
-#   • Image: loomcycle-browser (distroless + pinchtab client), NOT loomcycle-toolbox.
-#     Distroless has NO shell/toolchain, so there is NO in-container Bash/Bashbox code
-#     execution here — code runs in ISOLATED sandbox sessions instead (stronger
-#     isolation; the sidecar is the one privileged component). See docs/SANDBOX.md.
-#   • Presets add `sandbox,dev-exec` (the sandbox MCP server + the deterministic
-#     dev/exec executor). CODE_AGENTS_ENABLED stays on (dev/exec is a code-js agent).
-#   • Two extra sidecars (builder-sidecar, pinchtab) + a dedicated `loom-dev` network.
-#   • The config overlay adds an mcp_servers.browser block — copy
-#     loomcycle.overlay.browser.example.yaml (NOT the plain overlay example).
+#   • Image: loomcycle-browser (distroless + pinchtab client).
+#   • Presets add `dev-workspace` (dev/exec over workspaces, and the `workspace`
+#     preset's read-only pypi and npm routes).
+#   • Two extra services (workspace-worker, pinchtab).
+#   • The config overlay adds the worker endpoint, `workspace: {mode: remote}` and an
+#     mcp_servers.browser block — copy loomcycle.overlay.browser.example.yaml (NOT
+#     the plain overlay example).
+#   • Every image is v1.171.0 or later: the workspace worker image is published from
+#     v1.171.0. Keep all loomcycle images on one release.
 #
 # Registry: every loomcycle image below is also on GHCR — prefix it with
 # `ghcr.io/denn-gubsky/` (same build, same digest) if a Docker Hub pull fails with
 # `toomanyrequests`. `pinchtab/pinchtab` is third-party and Docker-Hub-only.
 # INSTALL.md → "Docker Hub rate limits".
 #
-# ── BEFORE YOU INSTALL (see INSTALL.md "Browser + sandbox variant") ───────────
+# ── BEFORE YOU INSTALL (see INSTALL.md "Browser + workspace variant") ─────────
 #   Replace `tank` with your pool throughout, then:
-#   1. Datasets (the distroless runtime is uid 65532; PINCHTAB runs as uid 1000):
-#        mkdir -p /mnt/tank/loomcycle/{data,config,work,pinchtab-data}
+#   1. Datasets (the distroless runtime and the worker are uid 65532; PINCHTAB runs
+#      as uid 1000):
+#        mkdir -p /mnt/tank/loomcycle/{data,config,work,pinchtab-data,workspaces,wse}
 #        chown -R 65532:65532 /mnt/tank/loomcycle
 #        chown -R 1000:1000  /mnt/tank/loomcycle/pinchtab-data   # ← pinchtab crash-loops without this
+#        chmod 0700 /mnt/tank/loomcycle/workspaces /mnt/tank/loomcycle/wse
 #   2. Postgres ≥ 14 with a CREATEROLE login role (as in INSTALL.md Phase 1).
 #   3. The BROWSER overlay at /mnt/tank/loomcycle/config/loomcycle.yaml
-#        (copy loomcycle.overlay.browser.example.yaml — it declares mcp_servers.browser).
-#   4. TWO secret env files under /mnt/tank/loomcycle/config/ (absolute paths; TrueNAS
+#        (copy loomcycle.overlay.browser.example.yaml).
+#   4. Secret env files under /mnt/tank/loomcycle/config/ (absolute paths; TrueNAS
 #      "Install via YAML" cannot resolve ${VAR}, so env_file is the mechanism):
 #        • loomcycle.secrets.env  — LOOMCYCLE_AUTH_TOKEN, _OPERATOR_TOKEN_PEPPER,
-#          LOOMCYCLE_PG_DSN, LOOMCYCLE_SQLMEM_PG_DSN, provider keys. (INSTALL.md Phase 4.)
-#        • sandbox.secrets.env    — ONLY the two sandbox-stack tokens:
-#              SANDBOX_AUTH_TOKEN=<openssl rand -hex 32>
-#              PINCHTAB_TOKEN=<openssl rand -hex 32>
-#          Kept SEPARATE so the sidecar + the Chromium container never see the PG DSN
-#          or provider keys — they get only these two tokens. loomcycle reads BOTH
-#          files; the sidecar and pinchtab read only sandbox.secrets.env.
-#      And a THIRD for the conversion workers (INSTALL.md "Conversion workers"):
-#        • loomcycle.worker.env   — ONLY LOOMCYCLE_WORKER_TOKEN=<openssl rand -hex 32>;
-#          put the same line in loomcycle.secrets.env too (the runtime checks it).
-#   5. Fill the placeholders (TRUENAS_HOST, OLLAMA_HOST, the pool) and paste.
+#          LOOMCYCLE_PG_DSN, LOOMCYCLE_SQLMEM_PG_DSN, LOOMCYCLE_WORKER_TOKEN,
+#          provider keys. (INSTALL.md Phase 4.)
+#        • browser.secrets.env    — ONLY PINCHTAB_TOKEN=<openssl rand -hex 32>, so the
+#          Chromium container never sees the PG DSN or provider keys.
+#        • loomcycle.worker.env   — ONLY LOOMCYCLE_WORKER_TOKEN (the same value as in
+#          loomcycle.secrets.env), for the conversion workers.
+#        • workspace.worker.env   — ONLY LOOMCYCLE_WORKER_TOKEN=<a minted workers:attach
+#          token>. Create it empty; after the first start mint the token
+#          (INSTALL.md) and restart workspace-worker. It is NOT the conversion
+#          workers' token.
+#   5. Fill the placeholders (TRUENAS_HOST, OLLAMA_HOST, DOCKER_GID, the pool) and paste.
 
 name: loomcycle
 
 networks:
   loomnet:
     driver: bridge
-  # Dedicated serve-and-test network. A session opened with expose:<alias> is attached
-  # HERE (by the sidecar, on the host Docker daemon) under a --network-alias, so a dev
-  # server it binds is reachable from the pinchtab sidecar at http://<alias>:<port>.
-  # PINNED to `name: loom-dev` because the sidecar launches sessions as host-Docker
-  # siblings and passes this literal name to `docker run --network` — a compose project
-  # prefix would break that. A normal egress-capable bridge (an exposed session still
-  # fetches deps). SECURITY: shared by the browser + every exposed (possibly untrusted)
-  # session, so it stays OFF loomnet; keep exposure opt-in and use a unique alias per
-  # concurrent session.
-  loom-dev:
-    name: loom-dev
-    driver: bridge
-  # The conversion workers' network: internal, shared with the runtime only, so a
-  # worker reaches the runtime's worker endpoint (7788) and nothing else.
+  # The workers' network: internal, shared with the runtime only, so a conversion
+  # or workspace worker reaches the runtime's worker endpoint (7788) and nothing else.
   workers:
     internal: true
 
@@ -77,7 +71,7 @@ services:
   # One-shot schema migration: runs `loomcycle migrate up`, then exits; the runtime
   # waits for it. The browser image carries the loomcycle binary, so it runs migrate too.
   loomcycle-migrate:
-    image: denngubsky/loomcycle-browser:1.153.0   # keep in lockstep with the runtime
+    image: denngubsky/loomcycle-browser:1.171.0   # keep in lockstep with the runtime
     user: "65532:65532"
     restart: "no"
     command: ["migrate", "up"]
@@ -87,34 +81,31 @@ services:
       - /mnt/tank/loomcycle/config/loomcycle.secrets.env
 
   loomcycle:
-    image: denngubsky/loomcycle-browser:1.153.0
+    image: denngubsky/loomcycle-browser:1.171.0
     user: "65532:65532"
     restart: unless-stopped
     networks: [loomnet, workers]
     depends_on:
       loomcycle-migrate:
         condition: service_completed_successfully
-      builder-sidecar:
-        condition: service_healthy
     ports:
       # App-network port. Front with your tunnel/proxy — no public bind here.
       # Never publish 7788 (the conversion worker endpoint).
       - "8787:8787"
     env_file:
-      # Main secrets (tokens, PG DSNs, provider keys) + the sandbox-stack tokens.
-      # loomcycle needs BOTH SANDBOX_AUTH_TOKEN (to reach the sidecar) and
-      # PINCHTAB_TOKEN (the stdio pinchtab client inherits it). NEVER put a secret in
-      # `environment:` below (an inline key would also OVERRIDE the env-file value).
+      # Main secrets (tokens, PG DSNs, provider keys) + PINCHTAB_TOKEN (the stdio
+      # pinchtab client inherits it). NEVER put a secret in `environment:` below (an
+      # inline key would also OVERRIDE the env-file value).
       - /mnt/tank/loomcycle/config/loomcycle.secrets.env
-      - /mnt/tank/loomcycle/config/sandbox.secrets.env
+      - /mnt/tank/loomcycle/config/browser.secrets.env
     environment:
       # ── core ──────────────────────────────────────────────────────────────
       LOOMCYCLE_LISTEN_ADDR: "0.0.0.0:8787"
       LOOMCYCLE_PUBLIC_URL: "http://TRUENAS_HOST:8787"
-      # Presets add `sandbox` (the sandbox MCP server + the dev/sandbox-usage skill)
-      # and `dev-exec` (the deterministic code-js executor the browser steps drive).
-      LOOMCYCLE_PRESETS: "base,document-agent,chat,agent-teams,team-examples,sandbox,dev-exec"
-      LOOMCYCLE_CONFIG_DIR: /config           # the BROWSER overlay (mcp_servers.browser)
+      # Presets add `dev-workspace` (dev/exec, the deterministic code-js executor that
+      # runs a command envelope in a workspace; it includes the `workspace` preset).
+      LOOMCYCLE_PRESETS: "base,document-agent,chat,agent-teams,team-examples,dev-workspace"
+      LOOMCYCLE_CONFIG_DIR: /config           # the BROWSER overlay (workspace:, mcp_servers.browser)
       LOOMCYCLE_DATA_DIR: /data
 
       # ── storage — your external Postgres (DSNs live in the secrets env file) ──
@@ -140,8 +131,7 @@ services:
     volumes:
       - /mnt/tank/loomcycle/data:/data
       - /mnt/tank/loomcycle/config:/config:ro
-      # Shared agent-workspace dataset — the sidecar mounts the SAME host path so a
-      # durable named workspace (SANDBOX_WORKSPACE_ROOT) is visible to both.
+      # Agent filesystem Volume (the overlay's volumes: block maps work → /mnt/work).
       - /mnt/tank/loomcycle/work:/mnt/work
     healthcheck:
       test: ["CMD", "/usr/local/bin/loomcycle", "health"]
@@ -150,51 +140,57 @@ services:
       retries: 5
       start_period: 20s
 
-  # ── Code-execution sandbox sidecar (host-Docker-socket model) ─────────────────
-  # Spawns each session as a sibling container on the HOST Docker daemon (via the
-  # mounted socket). This is the one PRIVILEGED component — it can control host Docker,
-  # so keep it internal (no published port), bearer-authed, and on a trusted box.
-  # Lockstep-versioned with the runtime and published MULTI-ARCH by the
-  # `publish-sandbox-images` workflow — pull it, don't hand-build a single-arch image.
-  builder-sidecar:
-    image: denngubsky/loomcycle-builder-docker:1.153.0
+  # ── Workspace worker on the container engine (RFC GW, docs/WORKERS.md) ───────
+  # Holds the agents' workspaces and runs each one's commands in a session
+  # container of its own on the HOST Docker daemon (via the mounted socket). It is
+  # the one PRIVILEGED component — it can control host Docker — so it has no
+  # published port and sits on the internal workers network only; the sessions
+  # hold no such right. A session reaches the network only through the runtime's
+  # egress routes, through this worker's egress directory.
+  workspace-worker:
+    image: denngubsky/loomcycle-ws-worker:1.171.0
+    command: [--role, workspace, --id, ws1]   # keep the id across restarts: it owns the workspaces on disk
     restart: unless-stopped
-    networks: [loomnet]
+    depends_on:
+      loomcycle:
+        condition: service_healthy
     env_file:
-      # ONLY SANDBOX_AUTH_TOKEN + PINCHTAB_TOKEN — never the PG DSN or provider keys.
-      - /mnt/tank/loomcycle/config/sandbox.secrets.env
+      # ONLY LOOMCYCLE_WORKER_TOKEN: a minted workers:attach token (INSTALL.md).
+      - /mnt/tank/loomcycle/config/workspace.worker.env
     environment:
-      SANDBOX_PODMAN_BIN: docker            # launch sessions as host-Docker siblings
-      SANDBOX_IMAGE: denngubsky/loomcycle-sandbox-session:1.153.0   # the per-session toolchain (host pulls it)
-      SANDBOX_WORKSPACE_ROOT: /mnt/work     # per-session /work is tmpfs; durable named
-                                            # workspaces need this HOST path (see below)
-      SANDBOX_MAX_CPUS: "2"
-      SANDBOX_MAX_MEM_MB: "2048"
-      SANDBOX_ALLOW_EGRESS: "1"             # permit network:"egress" sessions (git clone / deps)
-      SANDBOX_ALLOW_ENV_INJECTION: "1"      # permit X-Loom-Sandbox-Env-* -> session env (git/gh token)
-      SANDBOX_EXPOSE_NETWORK: loom-dev      # permit sandbox_open expose:<alias> onto loom-dev
+      LOOMCYCLE_WORKER_DISPATCHER: loomcycle:7788
+      LOOMCYCLE_WORKER_INSECURE: "1"            # plain gRPC on the internal workers network
+      LOOMCYCLE_WORKSPACE_ROOT: /mnt/tank/loomcycle/workspaces
+      LOOMCYCLE_WORKSPACE_ENGINE: container
+      # The session image, pulled by the host Docker; the -browser one carries
+      # Chromium for Workspace op=screenshot. Keep it on the runtime's release.
+      LOOMCYCLE_WORKSPACE_CONTAINER_IMAGE: denngubsky/loomcycle-workspace-browser:1.171.0
+      LOOMCYCLE_WORKSPACE_CONTAINER_EGRESS_DIR: /mnt/tank/loomcycle/wse
+    group_add: ["DOCKER_GID"]                   # stat -c %g /var/run/docker.sock
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock   # PRIVILEGED — host Docker control
-      - /mnt/tank/loomcycle/work:/mnt/work
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:9000/healthz || exit 1"]
-      interval: 5s
-      timeout: 3s
-      retries: 12
-      start_period: 10s
+      # The same paths inside and out, so the host daemon finds what the worker names.
+      - /mnt/tank/loomcycle/workspaces:/mnt/tank/loomcycle/workspaces
+      - /mnt/tank/loomcycle/wse:/mnt/tank/loomcycle/wse
+    read_only: true
+    tmpfs:
+      - /scratch:size=1g,mode=0700,uid=65532,gid=65532
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    networks: [workers]
 
-  # ── Headless browser (PinchTab) — internal MCP browser for the dev/exec agent. ──
+  # ── Headless browser (PinchTab) — internal MCP browser (mcp__browser__*). ──────
   # stdio-only MCP, so loomcycle spawns `pinchtab … mcp` (the client is baked into the
   # loomcycle-browser image) against THIS server; Chromium lives here, not in loomcycle.
   # Internal ONLY (no published port — its control plane is not for public exposure).
-  # On loom-dev so it can reach an exposed session's dev server; on loomnet so loomcycle
-  # reaches its MCP. Widen its browsing allowlist (IDPI) per your aliases — see INSTALL.md.
+  # On loomnet so loomcycle reaches its MCP. Widen its browsing allowlist (IDPI) per
+  # the sites agents may browse — see INSTALL.md.
   pinchtab:
     image: pinchtab/pinchtab:v0.15.2@sha256:a2205fc99765e42ce566dae3c8ff9fc3e3338cf44decb816ddb3d54d8d4bc05d
     restart: unless-stopped
-    networks: [loomnet, loom-dev]
+    networks: [loomnet]
     env_file:
-      - /mnt/tank/loomcycle/config/sandbox.secrets.env   # PINCHTAB_TOKEN (same value loomcycle presents)
+      - /mnt/tank/loomcycle/config/browser.secrets.env   # PINCHTAB_TOKEN (same value loomcycle presents)
     volumes:
       - /mnt/tank/loomcycle/pinchtab-data:/data          # HOME/config + Chrome profile — CHOWN 1000:1000
     shm_size: "2gb"                                       # Chrome stability
@@ -215,7 +211,7 @@ services:
   # Needs `conversion: mode: remote` in the overlay. Internal network only: no
   # internet, no runtime API, no datasets; a file reaches a worker only as bytes.
   conversion-worker:
-    image: denngubsky/loomcycle-worker:1.153.0
+    image: denngubsky/loomcycle-worker:1.171.0
     restart: unless-stopped
     depends_on:
       loomcycle:
