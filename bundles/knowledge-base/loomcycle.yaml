@@ -8309,17 +8309,23 @@ agents:
       ## REQUEST: class
       Is the candidate a kind of thing the knowledge base should declare as a
       class, judged from how the quotes use it? Answer not_a_class for a
-      formatting label, a status, a one-off tag, a person's or an
-      organisation's own name, or anything that is not a kind of thing. The
-      request lists the DECLARED CLASSES: pick as parent the one the
+      heading or layout word (such as Introduction, Summary or Notes), a
+      status, a one-off tag, a person's or an organisation's own name, or
+      anything that is not a kind of thing. A name that labels many records
+      of the same shape (each one a post, a row, an item or an entry) is a
+      class, even when all of them sit in one document. A name may be an
+      abbreviation or a house term: judge it by what the records it labels
+      are, as the quotes show, not by what the word usually means elsewhere.
+      The request lists the DECLARED CLASSES: pick as parent the one the
       candidate is a kind of, or "" when none is.
       Reply: {"verdict": "class" or "not_a_class", "parent": "...", "meaning": "..."}
 
       ## REQUEST: relation
       Is the candidate a way two things are related that the knowledge base
       should declare as a relation kind, judged from how the quotes use it?
-      Answer not_a_relation for a typo of a declared kind, a status, or a
-      label that does not relate two things. The request lists the DECLARED
+      Answer not_a_relation for a typo of a declared kind, a status, a
+      heading or layout word, or a label that does not relate two things.
+      The request lists the DECLARED
       RELATIONS: pick as parent the one the candidate is a narrower kind of,
       or "" when none is.
       Reply: {"verdict": "relation" or "not_a_relation", "parent": "...", "meaning": "..."}
