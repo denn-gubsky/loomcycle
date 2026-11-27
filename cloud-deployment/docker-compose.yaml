@@ -1,7 +1,7 @@
 # loomcycle — self-contained cloud deployment (Ubuntu 25.04, Docker Compose)
 #
 # One stack: Postgres 18 + pgvector, the loomcycle runtime + one-shot migrate,
-# the code-exec builder sidecar, SearXNG, a Caddy landing server, a Tailscale
+# a workspace worker for agents' commands, SearXNG, a Caddy landing server, a Tailscale
 # egress sidecar (to reach a local Ollama over the tailnet), and a Cloudflare
 # tunnel that exposes app.loomcycle.cloud (the app) + loomcycle.cloud (landing).
 #
@@ -16,7 +16,7 @@
 # NETNS NOTE (Tailscale): the `loomcycle` runtime uses `network_mode:
 # service:tailscale`, so it has NO compose DNS name of its own — everything that
 # dials it targets `http://tailscale:8787`. loomcycle still reaches postgres/
-# searxng/builder-sidecar by service name (the tailscale container is on loomnet),
+# searxng/pinchtab by service name (the tailscale container is on loomnet),
 # and reaches Ollama by RAW tailnet IP (MagicDNS is not available in the shared
 # netns — see OLLAMA_BASE_URL in .env.insecure).
 
@@ -40,20 +40,6 @@ networks:
           # Both members have fixed addresses; anything allocated dynamically
           # lands in .4–.7, so no container but cloudflared can ever hold .2.
           ip_range: 10.253.253.4/30
-  # Dedicated network for serve-and-test sessions. A sandbox_open with `expose:<alias>`
-  # attaches the (host-Docker-sibling) session container HERE under a --network-alias,
-  # so a dev server it binds is reachable from the pinchtab sidecar at
-  # http://<alias>:<port>. It is PINNED to `name: loom-dev` because the builder-sidecar
-  # launches sessions on the host Docker daemon (SANDBOX_PODMAN_BIN=docker) and passes
-  # this literal name to `docker run --network` — a compose project prefix would break
-  # that reference. A normal (egress-capable) bridge: an exposed session still fetches
-  # deps; expose therefore WINS over the separate egress bridge (see engine.go).
-  # SECURITY: this network is shared by the browser sidecar and every exposed session,
-  # so keep it OFF loomcycle's own loomnet, keep exposure opt-in (per-call + the
-  # SANDBOX_EXPOSE_NETWORK gate), and use a UNIQUE alias per concurrent session.
-  loom-dev:
-    name: loom-dev
-    driver: bridge
 
 volumes:
   telegram-bridge-data:
@@ -132,40 +118,6 @@ services:
     # ports:
     #   - "127.0.0.1:8787:8787"
 
-  # ── Code-execution sandbox sidecar (host-Docker-socket model) ──
-  # The sidecar is a SEPARATE image from the runtime, lockstep-versioned with it and
-  # published MULTI-ARCH (amd64+arm64) by the `publish-sandbox-images` workflow on each
-  # MINOR release tag. A PATCH tag (x.y.1) publishes only loomcycle-browser and
-  # loomcycle-worker (amd64): for a
-  # patch, keep the sidecar and the session image on the minor's x.y.0. Never
-  # hand-push a single-arch build over a tag (a linux/amd64 host then can't pull it).
-  builder-sidecar:
-    image: denngubsky/loomcycle-builder-docker:${LOOMCYCLE_SIDECAR_VERSION:-1.147.0}
-    restart: unless-stopped
-    networks: [loomnet]
-    environment:
-      SANDBOX_PODMAN_BIN: docker         # launch sessions as host-Docker siblings
-      SANDBOX_IMAGE: denngubsky/loomcycle-sandbox-session:${LOOMCYCLE_SIDECAR_VERSION:-1.147.0}   # pinned with the sidecar, not :latest
-      SANDBOX_WORKSPACE_ROOT: /mnt/work  # per-session /work is tmpfs by default;
-                                         # durable named workspaces need the same
-                                         # HOST path here — see INSTALL.md.
-      SANDBOX_MAX_CPUS: "2"
-      SANDBOX_MAX_MEM_MB: "2048"
-      SANDBOX_ALLOW_EGRESS: "1"          # permit network:"egress" sessions (git clone / fetch deps)
-      SANDBOX_ALLOW_ENV_INJECTION: "1"   # permit X-Loom-Sandbox-Env-* -> session env (git/gh token)
-      SANDBOX_EXPOSE_NETWORK: loom-dev   # permit sandbox_open expose:<alias> — attach a serve-and-test
-                                         # session to this network so the browser can reach it (see below)
-      SANDBOX_AUTH_TOKEN: ${SANDBOX_AUTH_TOKEN}   # SAME secret loomcycle presents
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - ./work:/mnt/work
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:9000/healthz || exit 1"]
-      interval: 5s
-      timeout: 3s
-      retries: 12
-      start_period: 10s
-
   # ── The loomcycle runtime — shares the tailscale netns (no own DNS name / ports) ──
   loomcycle:
     # loomcycle-browser = the distroless runtime plus the PinchTab MCP client
@@ -201,7 +153,6 @@ services:
       # be off. A deploy missing either stops here.
       LOOMCYCLE_PG_DSN: ${LOOMCYCLE_PG_DSN:?set LOOMCYCLE_PG_DSN in .env.secure}
       LOOMCYCLE_SQLMEM_PG_DSN: ${LOOMCYCLE_SQLMEM_PG_DSN:?set LOOMCYCLE_SQLMEM_PG_DSN in .env.secure}
-      SANDBOX_AUTH_TOKEN: ${SANDBOX_AUTH_TOKEN}
       # The token the conversion workers present (config conversion: mode
       # remote); the runtime refuses to start the endpoint without it.
       LOOMCYCLE_WORKER_TOKEN: ${LOOMCYCLE_WORKER_TOKEN:?set LOOMCYCLE_WORKER_TOKEN in .env.secure (openssl rand -hex 32)}
@@ -248,8 +199,6 @@ services:
         condition: service_healthy
       loomcycle-migrate:
         condition: service_completed_successfully
-      builder-sidecar:
-        condition: service_healthy
 
   # ── SearXNG — in-network search backend (keyless; wired via config/loomcycle.yaml) ──
   # ── Conversion workers (RFC GO) ──
@@ -291,6 +240,51 @@ services:
       tailscale:
         condition: service_healthy
 
+  # ── Workspace worker on the container engine (RFC GW; docs/WORKERS.md) ──
+  # Agents run commands in workspaces here: each workspace's commands run in a
+  # session container of its own on the HOST Docker daemon (the mounted socket),
+  # with a read-only root, no capabilities and no network but the runtime's
+  # egress routes, which reach the network only through the runtime. The worker
+  # is the one privileged component (it controls host Docker); the sessions hold
+  # no such right. Like the conversion workers it shares the runtime's netns and
+  # dials the worker endpoint on the loopback.
+  #
+  # Its token is a minted operator token with the single scope workers:attach,
+  # shared across tenants (the container engine allows that), so it can only be
+  # made once the runtime is up: the service runs only with the `workspace`
+  # compose profile, which is turned on after the token is in .env.secure
+  # (INSTALL.md → "Workspace worker"). Its image is published with each MINOR
+  # release from 1.171.0: on a patch tag keep it on the minor's x.y.0.
+  workspace-worker:
+    image: denngubsky/loomcycle-ws-worker:${LOOMCYCLE_WS_WORKER_VERSION:-1.171.0}
+    profiles: [workspace]
+    command: [--role, workspace, --id, cloud-ws1]   # keep the id: it owns the workspaces on disk
+    restart: unless-stopped
+    network_mode: "service:tailscale"
+    group_add: ["${DOCKER_GID:-}"]   # .env.insecure: stat -c %g /var/run/docker.sock
+    environment:
+      LOOMCYCLE_WORKER_DISPATCHER: 127.0.0.1:7788
+      LOOMCYCLE_WORKER_INSECURE: "1"   # the loopback of the shared netns
+      # NOT the conversion workers' LOOMCYCLE_WORKER_TOKEN: a minted workers:attach token.
+      LOOMCYCLE_WORKER_TOKEN: ${WORKSPACE_WORKER_TOKEN:-}
+      LOOMCYCLE_WORKSPACE_ROOT: ${WORKSPACE_DIR:-/srv/loomcycle/workspaces}
+      LOOMCYCLE_WORKSPACE_ENGINE: container
+      LOOMCYCLE_WORKSPACE_CONTAINER_IMAGE: denngubsky/loomcycle-workspace-browser:${LOOMCYCLE_WS_WORKER_VERSION:-1.171.0}
+      LOOMCYCLE_WORKSPACE_CONTAINER_EGRESS_DIR: ${WORKSPACE_EGRESS_DIR:-/srv/loomcycle/wse}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock   # PRIVILEGED — host Docker control
+      # The same paths inside and out, so the host daemon finds what the worker names.
+      - ${WORKSPACE_DIR:-/srv/loomcycle/workspaces}:${WORKSPACE_DIR:-/srv/loomcycle/workspaces}
+      - ${WORKSPACE_EGRESS_DIR:-/srv/loomcycle/wse}:${WORKSPACE_EGRESS_DIR:-/srv/loomcycle/wse}
+    read_only: true
+    tmpfs:
+      - /scratch:size=1g,mode=0700,uid=65532,gid=65532
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    depends_on:
+      loomcycle:
+        condition: service_healthy
+
   searxng:
     image: searxng/searxng:2026.11.9-57ff753ad@sha256:287af61f1a13e86d02974fcde91a3413a9945788de38b61ffbc491d81a19bcc2
     restart: unless-stopped
@@ -307,7 +301,7 @@ services:
       retries: 12
       start_period: 15s
 
-  # ── Headless browser (PinchTab) — internal MCP browser for the dev/exec agent.
+  # ── Headless browser (PinchTab) — internal MCP browser (mcp__browser__*).
   #    stdio-only MCP, so loomcycle spawns `pinchtab … mcp` (client baked into its
   #    derived image) against THIS server; Chromium lives here, not in loomcycle.
   #    Internal ONLY — no published port (pinchtab's control plane is not for public
@@ -316,11 +310,9 @@ services:
   pinchtab:
     image: pinchtab/pinchtab:v0.15.2@sha256:a2205fc99765e42ce566dae3c8ff9fc3e3338cf44decb816ddb3d54d8d4bc05d
     restart: unless-stopped
-    # loomnet: loomcycle reaches this server's MCP over it. loom-dev: reach a
-    # serve-and-test session by its --network-alias (http://<alias>:<port>). The alias
-    # must ALSO be in pinchtab's IDPI allowlist (security.allowedDomains) or the browse
-    # is blocked — see INSTALL.md / docs/SANDBOX.md.
-    networks: [loomnet, loom-dev]
+    # loomnet: loomcycle reaches this server's MCP over it. A site it browses must be
+    # in pinchtab's IDPI allowlist (security.allowedDomains) — see INSTALL.md.
+    networks: [loomnet]
     environment:
       PINCHTAB_TOKEN: ${PINCHTAB_TOKEN}   # SAME secret loomcycle presents on the MCP bridge
       # `pinchtab config set` persists to ./pinchtab-data (below), so the allowlist
