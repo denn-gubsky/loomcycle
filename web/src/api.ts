@@ -4047,6 +4047,9 @@ export interface OntologyRelease {
   created_at: number;
   /** How many chunks of the ontology document it copied. */
   entries: number;
+  /** A subject erasure changed the release (an entry or its plan summary); its
+   *  content_version stays as recorded, so its copy no longer hashes to it. */
+  redacted?: boolean;
 }
 
 export interface ListOntologyReleasesResult {
@@ -4069,6 +4072,8 @@ export interface OntologyDiffSide {
   seq?: number;
   current?: boolean;
   content_version: string;
+  /** The release on this side was changed by a subject erasure. */
+  redacted?: boolean;
 }
 
 /** An entry as one side declares it. `directives` is its parsed declaration
@@ -4088,7 +4093,7 @@ export type OntologyEntryChange = "renamed" | "moved" | "kind" | "status" | "mea
 export interface OntologyEntryDiff {
   chunk_id: string;
   kind: string;
-  change: "added" | "removed" | "changed";
+  change: "added" | "removed" | "changed" | "erased";
   changed?: OntologyEntryChange[];
   before?: OntologyEntryState;
   after?: OntologyEntryState;

@@ -11,8 +11,9 @@ package builtin
 //
 // Every read here runs under noWrites: a tenant scope from before the release tables
 // reads as having no release rather than being migrated by a GET. Who may read releases
-// is the connector's question (operators only: a release keeps text an edit or an
-// erasure removed from the ontology).
+// is the connector's question (operators only: a release keeps text an edit removed
+// from the ontology). An entry a subject erasure redacted (release_erasure.go) is
+// reported as erased, never compared.
 
 import (
 	"context"
@@ -49,7 +50,7 @@ func noReleaseTables(err error) bool {
 
 func connectorRelease(r OntologyRelease) connector.OntologyRelease {
 	return connector.OntologyRelease{Seq: r.Seq, ContentVersion: r.ContentVersion, Fingerprint: r.Fingerprint,
-		Reason: r.Reason, Actor: r.Actor, CreatedAt: r.CreatedAt, Entries: r.Entries}
+		Reason: r.Reason, Actor: r.Actor, CreatedAt: r.CreatedAt, Entries: r.Entries, Redacted: r.Redacted}
 }
 
 // ListOntologyReleases lists the complete releases of ctx's tenant, newest first.
@@ -84,18 +85,19 @@ func (d *Document) GetOntologyRelease(ctx context.Context, seq int64) (connector
 		return connector.GetOntologyReleaseResult{}, err
 	}
 	res, err := d.query(ctx, key, `SELECT seq, content_version, fingerprint, reason, coalesce(actor, ''), created_at, entries,
-		coalesce(plan_summary, ''), coalesce(export_md, '')
+		coalesce(plan_summary, ''), coalesce(export_md, ''), `+d.redactedCol(ctx, key)+`
 		FROM ontology_releases WHERE seq = ? AND complete = 1`, seq)
 	if err != nil && !noReleaseTables(err) {
 		return connector.GetOntologyReleaseResult{}, fmt.Errorf("read ontology release %d: %w", seq, err)
 	}
-	if err != nil || len(res.Rows) == 0 || len(res.Rows[0]) < 9 {
+	if err != nil || len(res.Rows) == 0 || len(res.Rows[0]) < 10 {
 		return connector.GetOntologyReleaseResult{}, releaseNotFound(seq)
 	}
 	r := res.Rows[0]
 	out := connector.GetOntologyReleaseResult{
 		Release: connector.OntologyRelease{Seq: asInt64Val(r[0]), ContentVersion: asStr(r[1]), Fingerprint: asStr(r[2]),
-			Reason: asStr(r[3]), Actor: asStr(r[4]), CreatedAt: asInt64Val(r[5]), Entries: asInt(r[6])},
+			Reason: asStr(r[3]), Actor: asStr(r[4]), CreatedAt: asInt64Val(r[5]), Entries: asInt(r[6]),
+			Redacted: asInt(r[9]) == 1},
 		ExportMD: asStr(r[8]),
 	}
 	if s := asStr(r[7]); s != "" && json.Valid([]byte(s)) {
@@ -121,7 +123,8 @@ func (d *Document) DiffOntologyReleases(ctx context.Context, from, to int64) (co
 	if err != nil {
 		return out, err
 	}
-	before, beforeSide, err := d.releaseSide(ctx, key, from, &out.Issues)
+	erased := map[string]bool{}
+	before, beforeSide, err := d.releaseSide(ctx, key, from, &out.Issues, erased)
 	if err != nil {
 		return out, err
 	}
@@ -140,24 +143,31 @@ func (d *Document) DiffOntologyReleases(ctx context.Context, from, to int64) (co
 		}
 		after = diffItems(read, treeParent)
 		afterSide = connector.OntologyDiffSide{Current: true, ContentVersion: read.ContentVersion}
-	} else if after, afterSide, err = d.releaseSide(ctx, key, to, &out.Issues); err != nil {
+	} else if after, afterSide, err = d.releaseSide(ctx, key, to, &out.Issues, erased); err != nil {
 		return out, err
 	}
 	out.From, out.To = beforeSide, afterSide
-	out.Changes = diffEntries(before, after)
+	out.Changes = diffEntries(before, after, erased)
 	return out, nil
 }
 
-// releaseSide reads one release as the reader reads the document, and its entries.
-func (d *Document) releaseSide(ctx context.Context, key sqlmem.ScopeKey, seq int64, issues *[]string) (map[string]diffItem, connector.OntologyDiffSide, error) {
+// releaseSide reads one release as the reader reads the document, and its entries; it
+// adds the entries an erasure redacted from it to erased.
+func (d *Document) releaseSide(ctx context.Context, key sqlmem.ScopeKey, seq int64, issues *[]string, erased map[string]bool) (map[string]diffItem, connector.OntologyDiffSide, error) {
 	side := connector.OntologyDiffSide{Seq: seq}
 	rel, err := d.loadRelease(ctx, key, seq)
 	if err != nil {
 		return nil, side, err
 	}
-	side.ContentVersion = rel.contentVersion
+	side.ContentVersion, side.Redacted = rel.contentVersion, rel.redacted
+	for id := range rel.erased {
+		erased[id] = true
+	}
 	if rel.orphans > 0 {
-		*issues = append(*issues, fmt.Sprintf("release %d: %d entries sit under a proposal the release did not copy and are not compared", seq, rel.orphans))
+		*issues = append(*issues, fmt.Sprintf("release %d: %d entries sit under a proposal the release did not copy, or under an erased entry, and are not compared", seq, rel.orphans))
+	}
+	if len(rel.erased) > 0 {
+		*issues = append(*issues, fmt.Sprintf("release %d: %d entries were erased by a subject erasure; its copy no longer hashes to the content version it records", seq, len(rel.erased)))
 	}
 	if rel.partial {
 		*issues = append(*issues, fmt.Sprintf("release %d could not be read whole; entries whose text was not read may show as changed", seq))
@@ -168,14 +178,21 @@ func (d *Document) releaseSide(ctx context.Context, key sqlmem.ScopeKey, seq int
 // loadedRelease is one complete release as stored and as the reader reads it.
 type loadedRelease struct {
 	contentVersion string
+	// redacted: a subject erasure changed the release.
+	redacted bool
 	// rows are the release's chunks by chunk id, as copied.
 	rows map[string]releaseRow
 	// items are its in-force entries, as diffItems lists them; partial says some
 	// body could not be read.
 	items   map[string]diffItem
 	partial bool
-	// orphans counts chunks under a proposal the release did not copy.
+	// orphans counts chunks under a proposal the release did not copy, or under an
+	// erased entry.
 	orphans int
+	// erased names the entries a subject erasure redacted (release_erasure.go).
+	erased map[string]bool
+	// structural names the chunks that are no entry: the root and section headers.
+	structural map[string]bool
 	// body reads one chunk's body and fields from the release.
 	body func(id string) (chunkBody, error)
 }
@@ -190,14 +207,14 @@ type releaseRow struct {
 // the reader every other caller uses. releaseNotFound for a release that is not
 // complete or does not exist.
 func (d *Document) loadRelease(ctx context.Context, key sqlmem.ScopeKey, seq int64) (*loadedRelease, error) {
-	hdr, err := d.query(ctx, key, `SELECT content_version FROM ontology_releases WHERE seq = ? AND complete = 1`, seq)
+	hdr, err := d.query(ctx, key, `SELECT content_version, `+d.redactedCol(ctx, key)+` FROM ontology_releases WHERE seq = ? AND complete = 1`, seq)
 	if err != nil && !noReleaseTables(err) {
 		return nil, fmt.Errorf("read ontology release %d: %w", seq, err)
 	}
-	if err != nil || len(hdr.Rows) == 0 || len(hdr.Rows[0]) < 1 {
+	if err != nil || len(hdr.Rows) == 0 || len(hdr.Rows[0]) < 2 {
 		return nil, releaseNotFound(seq)
 	}
-	rel := &loadedRelease{contentVersion: asStr(hdr.Rows[0][0])}
+	rel := &loadedRelease{contentVersion: asStr(hdr.Rows[0][0]), redacted: asInt(hdr.Rows[0][1]) == 1, erased: map[string]bool{}}
 
 	res, err := d.query(ctx, key, `SELECT chunk_id, coalesce(parent_id, ''), title, position, coalesce(status, ''), body_sha,
 		coalesce(type, '')
@@ -216,6 +233,12 @@ func (d *Document) loadRelease(ctx context.Context, key sqlmem.ScopeKey, seq int
 			continue
 		}
 		c := ontologyChunk{id: asStr(r[0]), parentID: asStr(r[1]), title: asStr(r[2]), position: asInt(r[3]), status: asStr(r[4])}
+		// An entry a subject erasure redacted holds no text to read or compare; it is
+		// listed as erased, and what sits under it is placed as under a proposal.
+		if asStr(r[5]) == releaseErasedSHA {
+			rel.erased[c.id] = true
+			continue
+		}
 		shaOf[c.id] = asStr(r[5])
 		rel.rows[c.id] = releaseRow{parentID: c.parentID, title: c.title, status: c.status, typ: asStr(r[6]), position: c.position}
 		if c.parentID == "" && src.rootID == "" {
@@ -249,7 +272,23 @@ func (d *Document) loadRelease(ctx context.Context, key sqlmem.ScopeKey, seq int
 	rel.body = src.body
 	read, treeParent := parseOntology(src, nil)
 	rel.items, rel.partial = diffItems(read, treeParent), read.partial
+	// What the release shows is not an entry at all: its root and section headers.
+	rel.structural = map[string]bool{src.rootID: true}
+	for _, id := range read.SectionChunks {
+		rel.structural[id] = true
+	}
 	return rel, nil
+}
+
+// notAnInstance reports whether the release shows chunk id to be something other than
+// an instance entry: an entry of another kind, a section header or the root. An entry
+// the reader did not place (under an uncopied proposal or an erased entry, past a
+// partial read) is not shown to be anything, and reports false.
+func (r *loadedRelease) notAnInstance(id string) bool {
+	if it, ok := r.items[id]; ok {
+		return it.kind != planKindInstance
+	}
+	return r.structural[id]
 }
 
 // diffItem is one in-force entry of a side, as compared.
@@ -300,10 +339,28 @@ func rawJSONString(raw json.RawMessage) string {
 	return s
 }
 
-// diffEntries compares two sides by chunk id.
-func diffEntries(before, after map[string]diffItem) []connector.OntologyEntryDiff {
+// diffEntries compares two sides by chunk id. An entry in erased (redacted from either
+// side's release by a subject erasure) is reported as erased, with no state: its text
+// is gone from the release, so whether it changed cannot be told, and the side that
+// still holds it must not show it.
+func diffEntries(before, after map[string]diffItem, erased map[string]bool) []connector.OntologyEntryDiff {
 	out := []connector.OntologyEntryDiff{}
+	for id := range erased {
+		// An erasure redacts instance entries only (release_erasure.go), so an entry
+		// erased on both sides is an instance.
+		kind := planKindInstance
+		if b, ok := before[id]; ok {
+			kind = b.kind
+		}
+		if a, ok := after[id]; ok {
+			kind = a.kind
+		}
+		out = append(out, connector.OntologyEntryDiff{ChunkID: id, Kind: kind, Change: connector.OntologyDiffErased})
+	}
 	for id, b := range before {
+		if erased[id] {
+			continue
+		}
 		bs := b.state
 		a, ok := after[id]
 		if !ok {
@@ -336,7 +393,7 @@ func diffEntries(before, after map[string]diffItem) []connector.OntologyEntryDif
 		}
 	}
 	for id, a := range after {
-		if _, ok := before[id]; !ok {
+		if _, ok := before[id]; !ok && !erased[id] {
 			as := a.state
 			out = append(out, connector.OntologyEntryDiff{ChunkID: id, Kind: a.kind, Change: connector.OntologyDiffAdded, After: &as})
 		}
@@ -346,7 +403,10 @@ func diffEntries(before, after map[string]diffItem) []connector.OntologyEntryDif
 		if e.After != nil {
 			return e.After.Name
 		}
-		return e.Before.Name
+		if e.Before != nil {
+			return e.Before.Name
+		}
+		return ""
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if ri, rj := rank[out[i].Kind], rank[out[j].Kind]; ri != rj {

@@ -254,7 +254,10 @@ func (d *Document) expandRollback(ctx context.Context, key sqlmem.ScopeKey, msco
 	if rel.orphans > 0 {
 		exp.issues = append(exp.issues, fmt.Sprintf("release %d: %d entries sit under a proposal the release did not copy; the rollback leaves them as they are", seq, rel.orphans))
 	}
-	diffs := diffEntries(diffItems(cur, treeParent), rel.items)
+	if len(rel.erased) > 0 {
+		exp.issues = append(exp.issues, fmt.Sprintf("release %d: %d entries were erased by a subject erasure; the rollback leaves them as they are", seq, len(rel.erased)))
+	}
+	diffs := diffEntries(diffItems(cur, treeParent), rel.items, rel.erased)
 	removed := map[string]bool{}
 	for _, df := range diffs {
 		if df.Change == connector.OntologyDiffRemoved {
@@ -262,6 +265,9 @@ func (d *Document) expandRollback(ctx context.Context, key sqlmem.ScopeKey, msco
 		}
 	}
 	for _, df := range diffs {
+		if df.Change == connector.OntologyDiffErased {
+			continue
+		}
 		if err := d.expandRollbackEntry(ctx, key, mscope, exp, rel, seq, df, removed); err != nil {
 			return nil, err
 		}

@@ -2332,8 +2332,9 @@ class LoomcycleClient:
         ``GET /v1/_ontology/releases`` over the ``ListOntologyReleases`` RPC.
 
         Returns ``{tenant, releases}``, each release ``{seq,
-        content_version, fingerprint, reason, actor, created_at, entries}``
-        (``reason`` is ``confirm``, ``apply``, ``rollback`` or ``catch_up``;
+        content_version, fingerprint, reason, actor, created_at, entries,
+        redacted}`` (``redacted`` True once a subject erasure changed the
+        release; its content_version stays as recorded) (``reason`` is ``confirm``, ``apply``, ``rollback`` or ``catch_up``;
         ``actor`` "" when none was known; ``created_at`` in unix
         nanoseconds).
 
@@ -2360,6 +2361,7 @@ class LoomcycleClient:
                     "actor": r.actor,
                     "created_at": r.created_at,
                     "entries": r.entries,
+                    "redacted": r.redacted,
                 }
                 for r in resp.releases
             ],
@@ -2378,9 +2380,10 @@ class LoomcycleClient:
         ``to=current``).
 
         Returns ``{tenant, from, to, changes, issues}``: each side ``{seq,
-        current, content_version}``; each change ``{chunk_id, kind, change,
-        changed, before, after}`` with ``change`` ``added``, ``removed`` or
-        ``changed``, ``changed`` listing ``renamed``, ``moved``, ``kind``,
+        current, content_version, redacted}``; each change ``{chunk_id, kind,
+        change, changed, before, after}`` with ``change`` ``added``,
+        ``removed``, ``changed`` or ``erased`` (a subject erasure redacted
+        the entry; no before or after), ``changed`` listing ``renamed``, ``moved``, ``kind``,
         ``status``, ``meaning``, ``directives``, and ``before`` / ``after``
         ``{name, parent, parent_name, status, meaning, directives}`` or
         ``None`` (absent for an added entry, resp. a removed one).
@@ -2399,7 +2402,12 @@ class LoomcycleClient:
             _raise_from_grpc(e)
 
         def side(s: Any) -> Mapping[str, Any]:
-            return {"seq": s.seq, "current": s.current, "content_version": s.content_version}
+            return {
+                "seq": s.seq,
+                "current": s.current,
+                "content_version": s.content_version,
+                "redacted": s.redacted,
+            }
 
         def state(d: Any, name: str) -> Mapping[str, Any] | None:
             if not d.HasField(name):

@@ -293,10 +293,10 @@ func baseToolDescriptors() []loommcp.ToolDescriptor {
 				"dry run would remove, or what execute did; never a token value. A token holding an " +
 				"operator scope is left and named under retained. Groups and bindings declared in the " +
 				"config file are reported but cannot be erased — they must be removed from the config. " +
-				"Tier 2 also counts the tenant's ontology subjects bound to the user (subject_bindings), named in " +
-				"bound_subjects as {document_id, natural_key, path} (ones you may not read are only counted, in " +
-				"bound_subjects_withheld): execute clears each binding and announces `erased` (not_announced says " +
-				"why it did not), and never deletes the subject — deleting one is your call, with the document tool. " +
+				"Tier 2 also counts the tenant's ontology subjects bound to the user (subject_bindings), named in bound_subjects as " +
+				"{document_id, natural_key, path} (ones you may not read are only counted, in bound_subjects_withheld): execute clears " +
+				"each binding, announces `erased` (not_announced says why not) and never deletes the subject (your call, with the document " +
+				"tool); it also redacts their instance entries' copies in ontology releases (ontology_release_entries; see retained). " +
 				"Tier 2 also counts the subject's account (account) and sign-in rows (sign_in_*: login identities, " +
 				"password and second factors, passkeys, sessions, app sign-ins, device logins, invites and resets): " +
 				"execute ends the app sign-ins and deletes those rows, and keeps the user record as a disabled " +

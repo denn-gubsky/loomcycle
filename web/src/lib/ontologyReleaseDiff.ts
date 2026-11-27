@@ -176,7 +176,9 @@ export function diffSummary(d: DiffOntologyReleasesResult): string {
   const cs = d.changes ?? [];
   if (cs.length === 0) return "no differences";
   const n = (k: OntologyEntryDiff["change"]) => cs.filter((c) => c.change === k).length;
-  return `${n("changed")} changed, ${n("added")} added, ${n("removed")} removed`;
+  const erased = n("erased");
+  const base = `${n("changed")} changed, ${n("added")} added, ${n("removed")} removed`;
+  return erased > 0 ? `${base}, ${erased} erased` : base;
 }
 
 /** Whether an error is the server refusing the caller the releases (403): an

@@ -28,7 +28,7 @@ func (s *Server) ListOntologyReleases(ctx context.Context, req *loomcyclepb.List
 	for _, r := range res.Releases {
 		out.Releases = append(out.Releases, &loomcyclepb.OntologyRelease{
 			Seq: r.Seq, ContentVersion: r.ContentVersion, Fingerprint: r.Fingerprint, Reason: r.Reason,
-			Actor: r.Actor, CreatedAt: r.CreatedAt, Entries: int32(r.Entries),
+			Actor: r.Actor, CreatedAt: r.CreatedAt, Entries: int32(r.Entries), Redacted: r.Redacted,
 		})
 	}
 	return out, nil
@@ -47,7 +47,7 @@ func (s *Server) DiffOntologyReleases(ctx context.Context, req *loomcyclepb.Diff
 		return nil, ontologyReleaseErrToStatus(err)
 	}
 	side := func(d connector.OntologyDiffSide) *loomcyclepb.OntologyDiffSide {
-		return &loomcyclepb.OntologyDiffSide{Seq: d.Seq, Current: d.Current, ContentVersion: d.ContentVersion}
+		return &loomcyclepb.OntologyDiffSide{Seq: d.Seq, Current: d.Current, ContentVersion: d.ContentVersion, Redacted: d.Redacted}
 	}
 	out := &loomcyclepb.DiffOntologyReleasesResponse{
 		Tenant: res.Tenant, From: side(res.From), To: side(res.To), Issues: res.Issues,

@@ -3004,6 +3004,9 @@ message OntologyRelease {
   int64 created_at = 6;
   // How many chunks of the ontology document it copied.
   int32 entries = 7;
+  // A subject erasure changed the release (an entry or its plan summary).
+  // content_version stays as recorded, so its copy no longer hashes to it.
+  bool redacted = 8;
 }
 
 message ListOntologyReleasesRequest {
@@ -3034,6 +3037,8 @@ message OntologyDiffSide {
   int64 seq = 1;
   bool current = 2;
   string content_version = 3;
+  // The release on this side was changed by a subject erasure.
+  bool redacted = 4;
 }
 
 // OntologyEntryState is an entry as one side declares it. parent is the chunk
@@ -3056,7 +3061,8 @@ message OntologyEntryDiff {
   string chunk_id = 1;
   // class | relation | scheme | concept | instance | grammar
   string kind = 2;
-  // added | removed | changed
+  // added | removed | changed | erased (a subject erasure redacted the entry from
+  // a release on either side; no before or after)
   string change = 3;
   // On a changed entry: renamed, moved, kind, status, meaning, directives.
   repeated string changed = 4;

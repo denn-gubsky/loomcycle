@@ -100,6 +100,9 @@ type OntologyRelease struct {
 	Actor          string `json:"actor,omitempty"`
 	CreatedAt      int64  `json:"created_at"`
 	Entries        int    `json:"entries"`
+	// Redacted: a subject erasure changed the release (an entry or its plan summary).
+	// ContentVersion stays as recorded, so its copy no longer hashes to it.
+	Redacted bool `json:"redacted,omitempty"`
 }
 
 // ErrOntologyMovedDuringRelease: every attempt at the copy saw the ontology change under
@@ -171,8 +174,8 @@ func (d *Document) CatchUpOntologyRelease(ctx context.Context) (OntologyRelease,
 // ontologyReleases lists the newest complete releases, newest first; limit <= 0 lists
 // them all. An incomplete release (one whose copy was cut off) is never listed.
 func (d *Document) ontologyReleases(ctx context.Context, key sqlmem.ScopeKey, limit int) ([]OntologyRelease, error) {
-	q := `SELECT seq, content_version, fingerprint, reason, coalesce(actor, ''), created_at, entries
-	        FROM ontology_releases WHERE complete = 1 ORDER BY seq DESC`
+	q := `SELECT seq, content_version, fingerprint, reason, coalesce(actor, ''), created_at, entries, ` +
+		d.redactedCol(ctx, key) + ` FROM ontology_releases WHERE complete = 1 ORDER BY seq DESC`
 	var args []any
 	if limit > 0 {
 		q += ` LIMIT ?`
@@ -184,12 +187,13 @@ func (d *Document) ontologyReleases(ctx context.Context, key sqlmem.ScopeKey, li
 	}
 	out := make([]OntologyRelease, 0, len(res.Rows))
 	for _, r := range res.Rows {
-		if len(r) < 7 {
+		if len(r) < 8 {
 			continue
 		}
 		out = append(out, OntologyRelease{
 			Seq: asInt64Val(r[0]), ContentVersion: asStr(r[1]), Fingerprint: asStr(r[2]),
 			Reason: asStr(r[3]), Actor: asStr(r[4]), CreatedAt: asInt64Val(r[5]), Entries: asInt(r[6]),
+			Redacted: asInt(r[7]) == 1,
 		})
 	}
 	return out, nil

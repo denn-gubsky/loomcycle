@@ -2617,6 +2617,9 @@ export interface OntologyRelease {
   created_at: number;
   /** How many chunks of the ontology document it copied. */
   entries: number;
+  /** A subject erasure changed the release (an entry or its plan summary); its
+   *  content_version stays as recorded, so its copy no longer hashes to it. */
+  redacted?: boolean;
 }
 
 /** Result of {@link LoomcycleClient.listOntologyReleases}: every complete
@@ -2643,6 +2646,8 @@ export interface OntologyDiffSide {
   seq?: number;
   current?: boolean;
   content_version: string;
+  /** The release on this side was changed by a subject erasure. */
+  redacted?: boolean;
 }
 
 /** An entry as one side of a diff declares it. `parent` is the chunk of the
@@ -2664,7 +2669,8 @@ export interface OntologyEntryDiff {
   chunk_id: string;
   /** class | relation | scheme | concept | instance | grammar */
   kind: string;
-  change: "added" | "removed" | "changed";
+  /** erased: a subject erasure redacted the entry from a release on either side; no before or after. */
+  change: "added" | "removed" | "changed" | "erased";
   /** On a changed entry: what differs. */
   changed?: ("renamed" | "moved" | "kind" | "status" | "meaning" | "directives")[];
   /** Absent for an added entry. */
