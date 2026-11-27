@@ -248,10 +248,7 @@ func (t *typWriter) document() {
 		t.s(`#set text(font: ("Noto Sans", "DejaVu Sans", "Libertinus Serif"), size: 10.5pt`)
 	} else {
 		t.stylePage(st, paper)
-		font := `("Noto Sans", "DejaVu Sans", "Libertinus Serif")`
-		if st.serif() {
-			font = `("Noto Serif", "DejaVu Serif", "Libertinus Serif")`
-		}
+		font := st.bodyFont().typst
 		t.s(`#set text(font: ` + font + `, size: ` + typNum(st.BaseSize()) + `pt, fill: rgb("` + st.textColor() + `")`)
 	}
 	if typLangRe.MatchString(d.Language) {
@@ -265,6 +262,9 @@ func (t *typWriter) document() {
 	} else {
 		t.s(`#show link: set text(fill: rgb("` + st.linkColor() + `"))` + "\n")
 		t.s(`#show heading: set text(fill: rgb("` + st.headingColor() + `"))` + "\n")
+		if f, ok := st.headFont(); ok {
+			t.s(`#show heading: set text(font: ` + f.typst + `)` + "\n")
+		}
 		if k := st.headScale(); k != 1 {
 			t.s(`#show heading: it => { set text(size: ` + typNum(k) + `em); it }` + "\n")
 		}

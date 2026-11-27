@@ -33,8 +33,10 @@ const (
 // Style is a parsed, checked style. A zero field is the built-in value; use
 // the accessors, which apply the defaults.
 type Style struct {
-	Version     int         `json:"loomcycle_style"`
-	Font        string      `json:"font,omitempty"`
+	Version int    `json:"loomcycle_style"`
+	Font    string `json:"font,omitempty"`
+	// HeadingFont is the headings' font when it is not Font's (RFC HB D1).
+	HeadingFont string      `json:"heading_font,omitempty"`
 	Size        float64     `json:"size,omitempty"`
 	HeadScale   float64     `json:"heading_scale,omitempty"`
 	Colors      StyleColors `json:"colors,omitempty"`
@@ -43,8 +45,8 @@ type Style struct {
 	Footer      PageLine    `json:"footer,omitzero"`
 	PageNumbers *bool       `json:"page_numbers,omitempty"`
 	// Headings sets the look of heading levels 1–4 (RFC HB D2).
-	Headings *StyleHeadings `json:"headings,omitempty"`
-	LogoWidthMM float64     `json:"logo_width_mm,omitempty"`
+	Headings    *StyleHeadings `json:"headings,omitempty"`
+	LogoWidthMM float64        `json:"logo_width_mm,omitempty"`
 	// Logo is the picture above the title: an image of the Doc, by name.
 	// Set by the core from the style document, never by the JSON.
 	Logo string `json:"logo,omitempty"`
@@ -76,7 +78,9 @@ type HeadingLook struct {
 }
 
 // zero reports a look that leaves the built-in heading as it is.
-func (h HeadingLook) zero() bool { return !h.Rule && !h.Uppercase && (h.Weight == "" || h.Weight == "bold") }
+func (h HeadingLook) zero() bool {
+	return !h.Rule && !h.Uppercase && (h.Weight == "" || h.Weight == "bold")
+}
 
 // heading is the look of heading level n (1 = Heading 1), zero when the
 // style sets none.
@@ -180,10 +184,11 @@ func (s *Style) check() error {
 	if s.Version != StyleVersion {
 		return bad("loomcycle_style", fmt.Sprint(StyleVersion))
 	}
-	switch s.Font {
-	case "", "sans", "serif":
-	default:
-		return bad("font", "sans or serif")
+	if !fontOK(s.Font) {
+		return bad("font", "sans, serif, inter, calibri, arial or times")
+	}
+	if !fontOK(s.HeadingFont) {
+		return bad("heading_font", "sans, serif, inter, calibri, arial or times")
 	}
 	if s.Size != 0 && (s.Size < minStyleSize || s.Size > maxStyleSize) {
 		return bad("size", fmt.Sprintf("between %g and %g", minStyleSize, maxStyleSize))
@@ -244,8 +249,6 @@ func styleLineOK(l string) bool {
 }
 
 // The built-in look (D13–D15), and the style's values over it.
-
-func (s *Style) serif() bool { return s != nil && s.Font == "serif" }
 
 // BaseSize is the body size in points.
 func (s *Style) BaseSize() float64 {
@@ -351,14 +354,15 @@ func (s *Style) cssOverrides(scope string) string {
 	if s == nil {
 		return ""
 	}
-	font := cssSans
-	if s.serif() {
-		font = cssSerif
-	}
+	font := s.bodyFont().css
 	k := s.headScale()
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s{font-family:%s;font-size:%gpt;color:%s}\n", scope, font, s.BaseSize(), s.textColor())
 	fmt.Fprintf(&b, "h1,h2,h3,h4,h5,h6{color:%s}\n", s.headingColor())
+	if f, ok := s.headFont(); ok {
+		// The section headings, not the title (h1), as the paged formats.
+		fmt.Fprintf(&b, "h2,h3,h4,h5,h6{font-family:%s}\n", f.css)
+	}
 	fmt.Fprintf(&b, "h1{font-size:%.3gem}h2{font-size:%.3gem}h3{font-size:%.3gem}h4,h5,h6{font-size:%.3gem}\n", 2*k, 1.5*k, 1.25*k, 1.05*k)
 	fmt.Fprintf(&b, "a{color:%s}\n", s.linkColor())
 	b.WriteString(".style-header,.style-footer{color:#5b5b5b;font-size:.8em;margin:0 0 1.5em}.style-footer{margin:2em 0 0;border-top:1px solid #d6d3d1;padding-top:.5em}\n")

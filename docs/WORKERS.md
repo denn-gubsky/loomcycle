@@ -69,7 +69,7 @@ Each runtime replica keeps its own quarantine: a file that killed a worker is re
 
 ## Helper programs
 
-The worker image ships ffmpeg, poppler, Typst (with the Noto Sans, Noto Sans Mono and Noto Serif fonts; Noto Serif is for a house style that asks for serif type) and merman (`merman-cli`, which draws Mermaid diagrams without a browser), and sets these commands:
+The worker image ships ffmpeg, poppler, Typst (with the Noto Sans, Noto Sans Mono and Noto Serif fonts, and Inter, Carlito and Liberation Sans and Serif for a house style that names them — Carlito and Liberation have the letter widths of Calibri, Arial and Times New Roman) and merman (`merman-cli`, which draws Mermaid diagrams without a browser), and sets these commands:
 
 | Variable | Default in the image | The runtime setting it stands for |
 |---|---|---|

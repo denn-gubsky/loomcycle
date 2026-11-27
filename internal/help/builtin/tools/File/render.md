@@ -152,8 +152,15 @@ shown above the title. Every key but `loomcycle_style` is optional:
  "page_numbers": true, "logo_width_mm": 30}
 ```
 
-- `font`: `sans` or `serif` (Noto Sans or Noto Serif; code stays Noto Sans
-  Mono). `size`: 8–14 points. `heading_scale`: 0.8–1.5.
+- `font`: the text's font, named by the look — `sans` (Noto Sans, the
+  default), `serif` (Noto Serif), `inter`, `calibri`, `arial` or `times`.
+  A PDF embeds the font itself, or for `calibri`, `arial` and `times` its
+  free twin with the same letter widths (Carlito, Liberation Sans,
+  Liberation Serif), so lines and pages break where they would in the real
+  one; a Word or ODT file names the real font (Calibri shows as Calibri on
+  a machine that has it). Code stays Noto Sans Mono. `heading_font`: the
+  same values, for the section headings only (default: `font`).
+  `size`: 8–14 points. `heading_scale`: 0.8–1.5.
 - `colors`: `#rrggbb`. `page.size`: `a4` or `letter` (the call's `page_size`
   wins). `page.margin_mm`: 10–50.
 - `header`, `footer`: one line of at most 120 characters, or three slots
