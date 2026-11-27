@@ -142,6 +142,12 @@ func TestKnowledgeBaseBundle_AnsweringAgentsHoldOnlyTheirTools(t *testing.T) {
 	}
 	const classifyPrompt = "You classify one question that a user asks a knowledge base of documents. You do not answer it.\n\n" +
 		"Is the question asking for an overview: a list of everything a knowledge base holds on a subject, spread over several documents?\n\n" +
+		// A one-situation question ("what help can I get") has a list for an
+		// answer, but one page's list: without this rule ConditionalQA's
+		// situation questions went to kb/survey.
+		"A question that describes one person's or one case's situation and asks what applies to it " +
+		"(the help, requirements, options, steps or kinds for that one case) is not an overview, " +
+		"even when its answer is a list. Answer NO for it.\n\n" +
 		"If you are unsure, answer YES.\n\n" +
 		"Reply with exactly one word: YES or NO.\n"
 	if cl.SystemPrompt != classifyPrompt {
