@@ -8869,10 +8869,10 @@ agents:
       // "listing", "dated+listing"), and the note is their fixed notes, in the
       // same order. Returns null when no rule holds.
       function walkerRule(question) {
-        var labels = [], notes = [], listing = "";
-        if (DATED.test(question)) {
+        var labels = [], notes = [], listing = "", headed = headedSpans(question);
+        if (anyMatch(DATED, headed)) {
           labels.push("dated"); notes.push(DATED_NOTE);
-        } else if (DATED_RANGE.test(question)) {
+        } else if (anyMatch(DATED_RANGE, headed)) {
           labels.push("dated"); notes.push(DATED_RANGE_NOTE + "\n" + todayLine());
         }
         // The ontology is read only for a question a listing rule could take.
@@ -8893,6 +8893,28 @@ agents:
         if (listing) { labels.push("listing"); notes.push(listing); }
         if (!labels.length) { return null; }
         return { source: labels.join("+"), note: notes.join("\n\n"), listing: listing !== "" };
+      }
+
+      // headedSpans returns the parts of the question a date bound counts in:
+      // each runs from a list head (LIST_HEAD, the listing rules' guard) to
+      // the end of its sentence. A question that tells a situation
+      // before it asks ("I moved to the UK in 2019. Can I claim X?") states
+      // when something happened; that date does not bound the question, and
+      // on ConditionalQA 15 of the 17 questions the dated rules took matched
+      // only such a date. A comma does not end the span, so "which plans are
+      // still drafts, of those written in November 2026" stays dated.
+      var SENTENCE_END = /[.?!;](?=\s|$)/;
+      function headedSpans(question) {
+        var re = new RegExp(LIST_HEAD.source, "gi"), spans = [], m;
+        while ((m = re.exec(question))) {
+          var rest = question.slice(m.index + m[0].length), e = rest.search(SENTENCE_END);
+          spans.push(e < 0 ? rest : rest.slice(0, e + 1));
+        }
+        return spans;
+      }
+      function anyMatch(re, spans) {
+        for (var i = 0; i < spans.length; i++) { if (re.test(spans[i])) { return true; } }
+        return false;
       }
 
       // knownItem reads the question as data: it asks for the one document
