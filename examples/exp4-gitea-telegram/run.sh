@@ -13,9 +13,13 @@ export LOOMCYCLE_DATA_DIR="${LOOMCYCLE_DATA_DIR:-$HERE/data}"
 # LOOMCYCLE_AUTH_TOKEN in .env.local, or the server refuses that address. See README.
 export LOOMCYCLE_LISTEN_ADDR="${LOOMCYCLE_LISTEN_ADDR:-127.0.0.1:8787}"
 export LOOMCYCLE_ANTHROPIC_OAUTH_DEV_ENABLED="${LOOMCYCLE_ANTHROPIC_OAUTH_DEV_ENABLED:-1}"
-# tool sandbox: the coder/reviewer use Bash+git under ./work via the `default`
-# volume in loomcycle.yaml (run.sh cd's to ./work, so `path: .` == ./work).
-export LOOMCYCLE_BASH_ENABLED="${LOOMCYCLE_BASH_ENABLED:-1}"
+# git: the coder and reviewer work their clones under ./work (the `default`
+# volume in loomcycle.yaml; run.sh cd's to ./work, so `path: .` == ./work) with
+# the Git tool, which reaches only these hosts: the Gitea host, for fetch and push.
+GITEA_HOSTPORT="${LOOMCYCLE_GITEA_HOST#https://}"; GITEA_HOSTPORT="${GITEA_HOSTPORT%%/*}"
+export LOOMCYCLE_GIT_SOURCE_HOSTS="${LOOMCYCLE_GIT_SOURCE_HOSTS:-$GITEA_HOSTPORT}"
+export LOOMCYCLE_GIT_PUSH_HOSTS="${LOOMCYCLE_GIT_PUSH_HOSTS:-$GITEA_HOSTPORT}"
+export LOOMCYCLE_GIT_AUTHOR_NAME="${LOOMCYCLE_GIT_AUTHOR_NAME:-${LOOMCYCLE_GITEA_USER:-exp4}}"
 export LOOMCYCLE_CHANNELS_LONGPOLL_CAP_MS="${LOOMCYCLE_CHANNELS_LONGPOLL_CAP_MS:-180000}"
 # inbound webhooks: the HMAC secret allowlist (the receiver resolves these env NAMES)
 export LOOMCYCLE_WEBHOOKS_ENV_ALLOWLIST="${LOOMCYCLE_WEBHOOKS_ENV_ALLOWLIST:-LOOMCYCLE_GITEA_WEBHOOK_SECRET}"

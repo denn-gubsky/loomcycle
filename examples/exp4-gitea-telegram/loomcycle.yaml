@@ -34,9 +34,9 @@ user_tiers:
     fallback_on_error: true
     max_fallback_attempts: 3
 
-# path: . is the cwd run.sh cd's into ($HERE/work) — replaces the retired
-# LOOMCYCLE_READ_ROOT/WRITE_ROOT/BASH_CWD jail (RFC AH Phase 3). The coder +
-# reviewer agents are unbound, so they bind to `default`.
+# path: . is the cwd run.sh cd's into ($HERE/work). The coder + reviewer
+# agents are unbound, so they bind to `default`: the coder's clone is
+# work/exp4-workflow, the reviewer's work/review/exp4-workflow.
 volumes:
   default: { path: ., mode: rw, default: true }
 
@@ -50,28 +50,36 @@ channels:
 
 agents:
   # CODER — long-running, subscribes to exp4-tasks; pushes branches + opens PRs.
+  # It works the clone with the Git tool: git runs inside the runtime, no shell,
+  # and the Gitea token is the stored credential `gitea`, which the runtime adds
+  # on the way out (the agent never sees it). See README "Setup".
   exp4-code-guru:
     tier: middle
     max_iterations: 60
     max_tokens: 8192
-    tools: [Bash, Read, Write, Edit, Channel, "mcp__gitea__*"]
+    tools: [Read, Write, Edit, Git, Channel, "mcp__gitea__*"]
+    git_remote: [fetch, push]             # hosts: LOOMCYCLE_GIT_SOURCE_HOSTS / LOOMCYCLE_GIT_PUSH_HOSTS
     channels:
       subscribe: [exp4-tasks]
     system_prompt: |
       You are the CODER in an automated dev-review loop on a Gitea repo. The repo
-      is already cloned at exp4-workflow (relative to your Bash CWD; origin set, push auth preconfigured
-      via a git credential helper — just `git push`, never handle tokens). Default
-      branch is "main". Use mcp__gitea__* for PR ops; Bash/git for the working tree.
+      is already cloned at exp4-workflow in your default volume, with origin set.
+      Default branch is "main". Use the Git tool for the repository (always
+      repo="exp4-workflow", and credential="$cred:gitea" on fetch, pull and push
+      — the runtime adds the token, you never handle it), Read/Write/Edit for
+      files (paths under exp4-workflow/), and mcp__gitea__* for PR ops.
 
       LOOP — repeat, never exit after one task:
       1. SUBSCRIBE: Channel op=subscribe channel="exp4-tasks" wait_ms=170000.
          Payload JSON = {"task": "...", "pr": <int|null>, "branch": "<name|null>"}.
-      2. cd exp4-workflow; `git checkout main && git pull`.
-         - NEW task (pr null): `git checkout -b feat/<short-slug>`.
-         - CHANGE request (pr set): `git fetch origin && git checkout <branch>`.
-      3. Implement the task: write minimal correct code + a test. Every shell
-         command must print a non-empty summary line.
-      4. `git add -A`, `git commit -m "<msg>"`, `git push -u origin <branch>`.
+      2. Git op=checkout branch="main", then Git op=pull.
+         - NEW task (pr null): Git op=checkout branch="feat/<short-slug>" create=true.
+         - CHANGE request (pr set): Git op=fetch, then Git op=checkout
+           branch="<branch>" rev="origin/<branch>" create=true (or without
+           create when the branch already exists locally — branch_list shows it).
+      3. Implement the task: write minimal correct code + a test with Write/Edit.
+      4. Git op=add paths=["."], Git op=commit message="<msg>", Git op=push
+         refspecs=["<branch>"].
       5. NEW task: open the PR — mcp__gitea__create_pull_request (base="main",
          head=<branch>, title, body). CHANGE request: the push updates the PR (no
          new PR). Report "CODER: pushed <branch>, PR #<n>".
@@ -80,11 +88,14 @@ agents:
       RULES: never read/print secret files (.env*) or tokens. Stay inside exp4-workflow. Never produce empty tool output.
 
   # REVIEWER — spawned by the `pull_request` webhook (payload in the prompt).
+  # It reads the diff in a clone of its own (review/exp4-workflow), so it never
+  # touches the coder's working tree.
   exp4-code-reviewer:
     tier: middle
     max_iterations: 40
     max_tokens: 8192
-    tools: [Bash, "mcp__gitea__*"]
+    tools: [Git, "mcp__gitea__*"]
+    git_remote: [fetch]                   # clone and fetch only; it merges through gitea-mcp
     system_prompt: |
       You are the REVIEWER, spawned by a Gitea `pull_request` webhook. The webhook
       JSON is in your prompt — parse it.
@@ -94,18 +105,20 @@ agents:
       2. Extract: owner = payload.repository.owner.username (or .login), repo =
          payload.repository.name, PR index = payload.number, head branch =
          payload.pull_request.head.ref, clone_url = payload.repository.clone_url.
-      3. CLONE for review: `rm -rf tmp/exp4-workflow; git clone --quiet
-         <clone_url> tmp/exp4-workflow; cd tmp/exp4-workflow; git fetch
-         origin <head>; git diff origin/main...origin/<head>`. Read the diff.
+      3. Your clone is repo="review/exp4-workflow" (pass credential="$cred:gitea"
+         on every clone and fetch). If Git op=status there answers
+         not_a_repository, Git op=clone url=<clone_url>; then Git op=fetch.
+         Find the base with Git op=merge_base from="origin/main"
+         to="origin/<head>", and read Git op=diff from=<that hash>
+         to="origin/<head>".
       4. Review for correctness + quality. Decide and act via gitea-mcp:
          - Problems → mcp__gitea__create_pull_request_review (owner, repo,
            index, event="REQUEST_CHANGES", body=<specific change list>).
          - Good → create review event="APPROVE", then mcp__gitea__merge_pull_request
            (owner, repo, index, Do="squash").
-      5. ALWAYS clean up: `rm -rf tmp/exp4-workflow`.
-      6. Output one line: "REVIEW: request-changes" or "REVIEW: approved+merged".
+      5. Output one line: "REVIEW: request-changes" or "REVIEW: approved+merged".
 
-      RULES: never touch secret files. Always delete the clone. Non-empty output.
+      RULES: never touch secret files. Non-empty output.
 
   # ADVISOR — spawned by the merge / pull_request_review webhook (payload in prompt).
   exp4-advisor:
