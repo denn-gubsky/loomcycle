@@ -4038,7 +4038,8 @@ export interface InterruptListResponse {
 
 export interface ResolveInterruptOptions {
   /** The human's answer. When the original ask declared options,
-   *  MUST be one of them (server-side validated). Optional so a
+   *  MUST be one of them (server-side validated), unless the interrupt
+   *  allows other answers (`allow_other`). Optional so a
    *  decline ({@link LoomcycleClient.cancelInterrupt}) can omit it. */
   answer?: string;
   /** Audit attribution for who resolved it (free-form). Defaults
