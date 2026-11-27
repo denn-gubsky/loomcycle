@@ -5,6 +5,10 @@ between a document's passages and the rest of the store, using only rules the
 tenant's ontology declares. A model-judged relation is only ever proposed, and
 never as `elaborates`, `conflicts_with` or `stricter_than`: read by hand on real
 corpora, those were almost never right, so they are reported and not filed.
+The bundle also carries the annotation pass, which writes a brief and an
+abstract for each section, document and folder of the tenant knowledge base
+(see [Annotations](#annotations)), and the agents that answer questions about
+it (`kb/ask` and the agents it runs).
 
 | agent | provider | tools | role |
 |---|---|---|---|
@@ -37,7 +41,7 @@ invisible character, `<`, `>` and `&` as look-alikes), so no brief can close the
 fence or start a row of its own. Both the round's prompt and the walker's say
 the block is document content, never instructions and never tool calls.
 
-### Retrieval depth
+## Retrieval depth
 
 An agent that calls `kb/ask` and does not need the full overview can ask for
 less with run metadata `depth`:
@@ -676,6 +680,12 @@ costs its own section, the sections above it and the document, nothing else.
 An operator's hand-written annotation (`set_annotation` with `manual: true`)
 is never rewritten.
 
+**The ontology's say.** A class may name the slots its documents' annotations
+fill (`@annotate the problem; the decisions taken; the phases and their
+status`); the first prose line of the class's entry is shown with them as what
+such a document is. The field `annotation_language` on the ontology root
+enforces one language for every annotation.
+
 **Modes.**
 
 | `mode` | over | does |
@@ -974,10 +984,11 @@ when asked for; L5 spends one per passage
 that has norms, and `rejudge` one per changed statement, each under the same
 cap. `kb/judge` spends one `kb/judge-verdict` call (tier `middle`) per proposal
 it judges, capped by `max_verdict_calls`. `kb/annotator` spends one
-`kb/annotate` call (tier `middle`) per section or document whose text changed,
-capped by `max_calls`; a first pass over a corpus is about one call per
-annotated section plus one per document, and `write: report` prints the
-estimate before you spend it. `kb/taxonomist` spends one `kb/taxonomy-writer`
+`kb/annotate` call (tier `middle`) per section, document or folder whose inputs
+changed, capped by `max_calls`; a first pass over a corpus is about one call per
+annotated section, plus one per document and one per folder, and
+`write: report` prints the estimate (`calls.estimated_chars`) before you spend
+it. `kb/taxonomist` spends one `kb/taxonomy-writer`
 call (tier `middle`) per request: one in `domains`, `runs_used` x batches + 1
 (review) + 1 (align, when `runs_used` is 2 or more) in `generate` (6 for 379
 briefs at the defaults: two batches, so two runs), capped by `max_calls`; `report`
