@@ -8,6 +8,51 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.171.0
+
+*A person can answer an agent's question in chat by typing (RFC HG). An Interruption with options may allow an answer outside them (`allow_other`), and the agent is told when it got one. One answer check now runs on HTTP, gRPC, MCP and A2A. gRPC events carry the question itself. The chat bridges number up to 20 options, take a typed number, option text or, where allowed, the person's own answer, and keep an open question across a bridge restart. `File op=render` gains a rule, capitals and a weight per heading level (RFC HB P2). `kb/ask` gains an opt-in first call that answers from the best sections before it searches (RFC HC P1). The workspace worker with the docker client is published as an image.*
+
+The v1.171 line: #3022, #3025, #3026, #3028 to #3032.
+- `@loomcycle/client` 1.171.0: `allow_other` on `InterruptionEventInfo` and `InterruptRow`; `InterruptStatus` is now the server's `pending`, `resolved`, `declined`, `timed_out` and `cancelled` (it named `answered` and `expired`, which the server never wrote). The Python adapter moves to 1.171.0 (`python-v1.171.0`): `InterruptionInfo` on a run's events (`AgentEvent.interruption`).
+- Proto: `Event.interruption` (`InterruptionInfo`, field 27): interrupt id, kind, question, options, context, priority, expiry and `allow_other`.
+- Postgres migration 0146 (`interrupts.allow_other`). SQLite mirrors it.
+- Code-js ABI unchanged (1.4.0).
+- `@loomcycle/bridge-core` 0.8.0, and the Teams, Slack, Discord and Telegram bridges on it, publish on their own tags.
+
+### Upgrade notes
+
+- **A2A answers are checked (#3029, RFC HG D5).** An A2A resume used to resolve a question with any answer. It now goes through the same check as every other path: with options, the answer must be one of them unless the question allows other answers. A refused answer fails the task, as other resolve failures already did.
+- **One message for a refused answer (#3029).** MCP `interruption_resolve` used to refuse with its own wording; every path now returns the same `invalid answer` message (HTTP 422, gRPC `InvalidArgument`, an MCP tool error).
+- **Unreadable options refuse every answer (#3029).** An interrupt whose stored options cannot be decoded used to accept any answer, an empty one included. It now refuses every answer; a decline still works.
+- **The TS `InterruptStatus` type changed (#3029).** Code that compared against `"answered"` or `"expired"` never matched; compare against `"resolved"`, `"declined"`, `"timed_out"` or `"cancelled"`.
+- **Bridges: release order.** The bridges' question changes reach a chat only through bridge-core 0.8.0, so move each bridge to its release on that core, not a build of `main` on 0.7.1. An answer of the person's own works once this loomcycle is deployed; against an older one the bridge asks for a number.
+
+### Questions in chat (RFC HG: #3025, #3029)
+
+- `Interruption.ask` takes `allow_other` (default false, only with `options`). Then any non-empty answer of at most 4000 characters is accepted, and the tool result carries `"other": true` when the answer is not one of the options. It is stored on the interrupt (`allow_other`), carried on `interruption_pending`, the `_system/interrupts/pending` payload, the `mcp_server` backend's ask and both interrupt listings (#3029).
+- `connector.CheckInterruptAnswer` replaces the two copies of the answer check (HTTP and gRPC, MCP) and is called by A2A's resume too (#3029).
+- gRPC: `Event.interruption`, so a gRPC or Python client can show the question and its options (#3029).
+- Web UI: an "Other answer" box beside the option buttons in the Interrupt inbox and the live-run pane when a question allows one (#3029).
+- Bridges (bridge-core 0.8.0, #3025):
+  - A question card lists up to 20 options numbered, with buttons for the first six, and says how to answer.
+  - A typed reply picks an option by number (`2`, `2.`, `2)`) or by its text in any case; with `allow_other` any other reply, a voice transcript included, is the person's own answer. Otherwise the bridge asks for a number. An untrusted speaker may pick an option but never send an answer of their own.
+  - The open question and its buttons are saved with the conversation. After a bridge restart they are checked against the run: still open, the buttons and typed answers work and the agent's reply after the answer shows in the chat; gone, the question is forgotten.
+  - Teams draws at most six option buttons; Telegram fits a long card under its message limit; Slack and Discord show the numbered list from the core.
+
+### Rendering (RFC HB P2: #3022)
+
+- A style's `headings.h1`–`h4` take `{rule, uppercase, weight}`: a rule under the heading, capitals and a weight, in Word, ODT, HTML, EPUB and PDF. A style without `headings` renders as before.
+
+### Knowledge base (RFC HC P1: #3030)
+
+- `kb/answer` and `kb/read` (new): one passage search, the best five sections read in full, and one reading of them that cites by section. `kb/ask` runs this first call only with run metadata `first_call: true`, and only for a question bound for `kb/search`; a question it cannot answer from those sections goes on to `kb/search` as before. Without the flag `kb/ask` is unchanged.
+- The kb versus RAG benchmark (#3026) and the RFC HC gate-study harness (#3028) are under `bench/`; neither changes the runtime.
+
+### Images and build (#3031, #3032)
+
+- `loomcycle-ws-worker` (Docker Hub and GHCR, amd64 and arm64): the workspace worker with the `docker` client, for a worker in a container that drives the host's container engine. `docs/WORKERS.md` has a compose example (#3032).
+- The builder image pins podman's immutable `v6.2.0` tag, so its digest is not garbage-collected (#3031).
+
 ## What's in v1.170.0
 
 *Git workspaces are complete (RFC GW P11). A workspace opened on a repository can now fetch, pull and push its own branch, run status, diff, log, commit, branch and checkout as typed ops without `exec`, and be forked into a git workspace with a branch of its own. Mirrors on a worker are capped and swept when idle. The `agent-teams` bundle's `team/repo` works through a git workspace, with no token in any command (P14). Personal workers get an end-to-end suite, a `doctor` warning and a guide (P13). The workspace browser session image is published. A subject's erasure now reaches the copies of the ontology kept in its releases (RFC GQ P3.3). `File op=render` takes page text with page counters and an inline style (RFC HB P1). Four knowledge-base fixes come from a measurement on a second corpus.*
