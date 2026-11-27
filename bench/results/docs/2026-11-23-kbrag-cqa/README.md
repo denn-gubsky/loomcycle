@@ -28,7 +28,7 @@ that verdict is not changed after the fact.
 
 **Why check 1 failed.** `rag-ext` indexed 652 documents. The tenant's listing, less the
 operational types, held 653.
-- The one extra document is `15443a640b2228b0056a975a5e336d84`. The operator identified it as the tenant's housekeeping document "Deployment Context" at `/memory/tenant_root`.
+- There is one extra document (id withheld). The operator identified it as the tenant's housekeeping document "Deployment Context" at `/memory/tenant_root`.
 - It is untyped and not a ConditionalQA page. The check's filter (Amendment 0 names the types to drop: `SourceStub`, `SyncReport`, `Annotation`) therefore kept it.
 - So the failure comes from the check's filter. It is not a difference between the pages the arms searched.
 

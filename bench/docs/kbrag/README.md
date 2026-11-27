@@ -1,7 +1,7 @@
 # kbrag harness — Study C (ConditionalQA) setup
 
 Standard library Python, run with `python3 -I` from the repo root. Needs `LOOMCYCLE_BENCH_TOKEN_CQA`
-(a `substrate:tenant` bearer for tenant `conditional-qa`); `LC_BASE` overrides the deployment URL.
+(a `substrate:tenant` bearer for tenant `conditional-qa`); `LC_BASE` is the deployment's base URL (required).
 Working data lives in `/home/denn/workspace/kbrag-work/cqa/`.
 
 | file | what it does |

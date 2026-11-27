@@ -40,10 +40,10 @@ class TestLiveShapes(unittest.TestCase):
         self.assertNotIn("rerank_reason", res)
 
     def test_kb_answer_citations_with_scope_query(self):
-        text = ("No ([Who can apply](loom:chunk/c9ee00edd250c62daf740359daebc384?scope=tenant)) "
-                "([guide](loom:doc/64a2897f6669a17c18283a7e05824974?scope=tenant)).\n\nROUTE: search | SCORE: 1")
+        text = ("No ([Who can apply](loom:chunk/c0ffee00c0ffee00c0ffee00c0ffee00?scope=tenant)) "
+                "([guide](loom:doc/d0c0d0c0d0c0d0c0d0c0d0c0d0c0d0c0?scope=tenant)).\n\nROUTE: search | SCORE: 1")
         c = common.citations(text)
-        self.assertEqual(c, {"docs": ["64a2897f6669a17c18283a7e05824974"], "chunks": ["c9ee00edd250c62daf740359daebc384"]})
+        self.assertEqual(c, {"docs": ["d0c0d0c0d0c0d0c0d0c0d0c0d0c0d0c0"], "chunks": ["c0ffee00c0ffee00c0ffee00c0ffee00"]})
         self.assertEqual(common.strip_for_judge(text), "No (Who can apply) (guide).")
 
 

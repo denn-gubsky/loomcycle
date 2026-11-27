@@ -2,7 +2,7 @@
 
 Standard library Python, run with `python3 -I` from the repo root. Needs `LOOMCYCLE_DEV_TOKEN`
 (a `substrate:tenant` bearer for tenant `loomcycle-dev`; every script refuses another tenant);
-`LC_DEV_BASE` overrides the deployment URL. Working data — exported text, gold, runs — lives in
+`LC_DEV_BASE` is the deployment's base URL (required). Working data — exported text, gold, runs — lives in
 `/home/denn/workspace/kbrag-work/docs/` (`KBRAG_DOCS_WORK`) and never enters the repo. The Study C
 files in `..` are imported read-only, never edited (`../common.py`, `../ragext.py`,
 `../prompts.py`, `../passes.py`, `../judge.py`, `../analyze.py`); the gold parser and topic

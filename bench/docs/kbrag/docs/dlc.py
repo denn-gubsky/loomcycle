@@ -1,14 +1,14 @@
 """Study D client: a copy of ../lc.py pointed at the development tenant.
 
 Copied rather than imported because ../lc.py reads its bearer from the Study C variable
-and defaults to Study C's deployment; binding that name to another tenant's token would
-make a slip hit the wrong tenant. Changes from ../lc.py: the base URL default, the token
+and its own base URL variable; binding that name to another tenant's token would
+make a slip hit the wrong tenant. Changes from ../lc.py: the base URL variable (LC_DEV_BASE), the token
 variable (LOOMCYCLE_DEV_TOKEN), TENANT. Standard library only. The bearer is never
 printed, logged or written; error messages carry status codes and bodies only.
 """
 import json, os, sys, time, urllib.error, urllib.parse, urllib.request
 
-BASE = os.environ.get("LC_DEV_BASE", "https://loomcycle.lab.dglabs.dev").rstrip("/")
+BASE = os.environ.get("LC_DEV_BASE", "").rstrip("/")
 _TOKEN = os.environ.get("LOOMCYCLE_DEV_TOKEN")
 if not _TOKEN:
     raise RuntimeError("LOOMCYCLE_DEV_TOKEN is not set: export the tenant bearer before running the harness")
@@ -33,6 +33,8 @@ class HTTPFail(Exception):
 
 
 def _req(method, path, body=None, timeout=600, accept="application/json"):
+    if not BASE:
+        raise RuntimeError("LC_DEV_BASE is not set: export the deployment base URL before running the harness")
     data = None if body is None else json.dumps(body).encode()
     r = urllib.request.Request(BASE + path, data=data, method=method)
     r.add_header("Authorization", "Bearer " + _TOKEN)

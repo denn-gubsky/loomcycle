@@ -6,7 +6,7 @@ and response bodies only, never request headers.
 """
 import json, os, sys, time, urllib.error, urllib.parse, urllib.request
 
-BASE = os.environ.get("LC_BASE", "https://quality-qa.lab.dglabs.dev").rstrip("/")
+BASE = os.environ.get("LC_BASE", "").rstrip("/")
 _TOKEN = os.environ.get("LOOMCYCLE_BENCH_TOKEN_CQA")
 if not _TOKEN:
     raise RuntimeError("LOOMCYCLE_BENCH_TOKEN_CQA is not set: export the tenant bearer before running the harness")
@@ -31,6 +31,8 @@ class HTTPFail(Exception):
 
 
 def _req(method, path, body=None, timeout=600, accept="application/json"):
+    if not BASE:
+        raise RuntimeError("LC_BASE is not set: export the deployment base URL before running the harness")
     data = None if body is None else json.dumps(body).encode()
     r = urllib.request.Request(BASE + path, data=data, method=method)
     r.add_header("Authorization", "Bearer " + _TOKEN)

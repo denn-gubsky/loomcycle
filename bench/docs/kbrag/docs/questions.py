@@ -1,8 +1,8 @@
 """Study D question sets, loaded from gold files kept OUTSIDE the repo. Never pooled.
 
 - `p7`: the 24 questions of scripts/measure/walker/questions.yaml with the operator's gold
-  (loomcycle-internal gm-p7/p7_gold.yaml), merged by the walker driver's own parser.
-- `waves`: the operator's 12 question waves (loomcycle-internal doc-internal), normalised
+  (a file outside this repo, named by KBRAG_P7_GOLD), merged by the walker driver's own parser.
+- `waves`: the operator's 12 question waves (kept outside this repo), normalised
   to <work>/gold/waves.json.
 - `known`: the mechanical known-item set (<work>/gold/known_items.json).
 
@@ -14,7 +14,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import dconfig  # noqa: E402
 
-P7_GOLD = os.environ.get("KBRAG_P7_GOLD", "/home/denn/workspace/loomcycle-internal/gm-p7/p7_gold.yaml")
+# The gold names a real tenant's documents and lives outside this repo: no default path.
+P7_GOLD = os.environ.get("KBRAG_P7_GOLD", "")
 WAVES = os.path.join(dconfig.WORK, "gold", "waves.json")
 WALKER_DIR = os.path.normpath(os.path.join(HERE, "..", "..", "..", "..", "scripts", "measure", "walker"))
 
@@ -28,6 +29,8 @@ def p7():
     sys.path.insert(0, WALKER_DIR)
     import drive  # scripts/measure/walker/drive.py: its parser and merge rules, unchanged
     qs = drive.load_questions(os.path.join(WALKER_DIR, "questions.yaml"))
+    if not P7_GOLD:
+        raise RuntimeError("KBRAG_P7_GOLD is not set: point it at the p7 gold file (kept outside this repo)")
     drive.merge_gold(qs, open(P7_GOLD, encoding="utf-8").read())
     return [{"id": "p7-" + q["id"], "set": "p7", "kind": q["kind"], "text": q["text"], "gold": q.get("gold") or [],
              "also": q.get("also") or [], "gold_topics": q.get("gold_topics") or [], "expected_answer": None}

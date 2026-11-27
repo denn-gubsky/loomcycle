@@ -190,8 +190,8 @@ not "no difference".
 
 | item | value |
 |---|---|
-| deployment base URL, Study D tenant | `https://loomcycle.lab.dglabs.dev`, tenant `loomcycle-dev` (Study D not started) |
-| deployment base URL, Study C tenant | `https://quality-qa.lab.dglabs.dev`, tenant `conditional-qa` |
+| deployment base URL, Study D tenant | the operator's deployment (host not published), tenant `loomcycle-dev` (Study D not started) |
+| deployment base URL, Study C tenant | the operator's deployment (host not published), tenant `conditional-qa` |
 | token env var names (values never recorded) | `LOOMCYCLE_BENCH_TOKEN_CQA` (Study C) |
 | deployed loomcycle version and commit | 1.165.0 @ `f74bba4ec` (both tenants, one deployment) |
 | Study D gold file | open |
@@ -384,7 +384,7 @@ step (Study D scores citations, not answer spans). `kb`: `kb/ask` at depth `stan
 `kb/screen` already had active tenant overlays (2026-11-13/14/16, model `haiku` =
 `anthropic/claude-haiku-5-5`; kb/search's prompt equals the bundle's; kb/classify's differs by
 one character and lacks the `-Calc` tool denial; kb/screen lacks `-Calc`). They are run as
-they are, untouched. Only `kb/walker` was forked (`def_6d0b431adb12fb12`, provider+model only,
+they are, untouched. Only `kb/walker` was forked (def id withheld, provider+model only,
 checked against the static definition) and promoted at 06:51:13 UTC; it shadows the bundle
 walker for every run in the tenant until it is retired right after the last scored run
 (`forks.py --restore`, then `--check`). `kb/annotate` is not forked. `kb/ask`'s Decision call
@@ -428,8 +428,8 @@ disconnected their streams, the server cancelled them, and their keys replayed t
 runs. No run tree was found served by anything but Haiku, `ollama-local`, code-js or the
 embedder, and no scored row records a non-Haiku kb agent.
 
-**Windows.** First: `kb/walker` fork `def_6d0b431adb12fb12` active 06:51:13 → 07:15:43; helper
-`def_915664b3d21f0619` active 06:51:14 → 07:19:38. At 07:19:39 the tenant was verified as before
+**Windows.** First: `kb/walker` fork (def id withheld) active 06:51:13 → 07:15:43; helper
+(def id withheld) active 06:51:14 → 07:19:38. At 07:19:39 the tenant was verified as before
 the study (every kb name resolves to the def it had before; the helper inactive). The second
 window opens when the driver below re-creates both, and closes when it restores them; its
 times are in the results.
@@ -469,7 +469,7 @@ Nothing else changes.
 ## Amendment 4 — 2026-11-23 08:10 UTC, Study D, a guard stop and a third window
 
 The driver of Amendment 3 ran its second window 07:21:01 → 08:03:47 (`kb/walker` fork
-`def_0b15fc81bf130f52`; helper `def_915664b3d21f0619` reactivated). `p7` completed: 72 ok rows per
+(def id withheld); helper (def id withheld) reactivated). `p7` completed: 72 ok rows per
 arm (3 runs × 24 questions), no failure. At the start of `waves`, one rag-lc search failed
 because the deployment's embedder host did not resolve for a moment (`lookup … server
 misbehaving`); the rag-lc guard stops on any failure among an invocation's first five rag-lc
@@ -490,7 +490,7 @@ indexed 652 documents and the tenant's `query_documents` listing, less `SourceSt
 `SyncReport` and `Annotation`, held 653 (0 indexed only, 1 listed only). As pre-registered,
 this voids H3 and H4, and `analyze.py` reports both as void.
 
-**Why.** The one extra document is `15443a640b2228b0056a975a5e336d84`, which the operator
+**Why.** The one extra document (id withheld) is one which the operator
 identified as the tenant's housekeeping document "Deployment Context" at
 `/memory/tenant_root`. It existed before ingestion, it is untyped, and it is not a
 ConditionalQA page. Amendment 0 lists the operational types the check drops, and this
@@ -515,3 +515,11 @@ system documents under `/memory`, as Study D's Amendment 2 §4 already does for 
 That change is not made for this study.
 
 Nothing else changes.
+
+## Redaction note — 2026-11-27, before publication
+
+Before this branch was pushed to the public repository, the deployment's host names, the
+agent definition ids of the temporary forks and helper, and one tenant document id were
+replaced in this file by "host not published" and "id withheld". No design choice, number,
+time or verdict was changed. The scripts now take the deployment URL from `LC_BASE` /
+`LC_DEV_BASE` and the gold path from `KBRAG_P7_GOLD`, with no default.
