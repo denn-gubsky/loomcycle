@@ -57,7 +57,7 @@ func TestParseStyle_RefusesAnUnknownPlaceholderAndNamesIt(t *testing.T) {
 		`{"loomcycle_style":1,"footer":"Page {n}"}`:               "unknown placeholder {n}",
 		`{"loomcycle_style":1,"header":{"right":"{page"}}`:        "not closed",
 		`{"loomcycle_style":1,"header":{"top":"x"}}`:              "{left, center, right}",
-		`{"loomcycle_style":1,"date":"2026-01-01"}`:               "date are not keys",
+		`{"loomcycle_style":1,"date":"2026-01-01"}`:               "are not keys of a style",
 		`{"loomcycle_style":1,"header":{"left":"a\nb"}}`:          "header must be",
 		`{"loomcycle_style":1,"footer":"{{literal}} {page}"}`:     "",
 		`{"loomcycle_style":1,"footer":"}{{ {pages} {title} }}"}`: "",

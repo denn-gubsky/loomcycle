@@ -81,6 +81,9 @@ func (f *File) renderOp(ctx context.Context, in fileInput) (tools.Result, error)
 		return res, nil
 	}
 	job := &renderJob{f: f, in: in, format: format, dest: dest, date: time.Now().UTC().Format("2006-01-02")}
+	if res, ok := job.readPhoto(ctx); !ok {
+		return res, nil
+	}
 	if res, ok := job.resolveStyle(ctx, true); !ok {
 		if res.Text == "" {
 			return tools.Result{}, ctx.Err()
@@ -149,6 +152,9 @@ type renderJob struct {
 	logo      []byte
 	logoMT    string
 	styleNote string
+	// photo is the call's photo and its media type (RFC HB D4).
+	photo   []byte
+	photoMT string
 	// wsTarget is the workspace path a render to a workspace writes.
 	wsTarget string
 }

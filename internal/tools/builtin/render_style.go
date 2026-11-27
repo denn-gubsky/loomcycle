@@ -8,12 +8,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/files/render"
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
+	"github.com/denn-gubsky/loomcycle/internal/tools/inbox"
 )
 
 // RFC GR P4c (D20, §12.1): a render's house style is a Document of the
@@ -214,7 +216,7 @@ func (j *renderJob) attachStyle(doc *render.Doc, rep *render.Report) {
 	if j.styleNote != "" {
 		rep.Notes = append(rep.Notes, j.styleNote)
 	}
-	if j.style == nil && j.in.PageText == nil {
+	if j.style == nil && j.in.PageText == nil && j.photo == nil {
 		return
 	}
 	st := render.Style{Version: render.StyleVersion}
@@ -239,7 +241,54 @@ func (j *renderJob) attachStyle(doc *render.Doc, rep *render.Report) {
 		}
 	}
 	doc.Style = &st
+	// The photo (RFC HB D4): the call's picture, else the document's first
+	// picture before its first heading when the style places one.
+	switch {
+	case j.photo != nil:
+		if !doc.AddPhoto(j.photoMT, j.photo) {
+			rep.Notes = append(rep.Notes, "the photo was left out: the document already holds as many pictures as a file may")
+		}
+	case st.Photo != nil:
+		if !doc.TakePhoto() {
+			rep.Notes = append(rep.Notes, "the style places a photo, and the document has no picture before its first heading")
+		}
+	}
 	if j.logo != nil && !doc.AddLogo(j.logoMT, j.logo) {
 		rep.Notes = append(rep.Notes, "the style's logo was left out: it is not a picture a file can show")
 	}
+}
+
+// maxPhotoBytes is the most a call's photo may be.
+const maxPhotoBytes = 5 << 20
+
+// readPhoto reads the call's photo: a PNG or JPEG in the run's own inbox,
+// at most 5 MiB (RFC HB D4). The picture is the caller's choice, so it is
+// read from wherever in the inbox it is, not only from what extract wrote;
+// a picture named in a rendered Markdown file still is.
+func (j *renderJob) readPhoto(ctx context.Context) (tools.Result, bool) {
+	ref := strings.TrimSpace(j.in.Photo)
+	if ref == "" {
+		return tools.Result{}, true
+	}
+	if j.format == render.FormatMarkdown {
+		j.styleNote = "the style does not apply to Markdown"
+		return tools.Result{}, true
+	}
+	r, err := parseDataRef(ref)
+	if err != nil || r.kind != refVolume || r.volume != inbox.Name {
+		return errValidation("render: photo must be a picture in the run's inbox", "Pass photo as volume:inbox:<path>, e.g. a picture an MCP tool returned."), false
+	}
+	b, err := readVolumeBytes(ctx, r, maxPhotoBytes)
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return tools.Result{}, false
+		}
+		return errValidation("render: photo: "+err.Error(), "Pass a PNG or JPEG of at most 5 MiB from the run's inbox."), false
+	}
+	mt := http.DetectContentType(b)
+	if mt != "image/png" && mt != "image/jpeg" {
+		return errValidation("render: photo is not a PNG or JPEG picture", ""), false
+	}
+	j.photo, j.photoMT = b, mt
+	return tools.Result{}, true
 }

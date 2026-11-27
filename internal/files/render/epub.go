@@ -289,6 +289,7 @@ func (h *htmlWriter) page(p epubPage, opts Options, lang string) {
 	}
 	h.s(">\n")
 	h.logo()
+	h.photo()
 	h.s("<h1>" + h.esc(oneLine(d.Title)))
 	if l := statusLabel(d.Status); l != "" {
 		h.s(` <span class="status">` + l + `</span>`)
@@ -311,5 +312,6 @@ func (h *htmlWriter) page(p epubPage, opts Options, lang string) {
 		h.s("</nav>\n")
 	}
 	h.blocks(d.Blocks, 0)
+	h.photoClear()
 	end()
 }
