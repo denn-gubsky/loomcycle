@@ -13,7 +13,14 @@ import { randomBytes } from "node:crypto";
 
 import type { AgentEvent, PromptContent, PromptSegment } from "@loomcycle/client";
 
-import { isButtonInput, optionLabels, VERB, type CanonicalCard, type CardAction, type CardButton, type CardInput } from "./cards.js";
+import {
+  isButtonInput,
+  MAX_OPTION_BUTTONS,
+  numberedOptions,
+  optionLabels,
+  pickOption,
+  VERB,
+  type CanonicalCard, type CardAction, type CardButton, type CardInput } from "./cards.js";
 import type { Health } from "./health.js";
 import { legacySubject, type RunAs, type Speaker } from "./identity.js";
 import type { PlatformCapabilities, PlatformInfo } from "./platform.js";
@@ -131,6 +138,25 @@ interface PendingQuestion {
   runId: string;
   interruptId: string;
   options: string[];
+  /** The question takes an answer outside its options (RFC HG). */
+  allowOther: boolean;
+}
+
+/** The longest answer of a person's own loomcycle takes (RFC HG §3.2). */
+export const MAX_OTHER_ANSWER_CHARS = 4000;
+
+/** What an owner hears when a typed reply is none of the options. */
+export function numberPromptText(n: number): string {
+  return `Please reply with a number from 1 to ${n}.`;
+}
+
+export const OTHER_ANSWER_TOO_LONG_TEXT = `That answer is too long. Please keep it under ${MAX_OTHER_ANSWER_CHARS} characters.`;
+
+/** allowsOther reads an Interruption's allow_other. A loomcycle older than
+ *  RFC HG P1 sends none, and the installed @loomcycle/client types none, so
+ *  it is read off the event as an unknown and only true counts. */
+function allowsOther(intr: object): boolean {
+  return (intr as { allow_other?: unknown }).allow_other === true;
 }
 
 /** friendlyError turns a failed run start into something a chat user can act on. */
@@ -356,22 +382,34 @@ export class Conversation<TRef> {
    *  is a voice message's transcript. */
   private async deliver(speaker: Speaker, text: string, voice: TurnInput | undefined): Promise<void> {
     const isOwner = speaker.subject === this.rec.ownerSubject;
-    // A plain reply from the owner answers an open free-text question.
+    // A plain reply from the owner answers the open question.
     if (this.pending && isOwner && this.pending.runId === this.live?.runId) {
-      if (this.pending.options.length > 0) {
-        await this.say("Please choose one of the options on the card above.");
-        return;
-      }
-      // An answer reaches the agent as the question's result, not as an
-      // untrusted block, so an untrusted speaker cannot type one.
-      if (speaker.trust === "untrusted") {
-        await this.say(UNTRUSTED_TYPED_ANSWER_TEXT);
-        return;
-      }
       const p = this.pending;
+      // A pick by number or by an option's text is an answer the agent
+      // offered, as a drawn button is, so an untrusted speaker may make it.
+      let answer = p.options.length > 0 ? pickOption(text, p.options) : undefined;
+      if (answer === undefined) {
+        if (p.options.length > 0 && !p.allowOther) {
+          await this.say(numberPromptText(p.options.length));
+          return;
+        }
+        // An answer of their own reaches the agent as the question's
+        // result, not as an untrusted block, so an untrusted speaker cannot
+        // type one.
+        if (speaker.trust === "untrusted") {
+          await this.say(UNTRUSTED_TYPED_ANSWER_TEXT);
+          return;
+        }
+        // loomcycle caps an "other" answer; a free-text question has no cap.
+        if (p.options.length > 0 && text.length > MAX_OTHER_ANSWER_CHARS) {
+          await this.say(OTHER_ANSWER_TOO_LONG_TEXT);
+          return;
+        }
+        answer = text;
+      }
       this.pending = undefined;
       this.buttons.clear();
-      await this.resolve(p, text, speaker.subject);
+      await this.resolve(p, answer, speaker.subject);
       await this.save();
       return;
     }
@@ -636,13 +674,16 @@ export class Conversation<TRef> {
         if (!intr || !live.runId) return;
         await this.finishTurn();
         const options = optionLabels(intr.options);
+        const allowOther = options.length > 0 && allowsOther(intr);
         const runId = live.runId;
         const interruptId = intr.interrupt_id;
-        this.pending = { runId, interruptId, options };
+        this.pending = { runId, interruptId, options, allowOther };
         const base = { runId, interruptId };
+        // Buttons for the first options only; every option is numbered in
+        // the card's text and answered by its number (RFC HG D4).
         const buttons = this.drawButtons([
           ...(options.length > 0
-            ? options.map((o) => ({ label: o, action: { verb: VERB.answer, ...base, answer: o } }))
+            ? options.slice(0, MAX_OPTION_BUTTONS).map((o) => ({ label: o, action: { verb: VERB.answer, ...base, answer: o } }))
             : [{ label: "Send", action: { verb: VERB.answer, ...base } }]),
           { label: "Decline", action: { verb: VERB.decline, ...base } },
         ]);
@@ -652,7 +693,13 @@ export class Conversation<TRef> {
           interruptId,
           question: intr.question ?? "",
           context:
-            this.rec.scope === "personal" ? intr.context : [intr.context, `Only ${this.ownerLabel()} can answer.`].filter(Boolean).join("\n\n"),
+            [
+              intr.context,
+              numberedOptions(options, allowOther),
+              this.rec.scope === "personal" ? "" : `Only ${this.ownerLabel()} can answer.`,
+            ]
+              .filter(Boolean)
+              .join("\n\n") || undefined,
           options,
           buttons,
         };

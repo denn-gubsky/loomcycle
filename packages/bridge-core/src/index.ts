@@ -1,8 +1,18 @@
-export { isButtonInput, isVerb, optionLabels, VERB } from "./cards.js";
+export { ANSWER_HINT, ANSWER_HINT_OTHER, isButtonInput, isVerb, MAX_OPTION_BUTTONS, MAX_OPTIONS, numberedOptions, optionLabels, pickOption, VERB } from "./cards.js";
 export type { CanonicalCard, CardAction, CardButton, CardInput, Verb } from "./cards.js";
 export { ConfigError, devModeProblem, EnvReader, FILES_MAX_BYTES_CEILING, isLoopback, loadFilesConfig, loadSharedConfig, loadVoiceConfig } from "./config.js";
 export type { AccessMode, Env, SharedConfig } from "./config.js";
-export { Conversation, friendlyError, MAX_DEFERRED, resultCard, UNTRUSTED_KIND, UNTRUSTED_TYPED_ANSWER_TEXT } from "./conversation.js";
+export {
+  Conversation,
+  friendlyError,
+  MAX_DEFERRED,
+  MAX_OTHER_ANSWER_CHARS,
+  numberPromptText,
+  OTHER_ANSWER_TOO_LONG_TEXT,
+  resultCard,
+  UNTRUSTED_KIND,
+  UNTRUSTED_TYPED_ANSWER_TEXT,
+} from "./conversation.js";
 export type { CardResult, ConversationDeps } from "./conversation.js";
 export { Health } from "./health.js";
 export type { HealthSnapshot } from "./health.js";
