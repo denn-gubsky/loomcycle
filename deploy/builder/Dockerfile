@@ -26,7 +26,10 @@ RUN CGO_ENABLED=0 go build -trimpath \
 # quay.io/podman/stable ships podman + fuse-overlayfs + slirp4netns + the
 # rootless uid/gid mapping setup — the fiddly parts of running podman in a
 # container are already done here.
-FROM quay.io/podman/stable:latest@sha256:a02eea67f0ebb539679b938f58acf47a566fb8876e3223ce527fc725826556f0
+# Pin an `-immutable` tag: quay rebuilds `latest` and `vX.Y.Z` daily and
+# garbage-collects the digests they leave, so a `latest@sha256` pin stops
+# resolving within days (it broke the v1.169.0 and v1.170.0 publishes).
+FROM quay.io/podman/stable:v6.2.0-immutable@sha256:e0da0a3aba6b332587c693dc206efa2dd2888dde286c280ef852cbad72c0e701
 
 # gVisor (runsc) for the strong-isolation runtime tier is OPTIONAL — uncomment
 # to bake it in, then set SANDBOX_RUNTIME=runsc. Left out by default to keep the
