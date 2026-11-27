@@ -34,9 +34,9 @@ func TestDeprecatedUse_CountsEachRowOncePerRun(t *testing.T) {
 	d.note(context.Background(), "t1", "coder", config.AgentDef{Tools: []string{"Read", "Workspace"}}, true)
 	got := d.snapshot()
 	want := map[deprecatedUseKey]int64{
-		{config.DeprecatedKindTool, "Bash"}:               1,
-		{config.DeprecatedKindTool, "mcp__sandbox__"}:     1,
-		{config.DeprecatedKindField, "shell_credentials"}: 1,
+		{config.RemovedKindTool, "Bash"}:               1,
+		{config.RemovedKindTool, "mcp__sandbox__"}:     1,
+		{config.RemovedKindField, "shell_credentials"}: 1,
 	}
 	if len(got) != len(want) {
 		t.Fatalf("counts = %v, want %v", got, want)
@@ -81,7 +81,7 @@ func TestDeprecatedUse_AStaticAgentIsCountedNotLogged(t *testing.T) {
 	if buf.Len() != 0 {
 		t.Fatalf("logged: %s", buf.String())
 	}
-	if d.snapshot()[deprecatedUseKey{config.DeprecatedKindTool, "Bash"}] != 1 {
+	if d.snapshot()[deprecatedUseKey{config.RemovedKindTool, "Bash"}] != 1 {
 		t.Fatal("not counted")
 	}
 }
@@ -97,7 +97,7 @@ func TestDeprecatedUse_TheLoggedSetIsBounded(t *testing.T) {
 	if n := strings.Count(buf.String(), "will be removed"); n != maxDeprecatedLogKeys {
 		t.Fatalf("logged %d, want %d", n, maxDeprecatedLogKeys)
 	}
-	if got := d.snapshot()[deprecatedUseKey{config.DeprecatedKindTool, "Bash"}]; got != maxDeprecatedLogKeys+10 {
+	if got := d.snapshot()[deprecatedUseKey{config.RemovedKindTool, "Bash"}]; got != maxDeprecatedLogKeys+10 {
 		t.Fatalf("counted %d", got)
 	}
 }
@@ -117,7 +117,7 @@ func TestStartRunSpan_CountsADeprecatedUse(t *testing.T) {
 	span.End()
 	_, span = srv.startRunSpan(context.Background(), shellDef(), lcotel.RunStartAttrs{AgentName: "coder", Tenant: "t2"})
 	span.End()
-	if got := srv.deprecatedUse.snapshot()[deprecatedUseKey{config.DeprecatedKindTool, "Bash"}]; got != 2 {
+	if got := srv.deprecatedUse.snapshot()[deprecatedUseKey{config.RemovedKindTool, "Bash"}]; got != 2 {
 		t.Fatalf("counted %d, want 2", got)
 	}
 	if n := strings.Count(buf.String(), "will be removed"); n != 1 {

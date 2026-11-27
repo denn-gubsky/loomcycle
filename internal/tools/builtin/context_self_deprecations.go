@@ -28,15 +28,15 @@ func reportShellUse(out map[string]any, cfg *config.Config, p tools.RunPolicy) {
 func selfDeprecations(p tools.RunPolicy) []map[string]string {
 	used := map[string]bool{}
 	for _, name := range p.Tools {
-		if d, ok := config.DeprecatedTool(name); ok {
+		if d, ok := config.RemovedTool(name); ok {
 			used[d.Kind+"\x00"+d.Name] = true
 		}
 	}
 	if p.ShellCreds.Set {
-		used[config.DeprecatedKindField+"\x00shell_credentials"] = true
+		used[config.RemovedKindField+"\x00shell_credentials"] = true
 	}
 	var out []map[string]string
-	for _, d := range config.Deprecations() {
+	for _, d := range config.Removals() {
 		if used[d.Kind+"\x00"+d.Name] {
 			out = append(out, map[string]string{"name": d.Name, "replacement": d.Replacement})
 		}

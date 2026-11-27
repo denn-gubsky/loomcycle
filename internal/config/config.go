@@ -361,6 +361,10 @@ type Config struct {
 	// release removes (RFC GW §9, deprecated.go), kept apart so `doctor` can
 	// report them under their own check rather than as advisories.
 	Deprecations []string `yaml:"-"`
+	// mdRemovedUses lists, per markdown agent, the removed tools and fields
+	// its front matter names (removed.go). Set by discovery, read once by the
+	// load, which refuses them.
+	mdRemovedUses map[string][]string
 	// bundledWorkspace names the agents whose workspace grant an embedded
 	// bundle gave and no operator layer changed (bundledWorkspaceGrants).
 	bundledWorkspace map[string]bool
@@ -5187,9 +5191,12 @@ func LoadLayersWith(opts LoadOptions, layers ...Layer) (*Config, error) {
 		return nil, fmt.Errorf("retired environment variables are set to something this version does not apply (a tighter bound, a feature kept off, another store, data kept or deleted differently, or a setting that moved to the yaml and is not there), and ignoring them would change this deployment; act on each, then remove its line: %s", strings.Join(refused, " | "))
 	}
 	cfg.Warnings = append(cfg.Warnings, retiredEnvWarnings(os.Environ())...)
-	// What a later release removes, while it still works (RFC GW §9).
-	cfg.Deprecations = append(deprecatedEnvWarnings(os.Environ()), deprecationWarnings(cfg, layers)...)
-	cfg.Warnings = append(cfg.Warnings, cfg.Deprecations...)
+	// What v1.172.0 removed (RFC GW §9 step 4): an operator's agent that
+	// still names it stops the start, every use in one error. The variables
+	// are refused above, as retired ones.
+	if uses := removedUseErrors(layers, cfg.mdRemovedUses); len(uses) > 0 {
+		return nil, joinRemoved(uses)
+	}
 	cfg.bundledWorkspace = bundledWorkspaceGrants(cfg, layers)
 	cfg.bundledGitRemote = bundledGitRemotes(cfg, layers)
 
@@ -6526,6 +6533,12 @@ func discoverAgents(cfg *Config, root string, defaulted bool) error {
 	}
 	for _, name := range set.Names() {
 		discovered, _ := set.Get(name)
+		if uses := removedItemsOfMarkdownAgent(discovered); len(uses) > 0 {
+			if cfg.mdRemovedUses == nil {
+				cfg.mdRemovedUses = map[string][]string{}
+			}
+			cfg.mdRemovedUses[name] = uses
+		}
 		base := agentFromDiscovered(discovered)
 		// yaml-as-override: if cfg.Agents[name] already exists from
 		// the yaml unmarshal, the yaml fields beat the discovered

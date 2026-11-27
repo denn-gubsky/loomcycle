@@ -27,7 +27,7 @@ import (
 const maxDeprecatedLogKeys = 4096
 
 // deprecatedUseKey is a series: a table row's kind and name. The label set is
-// bounded by the table (config.Deprecations).
+// bounded by the table (config.Removals).
 type deprecatedUseKey struct{ Kind, Name string }
 
 type deprecatedUse struct {
@@ -45,18 +45,18 @@ func newDeprecatedUse(log *slog.Logger) *deprecatedUse {
 }
 
 // deprecatedRows are the table rows def uses, each once, in table order.
-func deprecatedRows(def config.AgentDef) []config.Deprecation {
+func deprecatedRows(def config.AgentDef) []config.Removal {
 	used := map[string]bool{}
 	for _, tool := range def.Tools {
-		if d, ok := config.DeprecatedTool(tool); ok {
+		if d, ok := config.RemovedTool(tool); ok {
 			used[d.Kind+"\x00"+d.Name] = true
 		}
 	}
 	if def.ShellCredentials != nil {
-		used[config.DeprecatedKindField+"\x00shell_credentials"] = true
+		used[config.RemovedKindField+"\x00shell_credentials"] = true
 	}
-	var out []config.Deprecation
-	for _, d := range config.Deprecations() {
+	var out []config.Removal
+	for _, d := range config.Removals() {
 		if used[d.Kind+"\x00"+d.Name] {
 			out = append(out, d)
 		}
