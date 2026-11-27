@@ -242,27 +242,27 @@ func TestMCPMemberSession_CannotForkAnOperatorsAgentIntoForce(t *testing.T) {
 	}
 }
 
-// shell_credentials left unset is EVERY credential the operator lists, so a
-// member's shell-holding agent must say which it gets; with no rule naming the
-// operator's host credentials, a member may grant none ([]).
-func TestMCPMemberSession_ShellCredentialsAreExplicitForAShellAgent(t *testing.T) {
+// RFC GW P15 Q1: what v1.172.0 removed is refused on new authoring over MCP,
+// for a member and the operator alike (it was not a matter of authority), and
+// a definition naming nothing removed is unaffected.
+func TestMCPAgentDefCreate_NamingARemovedItemIsRefused(t *testing.T) {
 	tool, _, op, member := fyFixture(t, nil)
 	for i, c := range []struct {
 		overlay string
 		ok      bool
 	}{
 		{`{"system_prompt":"s","tools":["Bash"],"volumes":["work"]}`, false},
-		{`{"system_prompt":"s","tools":["Bash"],"volumes":["work"],"shell_credentials":["GITHUB_TOKEN"]}`, false},
-		{`{"system_prompt":"s","tools":["Bash"],"volumes":["work"],"shell_credentials":[]}`, true},
-		// No shell: nothing to judge, unset stays the norm.
+		{`{"system_prompt":"s","tools":["Read"],"volumes":["work"],"shell_credentials":[]}`, false},
 		{`{"system_prompt":"s","tools":["Read"],"volumes":["work"]}`, true},
 	} {
-		_, text, isErr := agentDefCall(t, tool, member, fmt.Sprintf(`{"op":"create","name":"sh-%d","overlay":%s}`, i, c.overlay))
-		if isErr == c.ok {
-			t.Errorf("member %s: accepted=%v, want %v (%s)", c.overlay, !isErr, c.ok, text)
-		}
-		if _, text, isErr := agentDefCall(t, tool, op, fmt.Sprintf(`{"op":"create","name":"op-sh-%d","overlay":%s}`, i, c.overlay)); isErr {
-			t.Errorf("the operator was refused %s: %s", c.overlay, text)
+		for who, ctx := range map[string]context.Context{"member": member, "operator": op} {
+			_, text, isErr := agentDefCall(t, tool, ctx, fmt.Sprintf(`{"op":"create","name":"%s-sh-%d","overlay":%s}`, who, i, c.overlay))
+			if isErr == c.ok {
+				t.Errorf("%s %s: accepted=%v, want %v (%s)", who, c.overlay, !isErr, c.ok, text)
+			}
+			if !c.ok && !strings.Contains(text, "removed in "+config.RemovedIn) {
+				t.Errorf("%s %s: refusal %q does not say it was removed", who, c.overlay, text)
+			}
 		}
 	}
 }

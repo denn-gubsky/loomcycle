@@ -11,6 +11,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/api/memberpath"
 	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/credential"
 	"github.com/denn-gubsky/loomcycle/internal/erasure"
@@ -719,6 +720,11 @@ func handleRegisterAgent(ctx context.Context, env *handlerEnv, args json.RawMess
 	var req connector.RegisterAgentRequest
 	if err := json.Unmarshal(args, &req); err != nil {
 		return toolErr("invalid register_agent arguments: " + err.Error()), nil
+	}
+	// The request type has no removed field, so a removed one (RFC GW P15)
+	// would decode to nothing: ask the raw arguments, and refuse it.
+	if err := config.RefuseRemovedAuthoring(req.Tools, args); err != nil {
+		return toolErrFrom("register_agent", err), nil
 	}
 	res, err := env.connector.RegisterAgent(ctx, req)
 	if err != nil {

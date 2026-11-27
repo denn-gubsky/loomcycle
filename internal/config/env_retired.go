@@ -36,7 +36,7 @@ var retiredEnv = map[string]string{
 	"LOOMCYCLE_CODE_AGENTS_ENABLED":                 "the code-js provider is registered whenever the config declares it (the default providers layer does)",
 	"LOOMCYCLE_CODE_HOOKS_ENABLED":                  "a hook body may always be code-js",
 	"LOOMCYCLE_CHANNEL_HOOKS":                       "the channel-hook worker always runs; a channel's hooks are always applied",
-	"LOOMCYCLE_BASHBOX_ENABLED":                     "Bashbox is always registered; an agent gets it through its tools list",
+	"LOOMCYCLE_BASHBOX_ENABLED":                     "Bashbox was removed in v1.172.0: commands run in a workspace (the Workspace tool, on a workspace worker)",
 	"LOOMCYCLE_RESUME_FANOUT":                       "a fan-out parent always parks on pause and is resumed with its children",
 	"LOOMCYCLE_AGENT_DEF_MAX_DEFINITION_BYTES":      "the cap is fixed at 128 KiB",
 	"LOOMCYCLE_AGENT_DEF_MAX_DESCRIPTION_BYTES":     "the cap is fixed at 8 KiB",
@@ -117,7 +117,16 @@ var retiredEnv = map[string]string{
 	"LOOMCYCLE_USAGE_EXPORT_DIR":                    "the usage archiver is gone: set retention.export_dir in the yaml",
 	"LOOMCYCLE_READ_ROOT":                           "the filesystem jail is gone: declare a `volumes:` block and bind agents to it",
 	"LOOMCYCLE_WRITE_ROOT":                          "the filesystem jail is gone: declare a `volumes:` block and bind agents to it",
-	"LOOMCYCLE_BASH_CWD":                            "the filesystem jail is gone: declare a `volumes:` block; Bash runs in the root of the agent's rw volume",
+	"LOOMCYCLE_BASH_CWD":                            "the filesystem jail and the Bash tool are gone: declare a `volumes:` block for the file tools, and run commands in a workspace (the Workspace tool, on a workspace worker)",
+
+	// The shell variables RFC GW P15 removed with the Bash and Bashbox tools
+	// (removed.go). Each set one refuses the start (retiredEnvRefuse).
+	"LOOMCYCLE_BASH_ENABLED":                   removedEnvInstead("LOOMCYCLE_BASH_ENABLED"),
+	"LOOMCYCLE_BASH_ALLOWED_CREDS":             removedEnvInstead("LOOMCYCLE_BASH_ALLOWED_CREDS"),
+	"LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS":      removedEnvInstead("LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS"),
+	"LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV":   removedEnvInstead("LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV"),
+	"LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS": removedEnvInstead("LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS"),
+	"LOOMCYCLE_BASHBOX_OVERLAY_MAX_BYTES":      removedEnvInstead("LOOMCYCLE_BASHBOX_OVERLAY_MAX_BYTES"),
 
 	// Two variables became one mode.
 	"LOOMCYCLE_DEADLINK_GC_MS":      "set LOOMCYCLE_DEADLINK_GC=off to stop the dead-link collection; it otherwise runs every hour",
@@ -286,7 +295,7 @@ var retiredEnvInsteadFor = map[string]func(value string, c retiredEnvCtx) string
 // A variable whose setting moved to a yaml key in the same release as the
 // `retention:` block is not here: retiredEnvMoved holds those, under one rule.
 var retiredEnvRefuse = map[string]retiredRefusal{
-	// The seven gates. Each old read was `== "1"`, so any other value of a set
+	// The six gates. Each old read was `== "1"`, so any other value of a set
 	// variable, the empty one included, was the operator keeping the feature
 	// off.
 	"LOOMCYCLE_SCHEDULER_ENABLED":   {gateWasOff, "the scheduler is always on; to keep it unused, keep no schedule definitions (or disable each one)"},
@@ -294,7 +303,6 @@ var retiredEnvRefuse = map[string]retiredRefusal{
 	"LOOMCYCLE_CODE_AGENTS_ENABLED": {gateWasOff, "the code-js provider is registered whenever the config declares it; to keep code agents unused, run without the default providers layer (LOOMCYCLE_NO_DEFAULT_PROVIDERS=1) and declare your own `providers:` with no code-js entry"},
 	"LOOMCYCLE_CODE_HOOKS_ENABLED":  {gateWasOff, "a hook body may always be code-js; to keep code hooks unused, keep hook definitions out of the hands of anyone who should not run JavaScript in this process"},
 	"LOOMCYCLE_CHANNEL_HOOKS":       {gateWasOff, "the channel-hook worker always runs; to keep it unused, declare no `hooks:` on any channel"},
-	"LOOMCYCLE_BASHBOX_ENABLED":     {gateWasOff, "Bashbox is always registered; to keep it unused, do not name Bashbox in any agent's `tools`"},
 	"LOOMCYCLE_RESUME_FANOUT":       {gateWasOff, "a fan-out parent always parks on pause and is resumed with its children; this can no longer be turned off"},
 
 	// The store used to be chosen here. Ignoring a value that disagrees with
@@ -344,6 +352,20 @@ var retiredEnvRefuse = map[string]retiredRefusal{
 	"LOOMCYCLE_READ_ROOT":  {loosens: valueNotEmpty},
 	"LOOMCYCLE_WRITE_ROOT": {loosens: valueNotEmpty},
 	"LOOMCYCLE_BASH_CWD":   {loosens: valueNotEmpty},
+
+	// The tools these configured are gone (RFC GW P15). Ignoring one would
+	// leave the deployment tighter, not looser; RFC GW §9 step 4 refuses the
+	// start anyway, so the operator learns the feature is gone rather than
+	// finding its agents without a shell. Bashbox's old gate joins them: on
+	// or off, there is no Bashbox to gate. An empty value is a dead line,
+	// advised like any retired one.
+	"LOOMCYCLE_BASH_ENABLED":                   {loosens: valueNotEmpty},
+	"LOOMCYCLE_BASH_ALLOWED_CREDS":             {loosens: valueNotEmpty},
+	"LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS":      {loosens: valueNotEmpty},
+	"LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV":   {loosens: valueNotEmpty},
+	"LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS": {loosens: valueNotEmpty},
+	"LOOMCYCLE_BASHBOX_OVERLAY_MAX_BYTES":      {loosens: valueNotEmpty},
+	"LOOMCYCLE_BASHBOX_ENABLED":                {loosens: valueNotEmpty},
 
 	// The usage archiver deleted aged chats. Its replacement only does so when
 	// it is configured, so a deployment that relied on the archiver would keep

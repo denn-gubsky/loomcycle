@@ -112,8 +112,6 @@ func (b *boot) wireMemory() {
 func (b *boot) wireCredentials() {
 	cfg := b.cfg
 	secrets := b.secrets
-	bashboxTool := b.bashboxTool
-	bashTool := b.bashTool
 	memoryTool := b.memoryTool
 	teamDefTool := b.teamDefTool
 	volumeDefTool := b.volumeDefTool
@@ -244,20 +242,6 @@ func (b *boot) wireCredentials() {
 	// the call instead — see credentialBinding.
 	credBinding := credentialBinding{engine: credEngine, register: registerSecret}
 	credResolver := providers.CredentialResolver(credBinding.providerKey)
-	// RFC BD: let a software team's Bashbox host-command fallback (git/gh) inject
-	// PER-TENANT credentials named in LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS,
-	// resolved for the run's own identity (agent>user>tenant) — so a tenant's own
-	// GITHUB_TOKEN reaches git/gh instead of one shared operator host token. Only
-	// the operator-allowlisted names are injected; the value goes solely into the
-	// host child's env (registerSecret masks any transcript echo). A miss keeps
-	// the host-env fallback; an expired credential leaves the variable unset.
-	bashboxTool.CredResolve = credBinding.envVar("bashbox")
-	// Raw Bash mirrors the Bashbox fallback: inject PER-TENANT credentials named
-	// in LOOMCYCLE_BASH_ALLOWED_CREDS into the child's env, resolved for the run's
-	// own identity (agent>user>tenant) — so a tenant's own GITHUB_TOKEN reaches
-	// the command instead of one shared operator host var. Same miss / expired
-	// rule as the Bashbox fallback.
-	bashTool.CredResolve = credBinding.envVar("bash")
 	// RFC AX Layer 1: a metadata-only keyability probe — does (tenant, agent,
 	// user) have its OWN usable CredentialDef for env-var `name`? Reuses
 	// Engine.Resolve's agent>user>tenant precedence but NEVER decrypts, so

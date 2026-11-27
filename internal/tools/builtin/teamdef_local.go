@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/lookup"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/teamgraph"
@@ -41,7 +42,35 @@ func LocalAgentDefinition(body json.RawMessage) (json.RawMessage, error) {
 	var def mergedDef
 	def.applyOverlay(ov)
 	def.normalize()
-	return json.Marshal(def)
+	out, err := json.Marshal(def)
+	if err != nil {
+		return nil, err
+	}
+	return keepRemovedFields(body, out)
+}
+
+// keepRemovedFields copies into a re-encoded definition each removed field
+// (RFC GW P15) the stored body still holds. mergedDef no longer has the
+// field, so without this the reader (lookup.AgentFromDefRow) would not see
+// it and the run would not be told it was dropped.
+func keepRemovedFields(body, out json.RawMessage) (json.RawMessage, error) {
+	removed := config.RemovedFieldsInJSON(body)
+	if len(removed) == 0 {
+		return out, nil
+	}
+	var src, dst map[string]json.RawMessage
+	if err := json.Unmarshal(body, &src); err != nil {
+		return out, nil // the decoder above read it, so this does not happen
+	}
+	if err := json.Unmarshal(out, &dst); err != nil {
+		return nil, err
+	}
+	for _, name := range removed {
+		if v, ok := src[name]; ok {
+			dst[name] = v
+		}
+	}
+	return json.Marshal(dst)
 }
 
 // localAgentIssues holds every local agent a definition declares to the gates

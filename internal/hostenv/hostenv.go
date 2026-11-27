@@ -3,9 +3,9 @@
 // A child inherits nothing by default: loomcycle's own environment holds
 // provider keys, the bearer token and the database DSN, and a child that can
 // print its environment would hand them to whoever reads its output. Every
-// host-exec path (the Bash tool, the Bashbox host-command fallback, the
-// transcription helper commands) builds its child's env here, so the paths
-// cannot drift apart on what leaks.
+// host-exec path (the transcription helper commands, the workspace host
+// engine) builds its child's env here, so the paths cannot drift apart on
+// what leaks.
 package hostenv
 
 import (

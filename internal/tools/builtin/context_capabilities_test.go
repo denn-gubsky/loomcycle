@@ -19,7 +19,6 @@ func capabilitiesCfg() *config.Config {
 	return &config.Config{
 		Env: config.Env{
 			ListenAddr:                  "0.0.0.0:8787",
-			BashEnabled:                 true,
 			RetentionEnabled:            true,
 			BraveAPIKey:                 "brave-secret-key-value",
 			MaxRequestBytes:             16 << 20,
@@ -73,7 +72,7 @@ func TestContextTool_CapabilitiesReflectsSubsystemState(t *testing.T) {
 	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{AgentID: "a1"})
 	out := capabilitiesOut(t, on, ctx)
 
-	for _, key := range []string{"bash", "bashbox", "retention", "code_js"} {
+	for _, key := range []string{"retention", "code_js"} {
 		if !available(t, out, key) {
 			t.Errorf("%s should be available with the subsystem enabled", key)
 		}
@@ -94,18 +93,20 @@ func TestContextTool_CapabilitiesReflectsSubsystemState(t *testing.T) {
 
 	// Flip the subsystems OFF and watch every flag follow.
 	offCfg := capabilitiesCfg()
-	offCfg.Env.BashEnabled = false
 	offCfg.Env.RetentionEnabled = false
 	offCfg.Providers = nil
 	offOut := capabilitiesOut(t, &Context{Cfg: offCfg}, ctx)
-	for _, key := range []string{"bash", "retention", "code_js"} {
+	for _, key := range []string{"retention", "code_js"} {
 		if available(t, offOut, key) {
 			t.Errorf("%s still reports available after the subsystem was disabled — the flag is not reading real state", key)
 		}
 	}
-	// Bashbox has no switch: it is registered on every configured server.
-	if !available(t, offOut, "bashbox") {
-		t.Error("bashbox reports unavailable on a configured server; it is always registered")
+	// Bash and Bashbox were removed in v1.172.0: their keys stay one release,
+	// unavailable on every server (RFC GW P15 Q4).
+	for _, key := range []string{"bash", "bashbox"} {
+		if available(t, out, key) {
+			t.Errorf("%s reports available on a fully configured server; the tool was removed", key)
+		}
 	}
 
 	// Consolidation: configured + enabled, then staged off. "configured but not
@@ -137,14 +138,10 @@ func TestContextTool_CapabilitiesReflectsSubsystemState(t *testing.T) {
 		t.Errorf("search providers = %v with only a Brave key set, want [brave]", s2["providers"])
 	}
 
-	// Sandbox is per-run: it arrives as MCP tools, so presence in the tool list
-	// is the only truth available.
-	if available(t, out, "sandbox") {
-		t.Error("sandbox reports available with no sandbox tools in the run")
-	}
-	withSandbox := &Context{Cfg: capabilitiesCfg(), Tools: []tools.Tool{&stubNamedTool{name: "mcp__sandbox__exec"}}}
-	if !available(t, capabilitiesOut(t, withSandbox, ctx), "sandbox") {
-		t.Error("sandbox should report available when the run carries mcp__sandbox__* tools")
+	// The sandbox key reported the builder sidecar's tools, which went with
+	// it (RFC GW P15 Q4): an MCP server named sandbox is an ordinary one.
+	if _, ok := out["sandbox"]; ok {
+		t.Errorf("capabilities still reports sandbox: %v", out["sandbox"])
 	}
 }
 
@@ -305,16 +302,6 @@ func TestContextTool_CapabilitiesReportsTheEffectiveConsolidationBands(t *testin
 	}
 }
 
-// stubNamedTool is a minimal tools.Tool that only needs to answer Name().
-type stubNamedTool struct{ name string }
-
-func (s *stubNamedTool) Name() string                 { return s.name }
-func (s *stubNamedTool) Description() string          { return "" }
-func (s *stubNamedTool) InputSchema() json.RawMessage { return json.RawMessage(`{}`) }
-func (s *stubNamedTool) Execute(context.Context, json.RawMessage) (tools.Result, error) {
-	return tools.Result{}, nil
-}
-
 // A discovery surface must always return a COMPLETE shape. The config-derived
 // keys were previously nested under `if c.Cfg != nil`, so with no config they
 // vanished entirely and a client branching on caps.scheduler.available read
@@ -328,7 +315,7 @@ func TestContextTool_CapabilitiesShapeIsCompleteWithoutConfig(t *testing.T) {
 	for _, key := range []string{
 		"bash", "bashbox", "scheduler", "webhooks", "retention", "code_js",
 		"search", "consolidation", "limits", "vector_memory", "full_text_memory",
-		"memory_layer", "sql_memory", "documents", "sandbox",
+		"memory_layer", "sql_memory", "documents",
 	} {
 		if _, ok := out[key]; !ok {
 			t.Errorf("key %q absent with no config; a caller branching on it reads undefined, not false", key)
@@ -336,7 +323,7 @@ func TestContextTool_CapabilitiesShapeIsCompleteWithoutConfig(t *testing.T) {
 	}
 	for _, key := range []string{
 		"bash", "bashbox", "scheduler", "webhooks", "retention", "code_js",
-		"search", "consolidation", "vector_memory", "sandbox",
+		"search", "consolidation", "vector_memory",
 	} {
 		if available(t, out, key) {
 			t.Errorf("%s reports AVAILABLE with no config at all — unconfirmable must fail safe", key)

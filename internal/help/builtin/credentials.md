@@ -22,8 +22,7 @@ A server without the master key configured can store nothing and resolves
 nothing. A credential that is stored but cannot be decrypted (no master key,
 a key rotated without the previous one, a wrong key, a corrupt row) is never
 replaced by anything else: a provider call naming it fails instead of using
-the operator's key, a Bash / Bashbox variable is left unset, a header or
-webhook secret refuses the call. Only a name with no stored credential falls
+the operator's key, a header or webhook secret refuses the call. Only a name with no stored credential falls
 back.
 
 ### Restricting where a credential may be sent — `allowed_urls`
@@ -49,10 +48,9 @@ sent to.
   and covered:** an MCP server's header (the server's URL), a hook's webhook
   header (the callback URL), a remote memory backend's or document source's
   key (its `base_url`), and a git source (the repository URL). It does
-  **not** resolve as a provider key or in a `Bash` / `Bashbox` environment:
-  those name no destination. Nothing is used in its place either: the
-  provider call fails instead of taking the operator's key, and the variable
-  is left unset instead of taking the operator's host variable.
+  **not** resolve as a provider key: that names no destination. Nothing is
+  used in its place either: the provider call fails instead of taking the
+  operator's key.
 - A request carrying a restricted credential **follows no redirect**: the
   redirect is refused and the call fails.
 - Creating the credential again without `allowed_urls` (a rotation) **keeps
@@ -66,12 +64,11 @@ sent to.
 `op=create` takes an optional RFC3339 `expires_at` (it must be in the future),
 and it is **enforced**: from that instant on the credential is refused wherever
 it is referenced (a `$cred:` header, a peer or git key, a `$ghapp:` App config, a
-webhook verification secret, a provider key override, a Bash / Bashbox env var).
+webhook verification secret, a provider key override).
 An expired credential is never
 replaced by anything else: not by a same-named credential in a wider scope, not
-by the operator's provider key (the call fails, naming the credential), and not
-by the operator's same-named host variable in Bash / Bashbox (the variable is
-left unset and the output says why). `get` and `list` keep showing it, with
+and not by the operator's provider key (the call fails, naming the
+credential). `get` and `list` keep showing it, with
 `"expired": true`. Rotate it by creating it again with the same name; a create
 without `expires_at` clears the expiry.
 
@@ -90,9 +87,9 @@ resolved secret for **this run's identity** (checking `agent`, then `user`, then
 `tenant` scope) just before the call — the model only ever sees the placeholder.
 Today `$cred:` is honored in the HTTP-MCP client (e.g. an `Authorization` header
 for a per-user Slack/Telegram/HTTP MCP server), in an A2A peer's credential, and
-in a webhook's or a schedule's `user_credentials` and `user_bearer`. The Bashbox
-host-command fallback resolves named credentials into a child's env for
-`git`/`gh` (a per-tenant repo token). A tool that can't resolve a `$cred:` token
+in a webhook's or a schedule's `user_credentials` and `user_bearer`. A
+workspace reaches an API with one through an egress route, and a git
+workspace opens with one: no credential reaches a shell. A tool that can't resolve a `$cred:` token
 drops it or refuses the call rather than sending a literal placeholder
 downstream.
 
@@ -102,8 +99,7 @@ delivery, and the delivery's sender is not that user. A schedule's run uses it
 only when the schedule was written by an operator, or by its own `user_id` —
 otherwise whoever wrote a schedule for someone could have it send that person's
 credentials. Such a run resolves for its agent, then the tenant — for a
-`$cred:` reference, a provider key overridden by its env-var name, and a
-Bash/Bashbox host credential alike. A `user_bearer` always resolves at tenant
+`$cred:` reference and a provider key overridden by its env-var name alike. A `user_bearer` always resolves at tenant
 level. A chat a trigger started keeps that rule when it is continued.
 
 **Work someone else sends into a user's run skips that user's `user` scope.**

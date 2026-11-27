@@ -97,7 +97,6 @@ func (a *AgentDef) checkCapabilityCeiling(ctx context.Context, name string, def 
 		func() error { return ceilEvaluation(ctx, def, base, held) },
 		func() error { return ceilCrypto(ctx, def, base, held) },
 		func() error { return ceilToolModes(ctx, def, base, held) },
-		func() error { return ceilShellCreds(ctx, def, base, held) },
 		func() error { return ceilGitRemote(ctx, def, base, held) },
 		func() error { return ceilWorkspace(ctx, def, base, held) },
 		func() error { return ceilStatementMethods(ctx, def, base) },
@@ -440,41 +439,6 @@ func ceilCrypto(ctx context.Context, def mergedDef, base *mergedDef, held string
 	return subsetCeiling("crypto_scopes", eff, false, held, ceiling)
 }
 
-// ---- shell credentials ----
-
-// ceilShellCreds holds shell_credentials to the author's own narrowing (RFC
-// EW). Unset is the widest value here, every credential the operator lists,
-// so the rule is the reverse of crypto's: an author whose shell narrows
-// nothing may store anything; one narrowed to some names may store only a
-// subset of them, plus what the forked version already allowed, and may not
-// leave the field unset unless the forked version did.
-//
-// The ceiling is the UNION of the author's names and the forked version's,
-// as for crypto_scopes, and that is deliberate (RFC EW D7, the owner's call
-// after the post-merge review): a fork may keep what it forked, and an author
-// may add what its own shell holds, so one definition can hold names that
-// were each reachable separately. The operator's two env lists stay the hard
-// ceiling, and the stricter forms (the author's list alone, or the
-// intersection) were considered and declined.
-func ceilShellCreds(ctx context.Context, def mergedDef, base *mergedDef, held string) error {
-	author := tools.PolicyOf(ctx).ShellCreds
-	if !author.Set {
-		return nil
-	}
-	forked := tools.ShellCredsPolicyValue{Set: true}
-	if base != nil {
-		forked = tools.ShellCredsFor(base.ShellCredentials)
-	}
-	if !forked.Set {
-		return nil // the forked version narrowed nothing, and a fork may keep that
-	}
-	ceiling := scopeUnion(author.Names, forked.Names)
-	if def.ShellCredentials == nil {
-		return refuseCapability("shell_credentials", "every credential the operator lists", true, held, ceiling)
-	}
-	return subsetCeiling("shell_credentials", *def.ShellCredentials, false, held, ceiling)
-}
-
 // ---- git remote ----
 
 // ceilGitRemote holds git_remote to the Git network operations the author's
@@ -482,8 +446,8 @@ func ceilShellCreds(ctx context.Context, def mergedDef, base *mergedDef, held st
 // there is no default to wave through: an empty list is within every
 // ceiling, and each operation listed must be one the author's run may
 // perform (already narrowed by its parent's, for a sub-agent) or the forked
-// version already had. The ceiling is that union, as for crypto_scopes and
-// shell_credentials (RFC EW D7). An author that cannot fetch may list
+// version already had. The ceiling is that union, as for crypto_scopes (RFC
+// EW D7). An author that cannot fetch may list
 // nothing; one that can fetch but not push may not list push.
 func ceilGitRemote(ctx context.Context, def mergedDef, base *mergedDef, held string) error {
 	if len(def.GitRemote) == 0 {

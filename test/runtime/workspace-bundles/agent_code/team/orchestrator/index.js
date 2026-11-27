@@ -1,5 +1,5 @@
 // team/orchestrator (agent-teams bundle) as a code-js agent, with the
-// bundle's own Workspace grant and git_remote and Bashbox withheld. Two of
+// bundle's own tools, Workspace grant and git_remote. Two of
 // its skills' paths:
 //   - team/sqldata (any prompt): it writes rows it holds (as from a SQL
 //     Memory query) into a workspace, totals them with a script there and

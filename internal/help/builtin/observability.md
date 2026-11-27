@@ -173,7 +173,7 @@ Filter expressions:
 - `loomcycle.run_id=run_abc...` — pin to one run
 - `loomcycle.user_hash=<hash>` — all runs by one user (`loomcycle otel user-hash <tenant> <user>`)
 - `loomcycle.provider=anthropic` — all Anthropic-routed calls
-- `loomcycle.tool=Bash` — all Bash invocations
+- `loomcycle.tool=Workspace` — all Workspace invocations
 - Tag filter `status=error` — failed spans only
 
 Tear down: `docker stop jaeger`.

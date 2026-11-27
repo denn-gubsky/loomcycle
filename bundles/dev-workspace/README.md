@@ -6,10 +6,10 @@ it opens a workspace, writes the envelope's files, runs its commands in order
 and reads back the files it names. The `dev/exec-usage` skill tells a
 delegating agent how to call it.
 
-It replaces the `sandbox` + `dev-exec` pair, which a future release removes
-with the builder sidecar (RFC GW P15). Same agent name, same result shape:
-select `dev-workspace` instead of `sandbox,dev-exec`, not beside them (both
-define `dev/exec`; the later one in `LOOMCYCLE_PRESETS` wins).
+It replaces the `sandbox` + `dev-exec` pair, removed in v1.172.0 with the
+builder sidecar (RFC GW P15). Same agent name, same result shape: select
+`dev-workspace` where `sandbox,dev-exec` stood (`LOOMCYCLE_PRESETS` naming
+either removed bundle now fails the start and names `dev-workspace`).
 
 - **Needs workspaces on:** `workspace.mode` `local`, `remote` or
   `local+remote`, with a worker for the run's tenant (`docs/WORKSPACES.md`).

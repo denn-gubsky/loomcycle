@@ -115,7 +115,11 @@ func TestTeamDefCreate_LocalAgentPassesEveryAgentDefCreateGate(t *testing.T) {
 		body    string
 		mention string
 	}{
-		{"tools ceiling", nil, `{"tier":"middle","tools":["Read","Bash"]}`, "Tools cannot widen"},
+		{"tools ceiling", nil, `{"tier":"middle","tools":["Read","Edit"]}`, "Tools cannot widen"},
+		// RFC GW P15 Q1: a removed tool is refused on new authoring, a team's
+		// own agent included. (A removed field in a team body is refused
+		// earlier, by TeamDef's key check, as an unknown key.)
+		{"removed tool", nil, `{"tier":"middle","tools":["Read","Bash"]}`, "removed in v1.172.0"},
 		{"agent_def_scopes: default-deny with no policy",
 			func(context.Context) context.Context { return localAuthorCtx("", nil, []string{"Read"}) },
 			`{"tier":"middle"}`, "agent_def_scopes"},

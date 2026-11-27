@@ -179,7 +179,7 @@ access rules withheld from this agent.
 - name: Alice Doe
 - status: active
 - groups: staff, support
-- tools withheld by access rules: Bash
+- tools withheld by access rules: Write
 </identity>
 This is a snapshot from the start of the run. Ask the Context tool (op=can) for a live answer about what you may do.
 ```

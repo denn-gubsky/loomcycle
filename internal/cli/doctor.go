@@ -80,6 +80,7 @@ func RunDoctor(args []string, stdout, stderr io.Writer) int {
 	cfg, err := loadConfigForDoctor(*cfgPaths)
 	if err != nil {
 		r.fail("Config parses", err.Error())
+		reportRemoved(r, err)
 		fmt.Fprintln(stdout)
 		fmt.Fprintln(stdout, r.summary())
 		return 1
@@ -201,7 +202,7 @@ func RunDoctor(args []string, stdout, stderr io.Writer) int {
 	// A denied grant is a WARN, never a FAIL: many agents hold Memory for its
 	// non-scoped ops, and failing the config over a pattern that is often
 	// deliberate would make doctor something people stop running.
-	checkDeprecated(r, cfg)
+	r.pass("Removed", "nothing "+config.RemovedIn+" removed is named in the config")
 
 	if warns := cfg.ConfigWarnings(); len(warns) > 0 {
 		for _, w := range warns {
@@ -220,18 +221,24 @@ func RunDoctor(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// checkDeprecated reports each use of what a future release removes (RFC GW
-// §9, P14): the Bash tool, Bashbox, the builder sidecar, shell_credentials and
-// their variables. Each line names the use, its replacement and the migration
-// guide's section, as the load wrote it; never a value.
-func checkDeprecated(r *doctorRun, cfg configForDoctor) {
-	uses := cfg.DeprecationWarnings()
-	if len(uses) == 0 {
-		r.pass("Deprecated", "nothing a future release removes is in use")
-		return
-	}
-	for _, u := range uses {
-		r.warn("Deprecated", u)
+// reportRemoved lists, under "Removed", each use of what v1.172.0 removed
+// (RFC GW P15) that stopped the load: the Bash tool, Bashbox,
+// shell_credentials and their variables. A config naming one does not load,
+// so the server's own error is the source; each of its lines that links the
+// migration guide is one item, said with its replacement and never a value.
+func reportRemoved(r *doctorRun, loadErr error) {
+	for _, line := range strings.Split(loadErr.Error(), " | ") {
+		if !strings.Contains(line, config.MigrationGuide) {
+			continue
+		}
+		// The first item carries the error's lead-in (the retired-variable
+		// refusal's or the removed-use refusal's); drop it.
+		for _, lead := range []string{"then remove its line: ", "then start again: "} {
+			if i := strings.LastIndex(line, lead); i >= 0 {
+				line = line[i+len(lead):]
+			}
+		}
+		r.fail("Removed", strings.TrimSpace(line))
 	}
 }
 
@@ -383,20 +390,16 @@ type configForDoctor interface {
 	// common "why is my agent not doing that" went unmentioned by the command
 	// people run precisely to be told what is wrong.
 	ConfigWarnings() []string
-	// DeprecationWarnings are the load's warnings about what a future release
-	// removes (RFC GW §9, P14): doctor's "Deprecated" check, kept out of
-	// ConfigWarnings so none is said twice.
-	DeprecationWarnings() []string
 	// AWSAuthProviders returns the declared providers that authenticate with
 	// AWS credentials (an `auth:` block, RFC EM), by id.
 	AWSAuthProviders() map[string]AWSAuthProvider
 	// TokenHasher is the operator-token hasher the server would build from
 	// this environment (explicit pepper, derived from the secret key, or none).
 	TokenHasher() (auth.TokenHasher, error)
-	// HostShellEnabled reports whether an agent can run commands on the host
-	// (Bash, or the Bashbox host-command fallback), which on EC2 can reach
-	// the instance metadata service.
-	HostShellEnabled() bool
+	// HostEngineCommands reports whether an agent's workspace commands can
+	// run on this host as the loomcycle user (the local workspace worker's
+	// host engine), which on EC2 can reach the instance metadata service.
+	HostEngineCommands() bool
 	// Embedder describes the memory embedder the server would build, or nil
 	// when none is configured. An error is what would stop the server at boot.
 	Embedder() (*DoctorEmbedder, error)
@@ -515,7 +518,7 @@ func checkEmbedder(r *doctorRun, cfg configForDoctor) {
 // checkAWSProviders reports, for each provider that authenticates with AWS
 // credentials, whose credentials it would use (never the credentials), and
 // warns when an agent could reach the instance metadata service through a
-// host shell.
+// workspace command run on this host.
 func checkAWSProviders(r *doctorRun, cfg configForDoctor) {
 	aws := cfg.AWSAuthProviders()
 	ids := make([]string, 0, len(aws))
@@ -535,10 +538,10 @@ func checkAWSProviders(r *doctorRun, cfg configForDoctor) {
 		}
 		r.pass(label, fmt.Sprintf("%s (%s) as %s in account %s, from %s", p.Auth.Type, p.Auth.Region, arn, account, source))
 	}
-	if len(aws) > 0 && cfg.HostShellEnabled() {
-		r.warn("AWS credentials and host shell",
-			"Bash or the Bashbox host fallback is enabled, and a host command can read the instance role's credentials from the metadata service on EC2. "+
-				"When loomcycle runs in a container set the IMDS hop limit to 1, and do not enable host commands where the role can reach sensitive data.")
+	if len(aws) > 0 && cfg.HostEngineCommands() {
+		r.warn("AWS credentials and the host workspace engine",
+			"workspace.mode starts the local workspace worker, whose host engine runs a workspace command on this host as the loomcycle user, and such a command can read the instance role's credentials from the metadata service on EC2. "+
+				"Run workspaces on attached workers with the container engine, or set the IMDS hop limit to 1 when loomcycle runs in a container, and do not serve workspaces here where the role can reach sensitive data.")
 	}
 }
 

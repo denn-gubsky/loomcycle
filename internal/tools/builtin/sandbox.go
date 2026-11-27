@@ -10,15 +10,7 @@ import (
 
 // resolveVolume resolves which sandbox root a tool call targets and whether
 // that binding is read-only (RFC AH) — WITHOUT applying the read-write
-// requirement. It is the shared core of two callers with different ro
-// postures:
-//
-//   - effectiveRoot (Read/Write/Edit/Glob/Grep/Bash) refuses a read-only
-//     binding on a write, because none of them can HONESTLY enforce ro — a
-//     shell or an absolute path defeats path-confinement (RFC §6).
-//   - the Bashbox tool HONORS ro instead: it mounts the root under gbash's
-//     in-RAM write overlay, so writes succeed in-sandbox but never touch the
-//     host tree. It needs (root, readOnly) to choose the mount mode.
+// requirement, which effectiveRoot applies.
 //
 // The returned name is the binding's canonical name for model-facing error
 // messages (== volumeName for an ephemeral or explicitly-named binding; the
@@ -105,12 +97,11 @@ func resolveVolume(ctx context.Context, volumeName string) (root string, readOnl
 // path) checks containment against it and fsops.VolumeFS does the open through
 // an os.Root, so a swap after the check cannot escape (RFC ES #1).
 //
-// needWrite && readOnly → refuse (Write/Edit/NotebookEdit and Bash require
-// rw; none can truly enforce ro, so they refuse rather than ship a false
-// guarantee — RFC §6). All resolution lives in resolveVolume.
+// needWrite && readOnly → refuse (Write/Edit/NotebookEdit require rw). All
+// resolution lives in resolveVolume.
 //
 // fence is the binding's Fence: a caller that resolves a path under root
-// must also refuse it with fsops.OutsideFence. Bash cannot, and does not.
+// must also refuse it with fsops.OutsideFence.
 func effectiveRoot(ctx context.Context, volumeName string, needWrite bool) (root, fence string, err error) {
 	root, readOnly, name, fence, err := resolveVolume(ctx, volumeName)
 	if err != nil {

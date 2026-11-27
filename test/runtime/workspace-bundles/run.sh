@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # test/runtime/workspace-bundles/run.sh — the embedded bundle agents RFC GW
-# P14 moved onto workspaces do their documented task on a workspace, with the
-# shell tool they keep until P15 (Bash, Bashbox, the sandbox's tools) withheld.
+# P14 moved onto workspaces do their documented task on a workspace, the only
+# place they run a command since P15 removed Bash and Bashbox.
 # Deterministic: each bundle agent is turned into a code-js agent by an
-# operator overlay that changes its provider and restates its tools minus the
-# shell tool, so the run uses the bundle's OWN workspace grant (the overlay
-# leaves `workspace:` alone; `tier: ""` clears the bundle's tier, which a
-# provider pin may not sit beside). The real loop, the real local worker
+# operator overlay that changes only its provider, so the run uses the
+# bundle's OWN tools and workspace grant (the overlay leaves `tools:` and
+# `workspace:` alone; `tier: ""` clears the bundle's tier, which a provider
+# pin may not sit beside). The real loop, the real local worker
 # (workspace.mode local, host engine).
 #
 #   - team-examples sdlc/coder: fixes a bug in the `work` volume's checkout,
@@ -68,17 +68,14 @@ agents:
   sdlc/coder:
     tier: ""
     provider: code-js
-    tools: [Read, Write, Edit, Grep, Glob, Workspace, File, Context]
     volumes: [work]
   sdlc/reviewer:
     tier: ""
     provider: code-js
-    tools: [Read, Grep, Glob, Git, Workspace, File, Context]
     volumes: [work]
   chat/medium:
     tier: ""
     provider: code-js
-    tools: [Read, Write, Edit, Grep, Glob, WebSearch, WebFetch, HTTP, Workspace, File, Document, Memory, Path, Skill, SkillDef, Agent, Interruption, History]
     # The bundle's `context: {mode: auto}` resolves a non-interactive run on a
     # non-local provider to the stateful loop, which binds no tools in code-js;
     # recap is what the chat agents get in the interactive terminal.
@@ -86,7 +83,6 @@ agents:
   team/orchestrator:
     tier: ""
     provider: code-js
-    tools: [Agent, Document, TeamDef, Channel, Interruption, Context, Memory, VolumeDef, Workspace, File]
 YAML
 
 echo "[1/6] build + boot (agent-teams + team-examples + dev-workspace + chat, workspace.mode local)"

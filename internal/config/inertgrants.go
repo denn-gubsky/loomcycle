@@ -97,6 +97,11 @@ func InertToolGrants(a AgentDef) []InertToolGrant {
 			Message: "`Channel` is in this agent's tools but `channels.publish` and `channels.subscribe` are both empty, so every Channel call is refused. Set one, or drop the tool.",
 		})
 	}
+	// What v1.172.0 removed (RFC GW P15 Q2): a stored definition that still
+	// names it runs without it, and is told so once at run start.
+	for _, r := range RemovedItemsOf(a) {
+		out = append(out, InertToolGrant{Tool: r.Name, Gate: RemovedGate, Message: removedInertMessage(r)})
+	}
 	// Workspace: its gate is a block, not a list (RFC GW). A block granting
 	// neither an operation nor open leaves every Workspace call refused.
 	if has("Workspace") && !a.Workspace.Grants() {

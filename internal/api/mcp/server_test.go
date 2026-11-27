@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/directory"
 	"github.com/denn-gubsky/loomcycle/internal/erasure"
@@ -2200,4 +2201,29 @@ func (m *mockConnector) ListRulings(_ context.Context, req connector.ListRulings
 func (m *mockConnector) ApplyReviewPolicy(_ context.Context, req connector.ApplyReviewPolicyRequest) (connector.ApplyReviewPolicyResult, error) {
 	m.applyReq = req
 	return m.applyRes, m.reviewErr
+}
+
+// RFC GW P15 Q1: register_agent naming what v1.172.0 removed is refused before
+// it reaches the connector. The request type has no removed field, so a
+// shell_credentials key would otherwise decode to nothing and be dropped.
+func TestServer_RegisterAgent_NamingARemovedItemIsRefused(t *testing.T) {
+	for _, args := range []string{
+		`{"name":"x","system_prompt":"p","tools":["Bash"]}`,
+		`{"name":"x","system_prompt":"p","tools":["Read"],"shell_credentials":["cred-91c2"]}`,
+	} {
+		mc := &mockConnector{regResult: connector.AgentDescriptor{Name: "x", Source: "dynamic"}}
+		srv := New(Config{Connector: mc, Logger: discardLogger()})
+		in := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"register_agent","arguments":` + args + `}}` + "\n"
+		resps, _ := driveServer(t, srv, in)
+		if len(resps) != 1 {
+			t.Fatalf("got %d responses, want 1", len(resps))
+		}
+		if mc.regCalls.Load() != 0 {
+			t.Errorf("%s reached the connector", args)
+		}
+		raw, _ := json.Marshal(resps[0])
+		if !strings.Contains(string(raw), "removed in "+config.RemovedIn) || strings.Contains(string(raw), "cred-91c2") {
+			t.Errorf("%s: response %s, want the removal named and no credential", args, raw)
+		}
+	}
 }

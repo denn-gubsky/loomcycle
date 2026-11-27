@@ -12,14 +12,13 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/config"
 )
 
-// deprecated_use.go — a run given what a future release removes (RFC GW §9,
-// P14): the Bash tool, Bashbox, the builder sidecar's mcp__sandbox__ tools or
-// the shell_credentials field. Boot warns about the operator's yaml; a stored
-// or registered definition is only seen when a run is given it, so it is
-// counted here (loomcycle_deprecated_use_total) and the first run per tenant
-// and agent in this process is logged. Nothing reaches the model, the
-// transcript or the wire, and only names are written: never a credential the
-// definition lists.
+// deprecated_use.go — a run whose definition names what v1.172.0 removed
+// (RFC GW P15): the Bash tool, Bashbox or the shell_credentials field. The
+// run is not given it (it has a capability_inert notice for that); here it is
+// counted (loomcycle_deprecated_use_total, its P14 name kept, P15 Q3) and the
+// first run per tenant and agent in this process is logged, which is how an
+// operator finds the stored definitions to fork. Only names are written:
+// never a credential the definition lists.
 
 // maxDeprecatedLogKeys bounds the (tenant, agent) pairs remembered as logged.
 // Past it, uses are still counted and no longer logged, so a stream of
@@ -27,7 +26,7 @@ import (
 const maxDeprecatedLogKeys = 4096
 
 // deprecatedUseKey is a series: a table row's kind and name. The label set is
-// bounded by the table (config.Deprecations).
+// bounded by the table (config.Removals).
 type deprecatedUseKey struct{ Kind, Name string }
 
 type deprecatedUse struct {
@@ -44,25 +43,9 @@ func newDeprecatedUse(log *slog.Logger) *deprecatedUse {
 	return &deprecatedUse{log: log, counts: map[deprecatedUseKey]int64{}, logged: map[string]bool{}}
 }
 
-// deprecatedRows are the table rows def uses, each once, in table order.
-func deprecatedRows(def config.AgentDef) []config.Deprecation {
-	used := map[string]bool{}
-	for _, tool := range def.Tools {
-		if d, ok := config.DeprecatedTool(tool); ok {
-			used[d.Kind+"\x00"+d.Name] = true
-		}
-	}
-	if def.ShellCredentials != nil {
-		used[config.DeprecatedKindField+"\x00shell_credentials"] = true
-	}
-	var out []config.Deprecation
-	for _, d := range config.Deprecations() {
-		if used[d.Kind+"\x00"+d.Name] {
-			out = append(out, d)
-		}
-	}
-	return out
-}
+// deprecatedRows are the removed items def names, each once, in table order:
+// what a run of it is not given.
+func deprecatedRows(def config.AgentDef) []config.Removal { return config.RemovedItemsOf(def) }
 
 // note counts the rows def uses and, when logIt and this (tenant, agent) has
 // not been logged, writes one line naming them.
@@ -91,9 +74,9 @@ func (d *deprecatedUse) note(ctx context.Context, tenant, agent string, def conf
 	for _, r := range rows {
 		names = append(names, r.Name)
 	}
-	d.log.WarnContext(ctx, "a run was given what will be removed in a future release",
+	d.log.WarnContext(ctx, "a run's definition names what was removed, and the run was not given it",
 		"tenant", tenant, "agent", agent, "uses", strings.Join(names, ", "),
-		"replacement", "the Workspace tool on a workspace worker", "see", config.MigrationGuide)
+		"removed_in", config.RemovedIn, "replacement", "the Workspace tool on a workspace worker", "see", config.MigrationGuide)
 }
 
 func (d *deprecatedUse) snapshot() map[deprecatedUseKey]int64 {
@@ -122,7 +105,7 @@ func writeDeprecatedUse(w io.Writer, replicaLabels string, st map[deprecatedUseK
 		return keys[i].Name < keys[j].Name
 	})
 	writeLine := func(s string) { _, _ = io.WriteString(w, s+"\n") }
-	writeLine("# HELP loomcycle_deprecated_use_total Runs on this replica given something a future release removes (the Bash tool, Bashbox, the builder sidecar's tools, shell_credentials), by kind and name.")
+	writeLine("# HELP loomcycle_deprecated_use_total Runs on this replica whose definition names something v1.172.0 removed (the Bash tool, Bashbox, shell_credentials) and was not given it, by kind and name.")
 	writeLine("# TYPE loomcycle_deprecated_use_total counter")
 	for _, k := range keys {
 		writeLine("loomcycle_deprecated_use_total" + mergeLabels(replicaLabels, map[string]string{"kind": k.Kind, "name": k.Name}) + " " + strconv.FormatInt(st[k], 10))
@@ -139,12 +122,11 @@ type deprecatedUseRow struct {
 }
 
 // deprecationsReport is the deprecations field of GET /v1/_config/teams
-// (admin; RFC GW P14, owner ruling Q5): config, the load's deprecation lines
-// (the words boot and doctor print, names only); runs, how many runs this
-// replica gave each deprecated row since it started, which is the only place
-// a stored definition's use shows. Both lists are present and empty when
-// nothing is used.
-func deprecationsReport(lines []string, st map[deprecatedUseKey]int64) map[string]any {
+// (admin; RFC GW P14 Q5, kept by P15 Q3): config, always empty now, since a
+// config naming what v1.172.0 removed does not load; runs, how many runs on
+// this replica had a definition naming each removed item since it started,
+// which is where a stored definition's use shows. Both lists are present.
+func deprecationsReport(st map[deprecatedUseKey]int64) map[string]any {
 	runs := make([]deprecatedUseRow, 0, len(st))
 	for k, n := range st {
 		runs = append(runs, deprecatedUseRow{Kind: k.Kind, Name: k.Name, Count: n})
@@ -155,5 +137,5 @@ func deprecationsReport(lines []string, st map[deprecatedUseKey]int64) map[strin
 		}
 		return runs[i].Name < runs[j].Name
 	})
-	return map[string]any{"config": append([]string{}, lines...), "runs": runs}
+	return map[string]any{"config": []string{}, "runs": runs}
 }

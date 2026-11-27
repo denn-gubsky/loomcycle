@@ -8,10 +8,10 @@ publish task → exp4-tasks → CODER (writes code, pushes a branch, opens a PR 
         └▶ Gitea merge/review webhook ─▶ /v1/_webhooks/review-done ─▶ ADVISOR ─▶ Telegram "✅ merged"
 ```
 
-> **Deprecated tool.** The coder and reviewer run `git` through the `Bash` tool,
-> which a future release removes (RFC GW P15; `docs/MIGRATING-FROM-BASH.md`). This
-> example moves to git workspaces once RFC GW P11's git operations ship; until
-> then it needs `LOOMCYCLE_BASH_ENABLED=1`, which `run.sh` sets.
+The coder and reviewer work their clones with the **`Git` tool**: git runs inside
+the runtime, no shell, and the Gitea token is a stored credential the runtime adds
+on the way out, so no agent ever sees it. (Until v1.172.0 they ran `git` through
+the removed `Bash` tool; `docs/MIGRATING-FROM-BASH.md`.)
 
 ## What it demonstrates
 - **Inbound webhooks** with HMAC verification (`X-Hub-Signature-256`), spawning an
@@ -19,6 +19,8 @@ publish task → exp4-tasks → CODER (writes code, pushes a branch, opens a PR 
 - A real **3rd-party stdio MCP** — `gitea-mcp` (53 tools: PR create/review/merge/read).
 - A minimal **Telegram-sender MCP** (bundled, stdlib-only python).
 - A **channel-driven multi-agent** dev loop (coder ↔ reviewer ↔ advisor).
+- The **`Git` tool** with `git_remote: [fetch, push]`, push limited to
+  `LOOMCYCLE_GIT_PUSH_HOSTS`, and a credential restricted to the repository's URL.
 - Routing fallback: Anthropic OAuth (sonnet) → deepseek-v4-pro.
 
 > **This example is NOT fully self-contained** — it needs external infrastructure: a
@@ -40,6 +42,8 @@ publish task → exp4-tasks → CODER (writes code, pushes a branch, opens a PR 
    ```
 3. **A Gitea instance + repo + access token** (token scope: `write:repository`; plus
    `write:user` if you create the repo via API). Put the host + token in `.env.local`.
+   The `Git` tool speaks **https only** and verifies the certificate: Gitea needs a
+   certificate the host trusts (`LOOMCYCLE_GITEA_INSECURE` does not reach it).
 4. **A webhook HMAC secret** — any random string, shared between the Gitea repo hook
    and loomcycle: `openssl rand -hex 32` → `LOOMCYCLE_GITEA_WEBHOOK_SECRET`.
 5. **A Telegram bot** — talk to @BotFather, get the bot token; get your chat id (e.g.
@@ -58,19 +62,29 @@ Fill `.env.local` (run.sh creates it from the template on first launch):
 (+ `DEEPSEEK_API_KEY` or OAuth). Set `LOOMCYCLE_GITEA_INSECURE=true` only for a
 self-signed/expired cert.
 
-**Clone the target repo into the coder's working tree** with push auth wired via the
-credential helper (the coder just runs `git push`, never touches the token):
+**Clone the target repo into the coder's working tree.** The credential helper is
+used for this one clone only and is not saved in the repository: the coder pushes
+through the `Git` tool with the stored credential below, never with host git.
 ```bash
 cd examples/exp4-gitea-telegram
 set -a; source .env.local; set +a
-INSEC=""; [ "${LOOMCYCLE_GITEA_INSECURE:-false}" = true ] && INSEC="-c http.sslVerify=false"
-git $INSEC -c credential.helper="$PWD/gitcreds.sh" -c credential.useHttpPath=false \
+git -c credential.helper="$PWD/gitcreds.sh" -c credential.useHttpPath=false \
     clone "$LOOMCYCLE_GITEA_HOST/$LOOMCYCLE_GITEA_USER/<your-repo>.git" work/exp4-workflow
-cd work/exp4-workflow
-git config credential.helper "$PWD/../../gitcreds.sh"; git config credential.useHttpPath false
-[ "${LOOMCYCLE_GITEA_INSECURE:-false}" = true ] && git config http.sslVerify false
-git config user.email "you@example.com"; git config user.name "$LOOMCYCLE_GITEA_USER"
 ```
+
+**Store the Gitea token as the credential `gitea`** once the server is running
+(`./run.sh`, with `LOOMCYCLE_SECRET_KEY` set in `.env.local`, which seals it), restricted to the repository's URL so the runtime sends it nowhere
+else (`docs/CREDENTIALS.md`). The body is built from the environment and sent on
+stdin, so the token never reaches argv:
+```bash
+cd examples/exp4-gitea-telegram
+set -a; source .env.local; set +a
+python3 -c 'import json,os; h=os.environ["LOOMCYCLE_GITEA_HOST"]; u=os.environ["LOOMCYCLE_GITEA_USER"]; r=os.environ.get("EXP4_REPO","exp4-workflow"); print(json.dumps({"op":"create","scope":"tenant","name":"gitea","value":os.environ["LOOMCYCLE_GITEA_TOKEN"],"username":u,"allowed_urls":[f"{h}/{u}/{r}"]}))' |
+  ./loomcurl.sh -X POST http://127.0.0.1:8787/v1/_credentialdef -H 'Content-Type: application/json' -d @-
+```
+`run.sh` sets `LOOMCYCLE_GIT_SOURCE_HOSTS` and `LOOMCYCLE_GIT_PUSH_HOSTS` to the
+Gitea host (from `LOOMCYCLE_GITEA_HOST`) and the commit author to
+`LOOMCYCLE_GITEA_USER`.
 
 **Register two Gitea repo webhooks** (by URL) pointing at loomcycle, both with the
 HMAC secret (sent from env via a helper so it never hits argv):
@@ -136,6 +150,9 @@ squash-merges → Gitea fires `review-done` → advisor sends Telegram "✅ merg
 - The reviewer/advisor runs' `done.usage.provider` confirms the route.
 
 ## Caveats / gotchas
+- **`credential_url_not_allowed` / `host_not_allowed`** from the `Git` tool: the
+  credential's `allowed_urls` does not cover the repository's URL, or the Gitea host
+  is not in `LOOMCYCLE_GIT_SOURCE_HOSTS` / `LOOMCYCLE_GIT_PUSH_HOSTS`.
 - **Ingress is the #1 blocker** — if `signature rejected` never appears AND no spawn
   happens, Gitea can't reach loomcycle: fix `LOOMCYCLE_LISTEN_ADDR` + the hook URL.
 - **`signature rejected`** = the Gitea-stored hook secret ≠ `LOOMCYCLE_GITEA_WEBHOOK_SECRET`.
@@ -146,23 +163,24 @@ squash-merges → Gitea fires `review-done` → advisor sends Telegram "✅ merg
   Gitea CA to the system trust store — don't disable verification in general (it allows
   MITM). `LOOMCYCLE_GITEA_INSECURE=true` is a **last-resort opt-in** (defaults `false`)
   for a self-signed/expired cert on a **trusted private network you control** only; the
-  wrapper, `giteapi.sh`, and the clone snippet honor it but it should not be left on.
+  wrapper and `giteapi.sh` honor it, the `Git` tool does not, and it should not be left on.
 - **Secret hygiene:** loomcycle redacts secret values from persisted transcripts at
   rest (v0.23.4+); still, the helper scripts keep tokens off argv (env/stdin only).
 
 ## Teardown
 Ctrl-C the server; `kill` the coder SSE curl; delete `./data`. Optionally remove the
-Gitea repo webhooks. The clone lives at `work/exp4-workflow`.
+Gitea repo webhooks. The clones live at `work/exp4-workflow` and
+`work/review/exp4-workflow`.
 
 ## Files
 | File | Purpose |
 |---|---|
 | `loomcycle.yaml` | routing + coder/reviewer/advisor + `mcp_servers` (gitea/telegram) + `webhooks` |
-| `run.sh` | launcher (Bash sandbox + webhooks receiver + the secret allowlist) |
+| `run.sh` | launcher (git hosts for the `Git` tool + webhooks receiver + the secret allowlist) |
 | `.env.local.example` | secret + deployment-fill-in template (empty values) |
 | `work/bin/gitea-mcp-stdio.sh` | token-safe wrapper loomcycle spawns as the `gitea` MCP server |
 | `work/bin/telegram-bot-mcp.py` | minimal Telegram-sender MCP (stdlib-only) |
 | `work/bin/gitea-mcp` | the gitea-mcp binary — **you download this** (gitignored) |
 | `giteapi.sh` | token-safe Gitea API curl (repo + webhook setup) |
-| `gitcreds.sh` | git credential helper (feeds the token to `git push`) |
+| `gitcreds.sh` | git credential helper (feeds the token to the one-off setup clone) |
 | `loomcurl.sh` | token-safe loomcycle REST helper |

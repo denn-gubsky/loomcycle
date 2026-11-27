@@ -885,7 +885,7 @@ func TestAgentDefTool_CreateWithWildcardCallerToolsAllowsAnyOverlay(t *testing.T
 
 	// Operator picks a broad tools list — every entry should
 	// pass even though "*" alone is the caller's ceiling.
-	res, _ := tool.Execute(wildCtx, json.RawMessage(`{"op":"create","name":"opagent","overlay":{"tools":["Read","Write","WebFetch","Bash"]}}`))
+	res, _ := tool.Execute(wildCtx, json.RawMessage(`{"op":"create","name":"opagent","overlay":{"tools":["Read","Write","WebFetch","Edit"]}}`))
 	if res.IsError {
 		t.Fatalf("create with wildcard ctx + arbitrary tools should pass; got %s", res.Text)
 	}

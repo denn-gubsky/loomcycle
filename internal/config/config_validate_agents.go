@@ -249,7 +249,6 @@ func validateAgentGrants(c *Config, name string, agent AgentDef) error {
 	// logged once at boot, never fatal — an operator may legitimately list a
 	// tool they haven't gated yet.
 	c.Warnings = append(c.Warnings, agentGateWarnings(name, agent)...)
-	c.Warnings = append(c.Warnings, shellCredentialWarnings(name, agent, c.Env)...)
 	c.Warnings = append(c.Warnings, gitRemoteWarnings(name, agent, c.Env, c.bundledGitRemote[name])...)
 	c.Warnings = append(c.Warnings, c.workspaceGrantWarnings(name, agent)...)
 	c.Warnings = append(c.Warnings, workspaceEgressWarnings(name, agent, c.Workspace.Egress)...)
@@ -379,9 +378,6 @@ func validateAgentGrants(c *Config, name string, agent AgentDef) error {
 		return fmt.Errorf("agent %q: %w", name, err)
 	}
 	if err := ValidateToolModes(agent.ToolModes, agent.Tools); err != nil {
-		return fmt.Errorf("agent %q: %w", name, err)
-	}
-	if err := ValidateShellCredentials(agent.ShellCredentials); err != nil {
 		return fmt.Errorf("agent %q: %w", name, err)
 	}
 	if err := ValidateGitRemote(agent.GitRemote); err != nil {

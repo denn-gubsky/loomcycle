@@ -112,11 +112,6 @@ var agentDefOverridability = map[string]overridability{
 	// following evaluation_scopes; a sub-agent's narrowing is the spawn
 	// invariant, not an override.
 	"CryptoScopes": notOverridable,
-	// Which operator-listed credentials the agent's shell receives (RFC EW).
-	// Reach over secret material, like CryptoScopes. A per-run narrowing would
-	// be harmless, but it needs a run-request field on every transport and
-	// RFC EW D4 left it out; a sub-agent's narrowing is the spawn invariant.
-	"ShellCredentials": notOverridable,
 	// A read-only tool grant (RFC GL). A per-run override could only matter by
 	// removing a read mode, which widens what the run may change, so a caller
 	// may neither set nor clear it per run. The run's dispatcher is built from
@@ -246,6 +241,10 @@ var agentDefOverridability = map[string]overridability{
 	// And for a team's own agent: the team version it was read from. A run
 	// naming its own would pick the definition it runs.
 	"TeamDefID": notOverridable,
+	// What a stored definition still names that v1.172.0 removed (RFC GW
+	// P15), read from its raw JSON by lookup: a run naming its own would
+	// silence the notice, or claim a field that does nothing.
+	"RemovedFields": notOverridable,
 
 	// --- operator configuration (D6): the declarations themselves are the
 	// operator's; an override selects WITHIN them and may not change them. ---

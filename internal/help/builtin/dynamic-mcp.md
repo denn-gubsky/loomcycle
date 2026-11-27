@@ -34,8 +34,8 @@ Read this section before anything else.
 - **Stdio is opt-in (default OFF).** Dynamic registration is HTTP +
   Streamable-HTTP only **unless** the operator sets
   `LOOMCYCLE_MCP_ALLOW_DYNAMIC_STDIO=1`. A stdio server runs an
-  **arbitrary local command** — a second local-exec path alongside the
-  Bash tool, with no outbound-host-allowlist mediation — so by default
+  **arbitrary local command**, with no outbound-host-allowlist mediation,
+  so by default
   the substrate refuses a `stdio` transport (the refusal names the
   flag). When the flag is set, a `create`/`fork` overlay may carry
   `command` / `args` / `env`; the server is spawned + lifecycle-managed

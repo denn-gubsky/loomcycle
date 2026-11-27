@@ -358,87 +358,10 @@ func TestEmbedded_NoShippedAliasIsUsedUntagged(t *testing.T) {
 	}
 }
 
-// TestEmbedded_SandboxBundleValidates: the opt-in sandbox bundle loads + validates
-// on top of base. Post-refactor it carries NO agent (the LLM dev/sandbox was retired
-// for the deterministic code-js dev/exec, shipped in the dev-exec bundle) — it ships
-// the sandbox MCP wiring + the caller-facing dev/sandbox-usage delegation skill, so
-// it has no code agent to compile. An ACL
-// grant without a matching declaration would fail validate() fatally, so this guards
-// the bundle in isolation.
-func TestEmbedded_SandboxBundleValidates(t *testing.T) {
-	t.Setenv("LOOMCYCLE_SKILLS_ROOT", "")
-	cfg, err := config.LoadLayers(layersFor(t, "base", "sandbox")...)
-	if err != nil {
-		t.Fatalf("base + sandbox must load + validate cleanly: %v", err)
-	}
-	// The LLM dev/sandbox agent + its tool-driving skill are GONE (replaced by the
-	// code-js dev/exec in the dev-exec bundle).
-	if _, ok := cfg.Agents["dev/sandbox"]; ok {
-		t.Errorf("dev/sandbox agent should be removed from the sandbox bundle")
-	}
-	if _, ok := cfg.Skills["dev/sandbox"]; ok {
-		t.Errorf("dev/sandbox tool-driving skill should be removed")
-	}
-	// The caller-facing delegation skill remains (rewritten to target dev/exec).
-	if sk, ok := cfg.Skills["dev/sandbox-usage"]; !ok || strings.TrimSpace(sk.Body) == "" {
-		t.Errorf("dev/sandbox-usage skill missing or empty in cfg.Skills")
-	}
-	// The MCP server the tools resolve through is declared (http transport + url).
-	sv, ok := cfg.MCPServers["sandbox"]
-	if !ok {
-		t.Fatalf("sandbox MCP server not declared")
-	}
-	if sv.Transport != "http" || sv.URL == "" {
-		t.Errorf("sandbox MCP server should be http with a url; got transport=%q url=%q", sv.Transport, sv.URL)
-	}
-	// The git-token injection header rides mcp_servers.sandbox (resolved server-side).
-	if got := sv.Headers["X-Loom-Sandbox-Env-Gh-Token"]; got != "$cred:sandbox_github" {
-		t.Errorf("sandbox git-token header = %q, want $cred:sandbox_github", got)
-	}
-	// One shared secret under the sidecar's OWN name: the Authorization header
-	// expands SANDBOX_AUTH_TOKEN from the env (allowlisted), no ${run.user_bearer}.
-	t.Setenv("SANDBOX_AUTH_TOKEN", "sekret-xyz")
-	cfg2, err := config.LoadLayers(layersFor(t, "base", "sandbox")...)
-	if err != nil {
-		t.Fatalf("reload with SANDBOX_AUTH_TOKEN set: %v", err)
-	}
-	if got := cfg2.MCPServers["sandbox"].Headers["Authorization"]; got != "Bearer sekret-xyz" {
-		t.Errorf("sandbox Authorization = %q, want \"Bearer sekret-xyz\" (SANDBOX_AUTH_TOKEN expanded, no user_bearer)", got)
-	}
-}
-
-// TestEmbedded_DevExecBundleValidates: the opt-in dev-exec bundle loads + validates
-// on top of base+sandbox, registering the deterministic code-js dev/exec agent with
-// the mcp__sandbox__* ceiling + an inline code body. It is NOT in the default stack,
-// so it gets its own guard here.
-func TestEmbedded_DevExecBundleValidates(t *testing.T) {
-	t.Setenv("LOOMCYCLE_SKILLS_ROOT", "")
-	cfg, err := config.LoadLayers(layersFor(t, "base", "sandbox", "dev-exec")...)
-	if err != nil {
-		t.Fatalf("base + sandbox + dev-exec must load + validate cleanly: %v", err)
-	}
-	agent, ok := cfg.Agents["dev/exec"]
-	if !ok {
-		t.Fatalf("dev/exec agent not registered (agents: %v)", agentNames(cfg))
-	}
-	if agent.Provider != "code-js" {
-		t.Errorf("dev/exec provider = %q, want code-js", agent.Provider)
-	}
-	// It drives the sandbox tool family via the mcp__sandbox__* glob (no LLM tier).
-	if !hasToolPreset(agent.Tools, "mcp__sandbox__*") {
-		t.Errorf("dev/exec should grant mcp__sandbox__*; tools=%v", agent.Tools)
-	}
-	// It ships its logic inline (no filesystem agent_code/ bind) — an empty Code
-	// would mean the bundle shipped nothing.
-	if strings.TrimSpace(agent.Code) == "" {
-		t.Errorf("dev/exec must carry an inline code body")
-	}
-}
-
 // TestEmbedded_DocColorizerBundleValidates: the opt-in doc-colorizer bundle loads
 // + validates on top of base, registering the doc/colorizer code-js agent with
 // the [Path, Document] tool ceiling and user memory/sql scopes. It is NOT in the
-// default stack, so it gets its own guard here — like sandbox.
+// default stack, so it gets its own guard here.
 func TestEmbedded_DocColorizerBundleValidates(t *testing.T) {
 	t.Setenv("LOOMCYCLE_SKILLS_ROOT", "")
 	cfg, err := config.LoadLayers(layersFor(t, "base", "doc-colorizer")...)

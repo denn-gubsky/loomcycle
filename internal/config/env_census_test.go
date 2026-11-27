@@ -67,7 +67,7 @@ func envNamesInSources(t *testing.T, roots ...string) map[string]string {
 				return nil
 			}
 			switch filepath.Base(path) {
-			case "env_retired.go", "env_retired_moved.go":
+			case "env_retired.go", "env_retired_moved.go", "removed.go":
 				// The tables of retired names: listing one there is not a read.
 				return nil
 			}

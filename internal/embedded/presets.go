@@ -126,10 +126,31 @@ func Units() []Unit {
 	return out
 }
 
+// retiredUnits names the units removed from the binary, each with what to
+// select instead. A selection naming one fails with that line rather than the
+// generic unknown-name list, so an upgraded install's LOOMCYCLE_PRESETS says
+// what to change (RFC GW P15: the builder-sidecar bundles went with Bash and
+// Bashbox).
+var retiredUnits = map[string]string{
+	"sandbox":  "select dev-workspace, whose agents run commands in a workspace on a workspace worker",
+	"dev-exec": "select dev-workspace, whose dev/exec runs the same envelope in a workspace on a workspace worker",
+}
+
+// retiredUnitError is the error for a retired unit name, or nil.
+func retiredUnitError(name string) error {
+	if repl, ok := retiredUnits[name]; ok {
+		return fmt.Errorf("preset/bundle %q was removed in v1.172.0: %s", name, repl)
+	}
+	return nil
+}
+
 // Show returns a single unit's YAML bytes (for `loomcycle presets show <name>`).
 func Show(name string) ([]byte, error) {
 	u, ok := units[name]
 	if !ok {
+		if err := retiredUnitError(name); err != nil {
+			return nil, err
+		}
 		return nil, fmt.Errorf("unknown preset/bundle %q (available: %s)", name, strings.Join(unitNames(), ", "))
 	}
 	return u.Data, nil
@@ -173,6 +194,9 @@ func expandSelection(reg map[string]Unit, names []string) ([]Unit, []string, err
 	visit = func(name string, chain []string) error {
 		u, ok := reg[name]
 		if !ok {
+			if err := retiredUnitError(name); err != nil {
+				return err
+			}
 			if len(chain) == 0 {
 				return fmt.Errorf("unknown preset/bundle %q (available: %s)", name, strings.Join(registryNames(reg), ", "))
 			}

@@ -1,6 +1,6 @@
 {
   "name": "@loomcycle/bridge-discord",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "type": "module",
   "description": "Discord bridge for loomcycle interactive agents (RFC EQ): people talk to a loomcycle agent with slash commands, each as their own loomcycle user, with question and review cards as buttons. Interactions over HTTP; no Gateway.",
   "license": "Apache-2.0",
@@ -46,7 +46,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@loomcycle/bridge-core": "^0.7.1"
+    "@loomcycle/bridge-core": "^0.8.0"
   },
   "devDependencies": {
     "@types/node": "^26.6.5",

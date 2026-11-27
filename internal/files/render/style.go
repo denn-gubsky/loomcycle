@@ -33,8 +33,10 @@ const (
 // Style is a parsed, checked style. A zero field is the built-in value; use
 // the accessors, which apply the defaults.
 type Style struct {
-	Version     int         `json:"loomcycle_style"`
-	Font        string      `json:"font,omitempty"`
+	Version int    `json:"loomcycle_style"`
+	Font    string `json:"font,omitempty"`
+	// HeadingFont is the headings' font when it is not Font's (RFC HB D1).
+	HeadingFont string      `json:"heading_font,omitempty"`
 	Size        float64     `json:"size,omitempty"`
 	HeadScale   float64     `json:"heading_scale,omitempty"`
 	Colors      StyleColors `json:"colors,omitempty"`
@@ -42,6 +44,12 @@ type Style struct {
 	Header      PageLine    `json:"header,omitzero"`
 	Footer      PageLine    `json:"footer,omitzero"`
 	PageNumbers *bool       `json:"page_numbers,omitempty"`
+	// Photo places a picture beside or above the title (RFC HB D4).
+	Photo *StylePhoto `json:"photo,omitempty"`
+	// PhotoImage is that picture, an image of the Doc by name. Set by the
+	// core (the call's photo, or the document's first picture), never by
+	// the JSON.
+	PhotoImage string `json:"photo_image,omitempty"`
 	// Headings sets the look of heading levels 1–4 (RFC HB D2).
 	Headings    *StyleHeadings `json:"headings,omitempty"`
 	LogoWidthMM float64        `json:"logo_width_mm,omitempty"`
@@ -146,8 +154,8 @@ func ParseStyle(body string) (*Style, error) {
 	if dec.More() {
 		return nil, fmt.Errorf("%w: more than one JSON value", ErrBadStyle)
 	}
-	if s.Logo != "" || s.Source != "" || s.Date != "" {
-		return nil, fmt.Errorf("%w: logo, source and date are not keys of a style (the logo is the document's first picture; {date} prints the render day or the call's page_text date)", ErrBadStyle)
+	if s.Logo != "" || s.Source != "" || s.Date != "" || s.PhotoImage != "" {
+		return nil, fmt.Errorf("%w: logo, source, date and photo_image are not keys of a style (the logo is the document's first picture; {date} prints the render day or the call's page_text date)", ErrBadStyle)
 	}
 	if err := s.check(); err != nil {
 		return nil, err
@@ -182,10 +190,11 @@ func (s *Style) check() error {
 	if s.Version != StyleVersion {
 		return bad("loomcycle_style", fmt.Sprint(StyleVersion))
 	}
-	switch s.Font {
-	case "", "sans", "serif":
-	default:
-		return bad("font", "sans or serif")
+	if !fontOK(s.Font) {
+		return bad("font", "sans, serif, inter, calibri, arial or times")
+	}
+	if !fontOK(s.HeadingFont) {
+		return bad("heading_font", "sans, serif, inter, calibri, arial or times")
 	}
 	if s.Size != 0 && (s.Size < minStyleSize || s.Size > maxStyleSize) {
 		return bad("size", fmt.Sprintf("between %g and %g", minStyleSize, maxStyleSize))
@@ -224,6 +233,12 @@ func (s *Style) check() error {
 	if s.LogoWidthMM != 0 && (s.LogoWidthMM < minLogoMM || s.LogoWidthMM > maxLogoMM) {
 		return bad("logo_width_mm", fmt.Sprintf("between %g and %g", minLogoMM, maxLogoMM))
 	}
+	if err := s.Photo.check(); err != nil {
+		return err
+	}
+	if s.PhotoImage != "" && !imageNameRe.MatchString(s.PhotoImage) {
+		return bad("photo_image", "a picture of the document")
+	}
 	if s.Logo != "" && !imageNameRe.MatchString(s.Logo) {
 		return bad("logo", "a picture of the document")
 	}
@@ -246,8 +261,6 @@ func styleLineOK(l string) bool {
 }
 
 // The built-in look (D13–D15), and the style's values over it.
-
-func (s *Style) serif() bool { return s != nil && s.Font == "serif" }
 
 // BaseSize is the body size in points.
 func (s *Style) BaseSize() float64 {
@@ -353,14 +366,15 @@ func (s *Style) cssOverrides(scope string) string {
 	if s == nil {
 		return ""
 	}
-	font := cssSans
-	if s.serif() {
-		font = cssSerif
-	}
+	font := s.bodyFont().css
 	k := s.headScale()
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s{font-family:%s;font-size:%gpt;color:%s}\n", scope, font, s.BaseSize(), s.textColor())
 	fmt.Fprintf(&b, "h1,h2,h3,h4,h5,h6{color:%s}\n", s.headingColor())
+	if f, ok := s.headFont(); ok {
+		// The section headings, not the title (h1), as the paged formats.
+		fmt.Fprintf(&b, "h2,h3,h4,h5,h6{font-family:%s}\n", f.css)
+	}
 	fmt.Fprintf(&b, "h1{font-size:%.3gem}h2{font-size:%.3gem}h3{font-size:%.3gem}h4,h5,h6{font-size:%.3gem}\n", 2*k, 1.5*k, 1.25*k, 1.05*k)
 	fmt.Fprintf(&b, "a{color:%s}\n", s.linkColor())
 	b.WriteString(".style-header,.style-footer{color:#5b5b5b;font-size:.8em;margin:0 0 1.5em}.style-footer{margin:2em 0 0;border-top:1px solid #d6d3d1;padding-top:.5em}\n")
@@ -385,6 +399,9 @@ func (s *Style) cssOverrides(scope string) string {
 	}
 	if !s.pageTextPlain() {
 		b.WriteString(".style-slots{display:flex;gap:1em}.style-slots span{flex:1}.style-slots span:nth-child(2){text-align:center}.style-slots span:nth-child(3){text-align:right}\n")
+	}
+	if s.Photo != nil || s.PhotoImage != "" {
+		fmt.Fprintf(&b, "img.photo{width:%gmm;max-width:40%%;height:auto}img.photo-right{float:right;margin:0 0 1em 1.5em}img.photo-left{float:left;margin:0 1.5em 1em 0}img.photo-above{display:block;margin:0 0 1em}img.photo-circle{aspect-ratio:1;object-fit:cover;border-radius:50%%}p.photo-clear{clear:both;margin:0}\n", s.photoMM())
 	}
 	fmt.Fprintf(&b, "img.logo{width:%gmm;max-width:100%%;height:auto;display:block;margin:0 0 1em}\n", s.logoMM())
 	return b.String()

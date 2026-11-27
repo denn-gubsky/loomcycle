@@ -1,8 +1,8 @@
 // Package procgroup starts host child processes in their own process group,
 // so loomcycle can stop a child together with everything it started.
 //
-// Two kinds of child use it. A short-lived command (the Bash tool, a Bashbox
-// host-fallback command) is bound with Bind: a context cancel or timeout
+// Two kinds of child use it. A short-lived command (a transcription helper,
+// a workspace host-engine command) is bound with Bind: a context cancel or timeout
 // kills its whole group, and WaitDelay stops a descendant holding the output
 // from blocking Wait. A long-lived server (an MCP stdio server) is started
 // with StartInOwnGroup and stopped with KillGroup; on Linux it also dies

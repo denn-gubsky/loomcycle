@@ -3,7 +3,9 @@
 # conversions run: ffmpeg (a recording to a WAV for speech-to-text, speech to
 # Opus or MP3), poppler's pdftoppm (a PDF page to an image for OCR), Typst
 # (a Document rendered as a PDF, RFC GR), with Noto Sans, Noto Sans Mono and
-# Noto Serif for its text (Latin, Cyrillic, Greek), merman (a Mermaid
+# Noto Serif for its text (Latin, Cyrillic, Greek) and, for a house style
+# that names them (RFC HB D1), Inter, Carlito (Calibri's metrics) and
+# Liberation Sans and Serif (Arial's and Times New Roman's), merman (a Mermaid
 # diagram drawn as a picture, RFC GR P4d; no browser), and DjVuLibre's
 # djvutxt and djvused (a DjVu book's text layer, outline and metadata, RFC
 # GV P3) and ddjvu (its pages rendered for OCR, RFC GV P4).
@@ -52,7 +54,8 @@ ARG MERMAN_SHA256_ARM64=afea2472d232d0642b430f1db03a8d216925fbad04144348c2fe0838
 RUN set -eux; \
     apt-get update; \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        ca-certificates ffmpeg poppler-utils fonts-noto-core fonts-noto-mono curl xz-utils djvulibre-bin; \
+        ca-certificates ffmpeg poppler-utils fonts-noto-core fonts-noto-mono \
+        fonts-inter fonts-crosextra-carlito fonts-liberation curl xz-utils djvulibre-bin; \
     case "${TARGETARCH:-amd64}" in \
         amd64) triple=x86_64-unknown-linux-musl; sum="${TYPST_SHA256_AMD64}" ;; \
         arm64) triple=aarch64-unknown-linux-musl; sum="${TYPST_SHA256_ARM64}" ;; \
@@ -83,6 +86,16 @@ RUN set -eux; \
     # (D13), and Noto Serif for a house style that asks for it (RFC GR P4c).
     # The rest of the Noto set is some hundreds of MB this image does not need.
     find /usr/share/fonts/truetype/noto -type f ! -name 'NotoSans-*' ! -name 'NotoSansMono-*' ! -name 'NotoSerif-*' -delete; \
+    # A style's fonts (RFC HB D1), in the faces a document uses: Inter's
+    # regular, bold, semibold and their italics (InterDisplay and the other
+    # weights go), Carlito's four, and Liberation Sans and Serif (not Mono).
+    # About 10 MB in all.
+    find /usr/share/fonts/opentype/inter -type f ! -name 'Inter-Regular.otf' ! -name 'Inter-Italic.otf' \
+        ! -name 'Inter-Bold.otf' ! -name 'Inter-BoldItalic.otf' ! -name 'Inter-SemiBold.otf' ! -name 'Inter-SemiBoldItalic.otf' -delete; \
+    find /usr/share/fonts/truetype/liberation -type f -name 'LiberationMono-*' -delete; \
+    test -f /usr/share/fonts/opentype/inter/Inter-Regular.otf; \
+    test -f /usr/share/fonts/truetype/crosextra/Carlito-Regular.ttf; \
+    test -f /usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf; \
     command -v djvutxt djvused ddjvu; \
     # curl stays: djvulibre-bin depends on it (Debian ships trixie's
     # 3.5.28-2.2, with the fix for CVE-2025-53367), and purging it would

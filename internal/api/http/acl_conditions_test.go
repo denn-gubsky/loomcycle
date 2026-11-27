@@ -101,14 +101,16 @@ func TestACLGate_AnAgentConditionReadsTheRunsAgent(t *testing.T) {
 	if code, out := startCondWorker(t, ts, "a_agent_1", ""); code != 200 {
 		t.Fatalf("%d %s", code, out)
 	}
-	if evs := runEvents(t, st, "a_agent_1"); hasEvent(evs, "capability_inert", `"tool":"Bash"`) {
+	// The ACL's notice, not the one every run of a definition naming Bash
+	// now has (RFC GW P15: Bash was removed).
+	if evs := runEvents(t, st, "a_agent_1"); hasEvent(evs, "capability_inert", `"tool":"Bash","gate":"acl"`) {
 		t.Error("a deny for another agent withheld Bash")
 	}
 	bindTenantWide(t, st, "this", `[{"effect":"deny","actions":["invoke"],"resources":["tool:Bash"],"when":{"agent":"worker"}}]`)
 	if code, out := startCondWorker(t, ts, "a_agent_2", ""); code != 200 {
 		t.Fatalf("%d %s", code, out)
 	}
-	if evs := runEvents(t, st, "a_agent_2"); !hasEvent(evs, "capability_inert", `"tool":"Bash"`) {
+	if evs := runEvents(t, st, "a_agent_2"); !hasEvent(evs, "capability_inert", `"tool":"Bash","gate":"acl"`) {
 		t.Errorf("a deny for the run's own agent did not withhold Bash; events: %s", aclEventTypes(evs))
 	}
 }

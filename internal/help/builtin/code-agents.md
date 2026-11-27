@@ -239,8 +239,7 @@ via ScheduleDef. A capability not in `tools` is simply absent.
 
 > The sandbox protects loomcycle from the *runtime* handing the JS more
 > capability than `tools` granted. It does **not** protect you
-> from your own code's logic — that is the operator's trust posture, the
-> same as the Bash tool.
+> from your own code's logic — that is the operator's trust posture.
 
 ## Determinism
 

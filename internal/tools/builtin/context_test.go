@@ -280,7 +280,6 @@ func TestSandboxedToolPaths_DescribedRelative(t *testing.T) {
 		{"Read", string((&Read{}).InputSchema())},
 		{"Write", string((&Write{}).InputSchema())},
 		{"Edit", string((&Edit{}).InputSchema())},
-		{"Bash", string((&Bash{}).InputSchema())},
 	}
 	for _, c := range cases {
 		if strings.Contains(c.schema, "Absolute file path") {

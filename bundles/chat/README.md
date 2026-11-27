@@ -33,23 +33,23 @@ then start an interactive run with `chat/medium` or `chat/local` from the `/run`
 ## Toolset
 
 The agents get: `Read, Write, Edit, Grep, Glob, WebSearch, WebFetch, HTTP,
-Workspace, File, Bashbox, Bash, Document, Memory, Path, Skill, SkillDef, Agent,
+Workspace, File, Document, Memory, Path, Skill, SkillDef, Agent,
 Interruption, History` (plus `Context`, auto-added), and a workspace grant
-(`read`, `write`, `exec`, `open`; RFC GW). They run commands in a workspace and
-fall back to Bashbox or Bash where the install serves no workspaces. Bash and
-Bashbox are deprecated (RFC GW P15 removes them; `docs/MIGRATING-FROM-BASH.md`).
+(`read`, `write`, `exec`, `open`; RFC GW). They run commands in a workspace
+only: `Bash` and `Bashbox` were removed in v1.172.0
+(`docs/MIGRATING-FROM-BASH.md`).
 
 ### Requirements
 
 - **A read-write volume.** The agents declare no `volumes:`, so they use the
   operator's **default** volume — define one with `default: true, mode: rw` (or
-  bind one per agent in your overlay). Without it, the file/shell tools are
+  bind one per agent in your overlay). Without it, the file tools are
   registered-but-idle.
 - **SQL Memory** — Document (and SQL-backed Memory) need it. On with SQLite; on a Postgres store it needs LOOMCYCLE_SQLMEM_PG_DSN.
 - **`BRAVE_API_KEY`** + **`LOOMCYCLE_HTTP_HOST_ALLOWLIST`** — for WebSearch/WebFetch.
 - **`workspace.mode`** (`local` on a single trusted machine, or a worker) for the
-  Workspace tool; see `docs/WORKSPACES.md`. Without it, `LOOMCYCLE_BASH_ENABLED=1`
-  still turns raw Bash on (Bashbox needs no switch), until both are removed.
+  Workspace tool; see `docs/WORKSPACES.md`. Without it, the agents run no
+  commands.
 - **`chat/local` context window** is the GLOBAL `LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX`
   env (e.g. `131072` for 128K) — it is not a per-agent yaml field. To force GPU
   offload on a box where Ollama falls back to CPU, set

@@ -122,30 +122,3 @@ func TestEphemeralModeCheck_IsAskedOnlyWhenAWriteDependsOnIt(t *testing.T) {
 		t.Errorf("reads, or a write to a bound volume, read the record %d times", m.asked)
 	}
 }
-
-// Bashbox mounts a writable volume read-write, so it asks the record too. On
-// read-only, or on a record it cannot read, it mounts the overlay: the
-// command runs and nothing it writes reaches the volume.
-func TestBashbox_EphemeralVolume_RecordDecidesTheMount(t *testing.T) {
-	for name, m := range map[string]*modeCheck{
-		"record says read-only": {readOnly: true},
-		"record unreadable":     {err: errors.New("store is down")},
-	} {
-		ctx, _, dir := ephemeralWithCheck(t, m)
-		res := fileCall(t, ctx, &Bashbox{}, map[string]any{"command": "echo leaked > out.txt && cat out.txt", "volume": "scratch"})
-		if res.IsError {
-			t.Errorf("%s: the command should still run: %s", name, res.Text)
-		}
-		if _, err := os.Stat(filepath.Join(dir, "out.txt")); err == nil {
-			t.Errorf("%s: the write reached the volume", name)
-		}
-	}
-	// Control: when the record says writable, the write does reach it.
-	ctx, _, dir := ephemeralWithCheck(t, &modeCheck{})
-	if res := fileCall(t, ctx, &Bashbox{}, map[string]any{"command": "echo kept > out.txt", "volume": "scratch"}); res.IsError {
-		t.Fatalf("a writable volume: %s", res.Text)
-	}
-	if _, err := os.Stat(filepath.Join(dir, "out.txt")); err != nil {
-		t.Errorf("a writable volume did not get the write: %v", err)
-	}
-}

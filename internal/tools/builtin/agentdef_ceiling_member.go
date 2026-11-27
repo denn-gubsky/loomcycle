@@ -3,7 +3,6 @@ package builtin
 import (
 	"context"
 	"fmt"
-	"path"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
@@ -48,12 +47,6 @@ import (
 //	ceilSkills               the plane's grant; the runner's rules narrow skills
 //	                         at run start
 //	ceilEvaluation           the token's grant (submit_self for a member)
-//	ceilShellCreds           explicit for an agent holding Bash or Bashbox: unset
-//	                         (every credential the operator lists) is refused,
-//	                         and the only list allowed is [] — the credential
-//	                         rules (credential:<scope>:<name>) name stored
-//	                         credentials, not the operator's host env names, so
-//	                         no rule can grant one. Unset without a shell tool.
 //	ceilInterruption         unset only: no plane stamps a member's policy
 //	ceilGitRemote            operator-grade: unset only
 //	ceilWorkspace            operator-grade: unset only (no workspace rule yet)
@@ -82,7 +75,6 @@ var memberCeilingClass = map[string]string{
 	"ceilChannels":            "plane",
 	"ceilSkills":              "plane",
 	"ceilEvaluation":          "token",
-	"ceilShellCreds":          "explicit [] with a shell tool",
 	"ceilInterruption":        "unset only",
 	"ceilGitRemote":           "operator-grade",
 	"ceilWorkspace":           "operator-grade",
@@ -141,10 +133,6 @@ func (a *AgentDef) memberCeilingCtx(ctx context.Context, def mergedDef) context.
 			vols.Bindings = append(vols.Bindings, tools.VolumeBinding{Name: v})
 		}
 	}
-	shell := tools.ShellCredsPolicyValue{}
-	if holdsShellTool(def.Tools) {
-		shell = tools.ShellCredsPolicyValue{Set: true}
-	}
 	p, ok := auth.PrincipalFromContext(ctx)
 	// Every field is set here, from the member and the fixed candidate lists,
 	// never read from the plane's ctx: the plane grants the same to everyone,
@@ -159,7 +147,6 @@ func (a *AgentDef) memberCeilingCtx(ctx context.Context, def mergedDef) context.
 		rp.Skill = tools.SkillPolicyValue{Granted: true}
 		rp.Evaluation = tools.OffRunEvaluationPolicy(p, ok)
 		rp.Interruption = nil
-		rp.ShellCreds = shell
 		rp.StatementMethods = nil
 		rp.GitRemote = tools.GitRemotePolicyValue{}
 		rp.Workspace = tools.WorkspacePolicyValue{}
@@ -169,19 +156,6 @@ func (a *AgentDef) memberCeilingCtx(ctx context.Context, def mergedDef) context.
 	ctx = tools.WithScheduleDefPolicy(ctx, tools.ScheduleDefPolicyValue{})
 	ctx = tools.WithA2AServerCardDefPolicy(ctx, tools.A2AServerCardDefPolicyValue{})
 	return tools.WithA2AAgentDefPolicy(ctx, tools.A2AAgentDefPolicyValue{})
-}
-
-// holdsShellTool reports whether tools names Bash or Bashbox, by name or by a
-// pattern that covers one.
-func holdsShellTool(names []string) bool {
-	for _, t := range names {
-		for _, shell := range []string{"Bash", "Bashbox"} {
-			if ok, _ := path.Match(t, shell); ok || t == shell {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 // memberToolsCeiling refuses a tool the member may not invoke itself: the

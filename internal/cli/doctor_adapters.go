@@ -21,23 +21,8 @@ type realConfig struct {
 
 func (r *realConfig) ProviderPriorityList() []string { return r.cfg.ProviderPriority }
 
-// ConfigWarnings are the load's advisories but its deprecations, which
-// DeprecationWarnings reports.
-func (r *realConfig) ConfigWarnings() []string {
-	deprecated := make(map[string]bool, len(r.cfg.Deprecations))
-	for _, d := range r.cfg.Deprecations {
-		deprecated[d] = true
-	}
-	out := make([]string, 0, len(r.cfg.Warnings))
-	for _, w := range r.cfg.Warnings {
-		if !deprecated[w] {
-			out = append(out, w)
-		}
-	}
-	return out
-}
-
-func (r *realConfig) DeprecationWarnings() []string { return r.cfg.Deprecations }
+// ConfigWarnings are the load's advisories.
+func (r *realConfig) ConfigWarnings() []string { return r.cfg.Warnings }
 
 func (r *realConfig) AgentProviderHints() []string {
 	out := []string{}
@@ -119,8 +104,12 @@ func (r *realConfig) Workspaces() DoctorWorkspaces {
 
 func (r *realConfig) TokenHasher() (auth.TokenHasher, error) { return r.cfg.Env.TokenHasher() }
 
-func (r *realConfig) HostShellEnabled() bool {
-	return r.cfg.Env.BashEnabled || len(r.cfg.Env.BashboxFallbackCommands) > 0
+// HostEngineCommands is true when workspace.mode starts the local worker. Its
+// engine is the host one unless LOOMCYCLE_WORKSPACE_ENGINE says otherwise in
+// the child's environment, which the config does not see; warning for a
+// local worker on the container engine is the safe side of that guess.
+func (r *realConfig) HostEngineCommands() bool {
+	return r.cfg.Workspace.Resolved().LocalWorker()
 }
 
 func (r *realConfig) StorageBackend() string  { return r.cfg.Storage.Backend }
