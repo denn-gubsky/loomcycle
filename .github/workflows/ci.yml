@@ -402,6 +402,19 @@ jobs:
           LOOMCYCLE_REQUIRE_DOCKER: "1"
         run: ./test/runtime/workspace/container.sh
 
+      # A personal worker end to end (RFC GW P13): the switch, a user's
+      # personal worker token from the per-user mint, a worker offering a
+      # root, an agent opening it, the release keeping the folder, and the
+      # token's retirement detaching the worker. No docker; it skips only
+      # without python3 or sqlite3, which the step above ensures, so a skip
+      # here is a failure.
+      - name: A personal worker end to end
+        run: |
+          set -o pipefail
+          ./test/runtime/workspace/personal.sh | tee personal.log
+          ! grep -q '^SKIP' personal.log
+          grep -q '=== workspace personal-worker suite PASSED ===' personal.log
+
       # The persistent interpreter (RFC GW P5) in a real session: the image
       # built from Dockerfile.workspace carries the drivers, and the kernel
       # is started, interrupted and killed through the container engine.
