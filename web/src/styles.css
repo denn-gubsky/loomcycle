@@ -1600,6 +1600,17 @@ textarea::placeholder {
   border-color: var(--running);
 }
 
+/* RFC HG: an answer of the person's own, under the option buttons. */
+.modal-options .modal-other {
+  padding: 12px 16px;
+  font-family: inherit;
+  font-size: 14px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--fg);
+}
+
 .modal-textarea {
   width: 100%;
   font-family: inherit;

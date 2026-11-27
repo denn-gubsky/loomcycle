@@ -30,4 +30,30 @@ describe("LiveRunPane", () => {
     // Another gate's line is untouched.
     expect(html).toContain("&quot;gate&quot;:&quot;agent_def_scopes&quot;");
   });
+
+  const withQuestion = (allowOther: boolean) =>
+    renderToStaticMarkup(
+      createElement(LiveRunPane, {
+        events: [],
+        status: "running",
+        agentId: "a",
+        sessionId: "s",
+        error: null,
+        onCancel: () => {},
+        pendingInterrupt: { interruptId: "intr_1", question: "Proceed?", options: ["Yes", "No"], allowOther },
+        onAnswerInterrupt: () => {},
+      }),
+    );
+
+  it("offers an Other answer box beside the option buttons when the question allows one (RFC HG)", () => {
+    const html = withQuestion(true);
+    expect(html).toContain(">Yes</button>");
+    expect(html).toContain('aria-label="Other answer"');
+  });
+
+  it("offers only the option buttons when the question does not allow another answer", () => {
+    const html = withQuestion(false);
+    expect(html).toContain(">Yes</button>");
+    expect(html).not.toContain("Other answer");
+  });
 });
