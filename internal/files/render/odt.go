@@ -641,12 +641,34 @@ func (x *odtWriter) styles() string {
 	}
 	b.WriteString(`<style:style style:name="Internet_20_link" style:display-name="Internet link" style:family="text"><style:text-properties fo:color="` + link + `" style:text-underline-style="solid" style:text-underline-width="auto" style:text-underline-color="font-color"/></style:style>`)
 	b.WriteString(`<style:style style:name="Header_Footer" style:family="paragraph" style:parent-style-name="Standard"><style:paragraph-properties fo:margin-bottom="0cm"/><style:text-properties fo:color="#6e6e6e" fo:font-size="8pt"/></style:style>`)
+	if !st.pageTextPlain() {
+		// The slotted header and footer's paragraph: a centre and a right
+		// tab stop across the text width (RFC HB D3).
+		textW := pw - 2*odtMargin(st)
+		b.WriteString(`<style:style style:name="Header_Footer_Slots" style:family="paragraph" style:parent-style-name="Header_Footer"><style:paragraph-properties><style:tab-stops><style:tab-stop style:position="` + cm(textW/2) + `" style:type="center"/><style:tab-stop style:position="` + cm(textW) + `" style:type="right"/></style:tab-stops></style:paragraph-properties></style:style>`)
+	}
 	b.WriteString(`<style:style style:name="Status_20_Label" style:display-name="Status Label" style:family="text"><style:text-properties fo:color="#b45309" fo:font-size="8pt" fo:font-weight="bold" fo:text-transform="uppercase"/></style:style>`)
 	b.WriteString(`</office:styles><office:automatic-styles>`)
 	m := cm(odtMargin(st))
 	b.WriteString(`<style:page-layout style:name="PM1"><style:page-layout-properties fo:page-width="` + cm(pw) + `" fo:page-height="` + cm(ph) + `" style:print-orientation="portrait" fo:margin-top="` + m + `" fo:margin-bottom="` + m + `" fo:margin-left="` + m + `" fo:margin-right="` + m + `"/></style:page-layout>`)
 	b.WriteString(`</office:automatic-styles><office:master-styles><style:master-page style:name="Standard" style:page-layout-name="PM1"`)
-	if h, f, n := st.header(), st.footer(), st != nil && st.pageNumbers(); h != "" || f != "" || n {
+	if !st.pageTextPlain() {
+		// Slots and placeholders (RFC HB D3): a paragraph with a centre and
+		// a right tab stop; the counters are ODF's own fields.
+		header, footer := x.d.pageText()
+		if header.empty() && footer.empty() {
+			b.WriteString(`/>`)
+		} else {
+			b.WriteString(`>`)
+			if !header.empty() {
+				b.WriteString(`<style:header>` + odtPageSlots(header) + `</style:header>`)
+			}
+			if !footer.empty() {
+				b.WriteString(`<style:footer>` + odtPageSlots(footer) + `</style:footer>`)
+			}
+			b.WriteString(`</style:master-page>`)
+		}
+	} else if h, f, n := st.header(), st.footer(), st != nil && st.pageNumbers(); h != "" || f != "" || n {
 		// The style's header and footer lines, as text, and the page number
 		// (text:page-number) at the footer's end.
 		b.WriteString(`>`)
@@ -719,4 +741,29 @@ func odtMargin(st *Style) float64 {
 		return odtMarginCm
 	}
 	return st.Page.MarginMM / 10
+}
+
+// odtPageSlots is a header or footer paragraph with three slots: text, and
+// {page} and {pages} as ODF's page-number and page-count fields, the
+// writer's own (RFC HB D3).
+func odtPageSlots(p pageSlots) string {
+	var b strings.Builder
+	b.WriteString(`<text:p text:style-name="Header_Footer_Slots">`)
+	for i, slot := range p {
+		if (i == 1 && (len(p[1]) > 0 || len(p[2]) > 0)) || (i == 2 && len(p[2]) > 0) {
+			b.WriteString(`<text:tab/>`)
+		}
+		for _, seg := range slot {
+			switch seg.Field {
+			case fieldPage:
+				b.WriteString(`<text:page-number text:select-page="current">1</text:page-number>`)
+			case fieldPages:
+				b.WriteString(`<text:page-count>1</text:page-count>`)
+			default:
+				b.WriteString(xmlText(seg.Text))
+			}
+		}
+	}
+	b.WriteString(`</text:p>`)
+	return b.String()
 }

@@ -61,9 +61,7 @@ func writeHTML(ctx context.Context, w io.Writer, d *Doc, opts Options) error {
 		h.s(`<meta name="date" content="` + esc(d.Date) + `">` + "\n")
 	}
 	h.s("<title>" + esc(oneLine(d.Title)) + "</title>\n<style>\n" + htmlStyle + d.Style.cssOverrides("article") + "</style>\n</head>\n<body>\n<article>\n")
-	if l := d.Style.header(); l != "" {
-		h.s(`<p class="style-header">` + esc(l) + "</p>\n")
-	}
+	h.webLine("style-header", false, esc)
 
 	h.s("<header")
 	if opts.TitlePage {
@@ -99,9 +97,7 @@ func writeHTML(ctx context.Context, w io.Writer, d *Doc, opts Options) error {
 	for _, s := range d.Sections {
 		h.section(s)
 	}
-	if l := d.Style.footer(); l != "" {
-		h.s(`<p class="style-footer">` + esc(l) + "</p>\n")
-	}
+	h.webLine("style-footer", true, esc)
 	h.s("</article>\n")
 	if d.Embed != nil {
 		js, err := d.Embed.JSON()
@@ -396,4 +392,33 @@ func shownSize(im Image) string {
 	}
 	w, h := im.shown(cfg.Width, cfg.Height)
 	return fmt.Sprintf(` width="%d" height="%d"`, w, h)
+}
+
+// webLine writes the style's header or footer line for HTML and EPUB. A
+// plain line prints as it did before RFC HB; slots become three spans, and
+// the page counters, which a page without pages cannot show, are dropped
+// (webPageText).
+func (h *htmlWriter) webLine(class string, footer bool, escape func(string) string) {
+	st := h.d.Style
+	if st == nil {
+		return
+	}
+	l := st.Header
+	if footer {
+		l = st.Footer
+	}
+	if st.pageTextPlain() {
+		if l.Left != "" {
+			h.s(`<p class="` + class + `">` + escape(l.Left) + "</p>\n")
+		}
+		return
+	}
+	t := h.d.webPageText(l)
+	switch {
+	case t[0] == "" && t[1] == "" && t[2] == "":
+	case t[1] == "" && t[2] == "":
+		h.s(`<p class="` + class + `">` + escape(t[0]) + "</p>\n")
+	default:
+		h.s(`<p class="` + class + ` style-slots"><span>` + escape(t[0]) + `</span><span>` + escape(t[1]) + `</span><span>` + escape(t[2]) + "</span></p>\n")
+	}
 }
