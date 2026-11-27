@@ -16,6 +16,7 @@ import type { AgentEvent, PromptContent, PromptSegment } from "@loomcycle/client
 import {
   isButtonInput,
   MAX_OPTION_BUTTONS,
+  MAX_OPTIONS,
   numberedOptions,
   optionLabels,
   pickOption,
@@ -26,7 +27,7 @@ import { legacySubject, type RunAs, type Speaker } from "./identity.js";
 import type { PlatformCapabilities, PlatformInfo } from "./platform.js";
 import type { BridgePort, ClientFactory, Logger, RunClient } from "./ports.js";
 import { MessageSink, StreamSink, type MessageSinkOptions, type StreamSinkOptions, type TurnSink } from "./renderer.js";
-import type { ConversationRecord, ConversationStore } from "./store.js";
+import type { ConversationRecord, ConversationStore, StoredQuestion } from "./store.js";
 import { HELP_TEXT, parseCommand, VOICE_HELP_TEXT, type Command } from "./text.js";
 import { statusOf, type TokenSource } from "./tokens.js";
 import {
@@ -200,8 +201,9 @@ export class Conversation<TRef> {
   private live?: Live;
   private sink?: TurnSink;
   private pending?: PendingQuestion;
-  /** The actions behind the buttons of the open card, by button id. A restart
-   *  ends the live run (see the header), so these need not outlive the process. */
+  /** The actions behind the buttons of the open card, by button id. A
+   *  question's are saved with it in the record (rec.question), so its card
+   *  still works after a restart (RFC HG §4.3); a review's are not. */
   private buttons = new Map<string, CardAction>();
   /** Untrusted messages that arrived mid-turn, delivered when the turn ends. */
   private deferred: string[] = [];
@@ -381,6 +383,7 @@ export class Conversation<TRef> {
    *  question, into the live run, or as a new run. voice is set when the text
    *  is a voice message's transcript. */
   private async deliver(speaker: Speaker, text: string, voice: TurnInput | undefined): Promise<void> {
+    await this.restoreQuestion();
     const isOwner = speaker.subject === this.rec.ownerSubject;
     // A plain reply from the owner answers the open question.
     if (this.pending && isOwner && this.pending.runId === this.live?.runId) {
@@ -407,8 +410,7 @@ export class Conversation<TRef> {
         }
         answer = text;
       }
-      this.pending = undefined;
-      this.buttons.clear();
+      this.clearQuestion();
       await this.resolve(p, answer, speaker.subject);
       await this.save();
       return;
@@ -576,14 +578,17 @@ export class Conversation<TRef> {
       live.markStarted();
       if (this.live === live) {
         this.live = undefined;
-        this.pending = undefined;
-        this.buttons.clear();
+        // A lost run may still wait on its question: the saved one stays, and
+        // the next message checks it against the run as after a restart.
+        const saved = this.rec.question;
+        this.clearQuestion();
         await this.finishTurn().catch(() => undefined);
         // A run that ended rather than parked: its last turn is spoken too.
         if (!live.abort.signal.aborted) this.speakTurn();
         if (lost) {
           this.rec.runId = live.runId;
           this.rec.agentId = live.agentId;
+          this.rec.question = saved;
         } else {
           this.rec.runId = undefined;
           this.rec.agentId = undefined;
@@ -703,6 +708,10 @@ export class Conversation<TRef> {
           options,
           buttons,
         };
+        // Saved before the card goes out: a card a restart could not answer
+        // is the failure this record exists for.
+        this.rec.question = { ...this.pending, options: [...options], buttons: Object.fromEntries(this.buttons) };
+        await this.save();
         await this.deps.port.send(this.rec.ref, { type: "message", card });
         return;
       }
@@ -766,6 +775,13 @@ export class Conversation<TRef> {
     if (speaker.subject !== this.rec.ownerSubject) {
       return { message: `Only ${this.ownerLabel()} can answer this.` };
     }
+    try {
+      await this.restoreQuestion();
+    } catch (err) {
+      // No token for the check: the question stays saved for the next try.
+      this.deps.log.error("card action failed", { conversation: this.rec.conversationId, status: statusOf(err) });
+      return { message: "Could not reach the agent. Please try again." };
+    }
     const action = this.actionOf(input, speaker);
     if (!action || !this.live?.runId || action.runId !== this.live.runId) {
       return { card: resultCard("This is no longer open.") };
@@ -778,15 +794,13 @@ export class Conversation<TRef> {
         case VERB.answer: {
           if (!action.interruptId) return { card: resultCard("This is no longer open.") };
           if (!action.answer) return { message: speaker.trust === "untrusted" ? UNTRUSTED_TYPED_ANSWER_TEXT : "Type an answer first." };
-          this.pending = undefined;
-          this.buttons.clear();
+          this.clearQuestion();
           await client.resolveInterrupt(runId, action.interruptId, { answer: action.answer, resolvedBy: speaker.subject });
           return { card: resultCard(`Answered: ${action.answer}`) };
         }
         case VERB.decline:
           if (!action.interruptId) return { card: resultCard("This is no longer open.") };
-          this.pending = undefined;
-          this.buttons.clear();
+          this.clearQuestion();
           await client.cancelInterrupt(runId, action.interruptId, { resolvedBy: speaker.subject });
           return { card: resultCard("Declined.") };
         case VERB.approve:
@@ -806,6 +820,50 @@ export class Conversation<TRef> {
     } finally {
       await this.save().catch(() => undefined);
     }
+  }
+
+  /** clearQuestion forgets the open question, in memory and in the record
+   *  (saved with the record's next write). */
+  private clearQuestion(): void {
+    this.pending = undefined;
+    this.buttons.clear();
+    this.rec.question = undefined;
+  }
+
+  /** restoreQuestion takes back a question a restart (or a lost stream) left
+   *  open (RFC HG §4.3), on the first message or card action after it. The
+   *  saved question is checked against the run: still pending, its buttons
+   *  and typed answers work again, and the run's stream is re-attached to
+   *  show what it says once answered; gone, it is forgotten, and the message
+   *  goes on as an ordinary one. A failed check forgets it too: the message
+   *  then continues the session in a new run, as it did before questions
+   *  were saved. */
+  private async restoreQuestion(): Promise<void> {
+    const q = this.rec.question;
+    if (!q || this.live) return;
+    const conversation = this.rec.conversationId;
+    const forget = async (reason: string, status?: number) => {
+      this.deps.log.info("question: the saved question is not restored", { conversation, reason, ...(status ? { status } : {}) });
+      this.rec.question = undefined;
+      await this.save();
+    };
+    if (!isStoredQuestion(q) || q.runId !== this.rec.runId) return forget("record");
+    const client = await this.runClient();
+    if (!client.listRunInterrupts || !client.streamRunByID) return forget("client");
+    let open: boolean;
+    try {
+      const res = await client.listRunInterrupts(q.runId, { status: "pending" });
+      open = (res.interrupts ?? []).some((i) => i.interrupt_id === q.interruptId && (i.status ?? "pending") === "pending");
+    } catch (err) {
+      return forget("check_failed", statusOf(err));
+    }
+    if (!open) return forget("gone");
+    const live: Live = { abort: new AbortController(), runId: q.runId, agentId: this.rec.agentId, parked: false, started: Promise.resolve(), markStarted: () => undefined };
+    this.live = live;
+    this.pending = { runId: q.runId, interruptId: q.interruptId, options: [...q.options], allowOther: q.allowOther };
+    this.buttons = new Map(Object.entries(q.buttons));
+    this.deps.log.info("question: restored the saved question", { conversation, run: q.runId });
+    void this.pump(afterQuestion(client.streamRunByID(q.runId, { signal: live.abort.signal }), q.interruptId), live);
   }
 
   private async resolve(p: PendingQuestion, answer: string, by: string): Promise<void> {
@@ -1057,6 +1115,7 @@ export class Conversation<TRef> {
     // block, which a live run's input cannot carry; neither can its files.
     if (speaker.trust === "untrusted") return refuseAll(FILE_TEXT.unavailable, "untrusted", true);
     // The text would answer the open question; the person sends both again.
+    await this.restoreQuestion();
     if (this.pending && this.pending.runId === this.live?.runId) return refuseAll(FILE_TEXT.answerFirst, "question_open", false);
 
     const client = await this.runClient();
@@ -1248,8 +1307,7 @@ export class Conversation<TRef> {
   private dropLive(): void {
     this.live?.abort.abort();
     this.live = undefined;
-    this.pending = undefined;
-    this.buttons.clear();
+    this.clearQuestion();
     this.rec.runId = undefined;
     this.rec.agentId = undefined;
   }
@@ -1265,6 +1323,39 @@ export class Conversation<TRef> {
     }
     await this.save();
   }
+}
+
+/** afterQuestion is a re-attached run's stream from just after the question
+ *  it waits on. The re-attach replays the whole run first, which the chat
+ *  has already seen, so everything up to that question's own
+ *  interruption_pending is dropped, but for the frames that name the run. */
+export async function* afterQuestion(events: AsyncIterable<AgentEvent>, interruptId: string): AsyncIterable<AgentEvent> {
+  let past = false;
+  for await (const ev of events) {
+    if (past || ev.type === "agent" || ev.type === "session") yield ev;
+    else if (ev.type === "interruption_pending" && ev.interruption?.interrupt_id === interruptId) past = true;
+  }
+}
+
+/** isStoredQuestion checks a question read back from the store before it is
+ *  trusted to draw buttons: the file is the operator's, but a hand edit or
+ *  a record from another version must not become a card action. */
+export function isStoredQuestion(q: unknown): q is StoredQuestion {
+  const r = q as Partial<StoredQuestion> | null;
+  if (!r || typeof r !== "object" || typeof r.runId !== "string" || typeof r.interruptId !== "string" || typeof r.allowOther !== "boolean") return false;
+  if (!Array.isArray(r.options) || r.options.length > MAX_OPTIONS || !r.options.every((o) => typeof o === "string")) return false;
+  if (!r.buttons || typeof r.buttons !== "object" || Array.isArray(r.buttons)) return false;
+  const actions = Object.values(r.buttons);
+  if (actions.length > MAX_OPTION_BUTTONS + 1) return false;
+  return actions.every(
+    (a) =>
+      !!a &&
+      typeof a === "object" &&
+      (a.verb === VERB.answer || a.verb === VERB.decline) &&
+      a.runId === r.runId &&
+      a.interruptId === r.interruptId &&
+      (a.answer === undefined || (typeof a.answer === "string" && r.options!.includes(a.answer))),
+  );
 }
 
 function isVoiceSetting(c: Command | undefined): boolean {

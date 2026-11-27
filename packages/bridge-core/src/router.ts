@@ -150,7 +150,7 @@ export class ConversationRouter<TRef> {
       try {
         const token = await this.deps.broker.tokenFor(rec.runSubject, rec.runName, rec.ref);
         await this.deps.clients(token).cancelAgent(rec.agentId, { reason: `${this.deps.platform.name}-bridge: idle` });
-        await this.deps.store.put({ ...rec, agentId: undefined, runId: undefined });
+        await this.deps.store.put({ ...rec, agentId: undefined, runId: undefined, question: undefined });
       } catch (err) {
         this.deps.log.warn("could not end a stale run", { conversation: rec.conversationId, status: (err as { status?: number })?.status });
       }

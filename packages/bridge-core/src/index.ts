@@ -32,7 +32,7 @@ export type { FileMessageOptions, MessageOptions, RouterOptions, SeenMessage } f
 export { createBridge, runCli, voiceSurfaces } from "./start.js";
 export type { Bridge, BridgeAdapter, BridgeContext, BridgeOptions } from "./start.js";
 export { FileStore, MemoryStore, storeFromSpec } from "./store.js";
-export type { ConversationRecord, ConversationStore } from "./store.js";
+export type { ConversationRecord, ConversationStore, StoredQuestion } from "./store.js";
 export { HELP_TEXT, parseCommand, splitMessage, VOICE_HELP_TEXT } from "./text.js";
 export type { Command } from "./text.js";
 export { statusOf, TokenBroker } from "./tokens.js";
