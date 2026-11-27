@@ -1976,6 +1976,25 @@ message Event {
   // (it went: unexposed, released, idle or lost). SERVER-generated, on the run's
   // own stream only. Nil on every other event type.
   SurfaceInfo surface = 26;
+
+  // interruption carries the question on type=interruption_pending frames
+  // (RFC HG D6): what the run asked, its options, and whether an answer
+  // outside them is accepted. Before it a gRPC client saw the event with no
+  // question at all. SERVER-generated. Nil on every other event type.
+  InterruptionInfo interruption = 27;
+}
+
+// InterruptionInfo is the type=interruption_pending payload. Mirrors
+// providers.InterruptionEventInfo.
+message InterruptionInfo {
+  string interrupt_id = 1;
+  string kind = 2;                          // question
+  string question = 3;
+  repeated string options = 4;              // empty = a free-text answer
+  string context = 5;
+  string priority = 6;                      // low | normal | high
+  google.protobuf.Timestamp expires_at = 7; // unset = no timeout
+  bool allow_other = 8;                     // with options: an answer of the person's own is accepted too
 }
 
 // OverrideInfo is the type=override payload (RFC DC). Mirrors
