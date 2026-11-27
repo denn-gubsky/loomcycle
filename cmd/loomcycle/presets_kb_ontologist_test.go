@@ -305,6 +305,30 @@ func TestKBOntologist_ReportCountsAndCallsNoModel(t *testing.T) {
 	}
 }
 
+// TestKBOntologist_ManyRowsOfOneDocumentPassTheFloor: a type on 20 rows of one
+// document is a candidate (the posts of one launch plan); the same type on 19 rows
+// of one document stays below the floor.
+func TestKBOntologist_ManyRowsOfOneDocumentPassTheFloor(t *testing.T) {
+	f := newOntFixture(t)
+	f.parts(f.doc("Guide"), "ledger", 20)
+	f.parts(f.doc("Guide"), "roster", 19)
+	rep := runOntologist(t, f, ontShippedPolicy(t), `{"mode":"report"}`).report
+	led := ontCandidate(rep, "ledger")
+	if led == nil || led["rows"] != float64(20) || led["documents"] != float64(1) {
+		t.Errorf("ledger = %v, want a candidate on 20 rows of 1 document", led)
+	}
+	if ros := ontCandidate(rep, "roster"); ros != nil {
+		t.Errorf("roster = %v, want it below the floor (19 rows of one document)", ros)
+	}
+	// memo (3 rows of one document) stays below the floor too.
+	if memo := ontCandidate(rep, "memo"); memo != nil {
+		t.Errorf("memo = %v, want it below the floor", memo)
+	}
+	if dropped, _ := rep["dropped"].(map[string]any); dropped["below_floor"] != float64(4) {
+		t.Errorf("dropped = %v, want below_floor 4 (memo, contact, approves, roster)", dropped)
+	}
+}
+
 // TestKBOntologist_ReportSaysABacklogStopsThePass: 30 open proposals filed by
 // kb/ontologist make a propose pass stop; the same 30 filed by another agent do not.
 func TestKBOntologist_ReportSaysABacklogStopsThePass(t *testing.T) {
