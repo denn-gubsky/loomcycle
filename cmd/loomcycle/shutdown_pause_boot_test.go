@@ -54,12 +54,18 @@ func shutdownPauseYAML(volume string) string {
 	b.WriteString("provider_priority: [mock]\n")
 	b.WriteString("tiers:\n  middle:\n    - { provider: mock, model: mock-generic }\n")
 	b.WriteString("conversion:\n  mode: inprocess\n")
-	fmt.Fprintf(&b, "workspace:\n  mode: local\n  local:\n    root: %q\n", volume)
 	b.WriteString("agents:\n  sleeper:\n    provider: code-js\n    tools: [Workspace]\n    workspace: { ops: [exec], open: true }\n    code: |\n")
 	for _, line := range strings.Split(strings.TrimSpace(shutdownPauseScript), "\n") {
 		b.WriteString("      " + line + "\n")
 	}
 	return b.String()
+}
+
+// localWorkspaceYAML is the workspace block the shutdown tests run their
+// command under: the local worker, its workspaces under root. A test that
+// configures workspaces another way writes its own block instead.
+func localWorkspaceYAML(root string) string {
+	return fmt.Sprintf("workspace:\n  mode: local\n  local:\n    root: %q\n", root)
 }
 
 type shutdownPauseBoot struct {
@@ -86,7 +92,7 @@ func newShutdownPauseBoot(t *testing.T) *shutdownPauseBoot {
 			t.Fatal(err)
 		}
 	}
-	if err := os.WriteFile(b.cfgPath, []byte(shutdownPauseYAML(b.volume)), 0o600); err != nil {
+	if err := os.WriteFile(b.cfgPath, []byte(shutdownPauseYAML(b.volume)+localWorkspaceYAML(b.volume)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return b
@@ -160,7 +166,9 @@ func (b *shutdownPauseBoot) startOn(t *testing.T, port int, extra ...string) *ru
 		}
 		_ = resp.Body.Close()
 		if resp.StatusCode == http.StatusOK {
-			waitForLocalWorker(t, rb)
+			if cfg, _ := os.ReadFile(b.cfgPath); strings.Contains(string(cfg), "\n  mode: local\n") {
+				waitForLocalWorker(t, rb)
+			}
 			return rb
 		}
 	}
