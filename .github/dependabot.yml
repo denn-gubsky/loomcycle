@@ -9,8 +9,6 @@
 # folded into these groups (`applies-to: version-updates`).
 #
 # Deliberate exclusions:
-# - gbash (the Bashbox sandbox) is alpha and pinned; a bump must quote the
-#   upstream changelog and pass the escape suite, so it comes in its own group.
 # - @loomcycle/* packages and denngubsky/* images are this repo's own; a
 #   consumer or compose file moves to a new release by hand, in step with the
 #   release, not weekly. ghcr.io/denn-gubsky/loomboard (the hosted board in
@@ -64,33 +62,10 @@ updates:
       - dependency-name: "github.com/a2aproject/a2a-go/v2"
         versions: ["2.7.x"]
     groups:
-      # gbash and its contrib/awk and contrib/jq modules release in lockstep;
-      # one PR moves all three, apart from every other Go update. A group listed
-      # first wins, so gbash never lands in the per-dependency groups below.
-      gbash:
-        applies-to: version-updates
-        patterns:
-          - "github.com/ewhauser/gbash*"
       go-by-dependency:
         applies-to: version-updates
         group-by: dependency-name
         patterns: ["*"]
-        exclude-patterns:
-          - "github.com/ewhauser/gbash*"
-
-  # deploy/builder is a standalone module the root does not replace (its own
-  # release, stdlib only), so it keeps its own entry.
-  - package-ecosystem: gomod
-    directory: /deploy/builder
-    schedule:
-      interval: weekly
-    open-pull-requests-limit: 3
-    commit-message:
-      prefix: "chore(deps)"
-    groups:
-      go-minor-patch:
-        applies-to: version-updates
-        update-types: [minor, patch]
 
   # --- npm: every tracked package-lock.json, one entry --------------------
   # One entry over all 15 directories (each keeps its own lockfile; there is no
@@ -190,8 +165,6 @@ updates:
       - /
       - /cloud-deployment/landing
       - /deploy/bridges
-      - /deploy/builder
-      - /deploy/builder/session
     schedule:
       interval: weekly
     open-pull-requests-limit: 5

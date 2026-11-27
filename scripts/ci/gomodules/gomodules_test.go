@@ -59,7 +59,7 @@ replace example.com/outside => ../outside
 		"internal/a/go.mod": "module example.com/m/internal/a\n\ngo 1.26\n",
 		"internal/b/go.mod": "module example.com/m/internal/b\n\ngo 1.26\n",
 		// A module nobody replaces is not part of the build.
-		"deploy/builder/go.mod": "module example.com/builder\n\ngo 1.26\n",
+		"deploy/standalone/go.mod": "module example.com/standalone\n\ngo 1.26\n",
 	})
 	got, err := InTree(root)
 	if err != nil {

@@ -398,8 +398,7 @@ jobs:
 
   # LEAN patch path: on a vX.Y.Z (Z>0) tag, publish ONLY the loomcycle-browser
   # linux/amd64 image — the deployable variant — and skip the binaries,
-  # Homebrew, the other images, and the sandbox images (publish-sandbox-images
-  # skips itself on a patch too). Adapters publish independently, gated on their
+  # Homebrew and the other images. Adapters publish independently, gated on their
   # own version-match ("if changed"). This turns a 30+ min full build into a few
   # minutes for a bugfix release. Force the full build on a patch with a
   # workflow_dispatch (force_full=true).

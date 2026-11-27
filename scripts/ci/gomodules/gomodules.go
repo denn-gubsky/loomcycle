@@ -11,8 +11,8 @@
 // The set is read from the root go.mod, not kept as a list: a nested module is
 // wired into the build by a `replace <path> => ./<dir>` directive, so the
 // directive that makes it part of the binary is also what makes the tooling
-// visit it. A module the root does not replace (deploy/builder, a separate
-// image) is not part of the build and is not returned.
+// visit it. A module the root does not replace (a separate build that ships
+// on its own) is not part of the build and is not returned.
 package gomodules
 
 import (

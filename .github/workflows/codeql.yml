@@ -70,11 +70,8 @@ jobs:
       - if: matrix.build-mode == 'manual'
         name: Build
         # `./...` from the root reaches no other module: in-modules.sh builds
-        # the root and each in-tree module the root go.mod replaces (RFC FE),
-        # and deploy/builder is its own module (the loomcycle-builder image).
-        run: |
-          scripts/ci/in-modules.sh go build ./...
-          (cd deploy/builder && go build ./...)
+        # the root and each in-tree module the root go.mod replaces (RFC FE).
+        run: scripts/ci/in-modules.sh go build ./...
 
       # No fork guard: code scanning accepts uploads from a run triggered by
       # pull_request even when a fork's token is read-only.
