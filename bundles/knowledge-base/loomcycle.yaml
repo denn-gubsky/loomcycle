@@ -4474,7 +4474,15 @@ agents:
         if (from === null || to === null) { bump(st.skipped, "end_unreadable"); return; }
         if (isOperational(from) || isOperational(to)) { bump(st.skipped, "operational_document"); return; }
         var evidence = readEvidence(st, s);
-        if (evidence.length === 0 && s.kind === "subject") { evidence = readOpening(st, s, to); }
+        // A subject claim quoting nothing but the FROM title (node_stats assign and
+        // misfits file the document's name as their only quote) is judged on the
+        // opening and the topic's meaning, as a quoteless one is: a name alone is
+        // too little to judge a topic on. When the opening holds no text, the title
+        // quote stands.
+        if (s.kind === "subject" && onlyFromTitles(evidence)) {
+          var opening = readOpening(st, s, to);
+          if (opening.length > 0) { evidence = opening; }
+        }
         if (evidence.length === 0) { bump(st.skipped, "no_evidence"); return; }
         if (st.verdict_calls >= st.opts.max_verdict_calls) { throw new Stop(); }
         st.verdict_calls++;
@@ -4568,6 +4576,14 @@ agents:
           });
         }
         return out;
+      }
+
+      // onlyFromTitles: no evidence, or every row quotes the FROM passage's title.
+      function onlyFromTitles(evidence) {
+        for (var i = 0; i < evidence.length; i++) {
+          if (evidence[i].side !== "from" || evidence[i].in_title !== true) { return false; }
+        }
+        return true;
       }
 
       // readOpening is the evidence for a subject proposal that carries no quote —
