@@ -36,7 +36,7 @@
 # The docker client only; docker:cli's binary is static, so it runs on Debian.
 FROM docker:cli@sha256:34507eb5069d8be82c95dd3b6987d4250fd5fee49b82e2509b7d7a7030740d6d AS docker-cli
 
-FROM debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2 AS worker
+FROM debian:trixie-slim@sha256:8aa5a7bf5a1955bddbe7d74fcdd0b91ab30e74362a8b73af672b0481b35b44a0 AS worker
 
 # Typst is a pinned release, its archive checked against the sha256 GitHub
 # publishes for it, one per architecture. It never fetches a package: the
