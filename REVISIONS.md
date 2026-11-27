@@ -8,6 +8,42 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.172.0
+
+*The `Bash` tool, Bashbox, the gbash sandbox, `shell_credentials` and the sandbox sidecar are removed (RFC GW P15): an agent runs commands in a workspace. A server whose config still sets a retired variable or names a removed tool refuses to start, naming each line to change. A stored definition that names a removed item still runs, without it, with a notice. The `sandbox` and `dev-exec` bundles, the builder sidecar and the toolbox image are gone; `dev-workspace` and the `loomcycle-ws-worker` image replace them. `File op=render` gains four house fonts and a photo beside the title.*
+
+The v1.172 line: #3023, #3024, #3035, #3036 and #3038 to #3043.
+- `@loomcycle/client` 1.172.0: `shell_credentials` is gone from `AgentDefOverlay` and from a spawn's parent narrowing in `RunSpec`; `CapabilityInertInfo.gate` may now be `removed`. The Python adapter moves to 1.172.0 (`python-v1.172.0`) with no API change.
+- No proto change. No migration. Code-js ABI unchanged (1.4.0).
+
+### Upgrade notes
+
+Read [`docs/MIGRATING-FROM-BASH.md`](docs/MIGRATING-FROM-BASH.md) before upgrading.
+
+- **Retired variables refuse the start (#3041).** `LOOMCYCLE_BASH_ENABLED`, `LOOMCYCLE_BASH_ALLOWED_CREDS`, `LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS`, `LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV`, `LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS`, `LOOMCYCLE_BASHBOX_OVERLAY_MAX_BYTES` and `LOOMCYCLE_BASHBOX_ENABLED`, set to any non-empty value, now stop the server at start with a line naming each one. Remove them; turn on workspaces (`workspace.mode`) and give the agent the `Workspace` tool with a workspace grant.
+- **Operator yaml that names a removed tool refuses the start (#3041).** An agent or bundle in the config whose `tools` lists `Bash` or `Bashbox`, or that sets `shell_credentials`, fails config load with the line to change.
+- **Stored definitions keep running (#3041).** An AgentDef or TeamDef already in the store that names `Bash`, `Bashbox` or `shell_credentials` runs without it; each run carries one `capability_inert` event per item, gate `removed`. A new create, register or fork that names one is refused; a fork that only inherits one has it stripped, with a note. Fork the definition without it to clear the notice.
+- **Bundles (#3040).** Selecting `sandbox` or `dev-exec` in `LOOMCYCLE_PRESETS` fails with `preset/bundle "…" was removed in v1.172.0: select dev-workspace`. The chat, team and sdlc agents no longer list Bash or Bashbox. `team/orchestrator` no longer creates the `work` volume; the sdlc handlers still edit `volume:work`, so bind it yourself if you use them.
+- **Images and deploy (#3039).** The builder sidecar image and the toolbox images are no longer published, and `deploy/builder` is gone. The TrueNAS main compose runs the plain image; the browser variant runs `loomcycle-ws-worker` with the `loomcycle-workspace-browser` session image and the `dev-workspace` preset, and its `sandbox.secrets.env` becomes `browser.secrets.env` plus a `workspace.worker.env` for the worker token. `cloud-deployment/` runs a `workspace-worker` service behind the `workspace` compose profile; follow its INSTALL.md "Workspace worker" section (env edits, token mint, `COMPOSE_PROFILES`) before deploying.
+- **`loomcycle import claude-code` drops Bash (#3035).** `Bash` and `Bash(<pattern>)` are left out of an imported agent's tools, with a warning per agent; it is not mapped to `Workspace`.
+- **Who may start a process (#3036).** An architecture test now allows only the packages RFC GW §11 lists (the conversion worker, MCP stdio, the transcription helper, the workspace engine on the worker role, the CLI and two test-support packages) to start an OS process.
+- **doctor (#3041).** The "Deprecated" check is now "Removed", and its metadata-service warning points at the local workspace worker.
+
+### Removal (RFC GW P15: #3035, #3036, #3039 to #3043)
+
+- Runtime (#3041): the `Bash` and `Bashbox` tools, gbash, `shell_credentials` (run policy, MCP schema, TS types, def fields) and their env rows are removed. `Context op=capabilities` still reports `bash` and `bashbox`, as `available: false`.
+- Web UI (#3042): the Settings health panel says "Removed items still named by stored definitions", and the volume mode picker no longer mentions Bash.
+- Docs (#3043): the guides describe Bash, Bashbox and the sidecar as removed; `docs/SANDBOX.md` and `docs/TOOLBOX_IMAGE.md` stay one release as short "removed" pages; the migration guide gains "Upgrading to v1.172.0".
+
+### Rendering (RFC HB P3, P4: #3023, #3024)
+
+- A style's `font` and the new `heading_font` take `inter`, `calibri`, `arial` and `times`. PDF embeds Inter or a metric-compatible twin (Carlito, Liberation Sans, Liberation Serif), Word and ODT name the real font, HTML and EPUB put it first in the stack. The conversion worker image carries the fonts (#3023).
+- A style's `photo: {place, width_mm, shape}` puts a picture beside (or above) the title, from `File op=render`'s `photo` argument or the document's first picture before its first heading (#3024).
+
+### Knowledge base (RFC GQ P6: #3038)
+
+- The ontologist's report floor also keeps a type with 20 or more rows in one document, and the writer prompt no longer rejects a repeated record shape as a formatting label.
+
 ## What's in v1.171.0
 
 *A person can answer an agent's question in chat by typing (RFC HG). An Interruption with options may allow an answer outside them (`allow_other`), and the agent is told when it got one. One answer check now runs on HTTP, gRPC, MCP and A2A. gRPC events carry the question itself. The chat bridges number up to 20 options, take a typed number, option text or, where allowed, the person's own answer, and keep an open question across a bridge restart. `File op=render` gains a rule, capitals and a weight per heading level (RFC HB P2). `kb/ask` gains an opt-in first call that answers from the best sections before it searches (RFC HC P1). The workspace worker with the docker client is published as an image.*
