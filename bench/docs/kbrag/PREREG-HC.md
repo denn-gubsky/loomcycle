@@ -91,10 +91,16 @@ The result gates RFC HC phase P2: the first call becomes the default.
 - The `low`-reader arm. On this deployment it is the same model.
 - The K = 10 / 20 arms. Those are P3a.
 
-**How the oracle sees its sections.** The question goes in as trusted text. The sections go
-in as one untrusted `tool_output` block, in kb/answer's row shape:
-`S<n> [<chunk id>] <title> > <heading path>`, then the body, neutralised as kb/survey's
-`neutral()`. Amendment 0 confirms that this matches the merged `kb/answer` renderer.
+**How the oracle sees its sections.** Exactly as kb/answer hands them to kb/read, so the
+oracle measures the reader alone. The prompt is kb/answer's `ASK + "\n\nQUESTION: " +
+question`, as trusted text. The sections go in as one untrusted `tool_output` block built as
+kb/answer's `block()`: its `HEAD` line, then one row per section,
+`S<n> | <chunk id> | <document title> > <section title> | <text>`, rows joined by a newline,
+each field passed through kb/answer's `neutral()` (so the text is one line), the text clipped
+at `CONFIG.section_chars`, and the block held to `CONFIG.context_chars` with the `MIN_TEXT`
+rule for the last row. The harness reads `HEAD`, `ASK`, `CONFIG` and `MIN_TEXT` from the
+kb/answer agent in `bundles/knowledge-base/loomcycle.yaml` at run time and refuses to start the
+oracle when they are missing. Amendment 0 confirms that this matches the merged `kb/answer`.
 
 ## Runs
 

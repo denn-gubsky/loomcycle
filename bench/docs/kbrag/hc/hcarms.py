@@ -101,38 +101,145 @@ def strip_trailer(text):
 
 
 # --- the oracle's section block ----------------------------------------------------
+#
+# The oracle measures kb/read alone, so it hands kb/read exactly what kb/answer hands it (RFC HC
+# §2.2 steps 3-4). kb/answer's constants (HEAD, ASK, CONFIG.section_chars / context_chars,
+# MIN_TEXT) are read at runtime from its code in the bundle, so no hand copy here can drift;
+# neutral / clip / where / render_block / oracle_segments are its neutral, clip, where, block
+# and ask in Python.
 
+KB_YAML = os.path.normpath(os.path.join(HERE, "..", "..", "..", "..", "bundles", "knowledge-base", "loomcycle.yaml"))
+
+
+class ContractError(Exception):
+    """kb/answer, or a constant the oracle copies from it, is missing from the bundle."""
+
+
+_JS_STRING = r'("(?:[^"\\\n]|\\.)*")'
+_CONTRACT = {
+    "HEAD": re.compile(r"^\s*var HEAD = " + _JS_STRING + r";\s*$", re.M),
+    "ASK": re.compile(r"^\s*var ASK = " + _JS_STRING + r";\s*$", re.M),
+    "MIN_TEXT": re.compile(r"^\s*var MIN_TEXT = (\d+);\s*$", re.M),
+    "CONFIG": re.compile(r"^\s*var CONFIG = \{([^}]*)\};\s*$", re.M),
+}
+
+
+def _agent_entry(text, name, path):
+    """One agent's entry: the lines after its `name:` key up to the next line indented no deeper."""
+    lines = text.split("\n")
+    key = re.compile(r"^( *)" + re.escape(name) + r":\s*$")
+    hits = [(i, len(m.group(1))) for i, m in ((i, key.match(l)) for i, l in enumerate(lines)) if m]
+    if len(hits) != 1:
+        raise ContractError("%s: %d %s entries (want exactly one)" % (path, len(hits), name))
+    i, ind = hits[0]
+    out = []
+    for l in lines[i + 1:]:
+        if l.strip() and len(l) - len(l.lstrip(" ")) <= ind:
+            break
+        out.append(l)
+    return "\n".join(out)
+
+
+def answer_contract(path=None):
+    """kb/answer's block and prompt constants as {head, ask, section_chars, context_chars,
+    min_text}. Raises ContractError naming whatever is missing."""
+    path = path or KB_YAML
+    with open(path, encoding="utf-8") as f:
+        entry = _agent_entry(f.read(), "kb/answer", path)
+    found, missing = {}, []
+    for name, rx in _CONTRACT.items():
+        m = rx.findall(entry)
+        if len(m) == 1:
+            found[name] = m[0]
+        else:
+            missing.append(name)
+    if "CONFIG" in found:
+        cfg = {k: int(v) for k, v in re.findall(r"(\w+)\s*:\s*(\d+)", found["CONFIG"])}
+        missing += ["CONFIG.%s" % k for k in ("section_chars", "context_chars") if k not in cfg]
+    if missing:
+        raise ContractError("kb/answer in %s lacks %s" % (path, ", ".join(missing)))
+    try:
+        head, ask = json.loads(found["HEAD"]), json.loads(found["ASK"])
+    except ValueError as e:
+        raise ContractError("kb/answer's HEAD or ASK in %s is not a plain string literal: %s" % (path, e))
+    return {"head": head, "ask": ask, "section_chars": cfg["section_chars"], "context_chars": cfg["context_chars"],
+            "min_text": int(found["MIN_TEXT"])}
+
+
+# kb/answer's neutral(), character for character: its control range, its invisible-character
+# class, JS's \s class (spelled out: Python's \s is not defined by the same table) and a trim of
+# spaces only.
 _CTRL = re.compile("[\u0000-\u001f\u007f-\u009f]")
 _INVISIBLE = re.compile("[­͏؜ᅟᅠ឴឵᠋-᠏​-‏‪-‮"
                         "⁠-⁯ㅤ︀-️﻿ﾠ￰-￸]")
+_JS_WS = "\t\n\u000b\f\r    -     　﻿"
+_JS_SPACE = re.compile("[" + _JS_WS + "]+")
+_JS_TRIM = re.compile("^[" + _JS_WS + "]+|[" + _JS_WS + "]+$")
 
 
 def neutral(s):
-    """kb/survey's neutral(): control characters to spaces, invisible ones dropped, whitespace
-    runs to one space, and <, >, & to look-alikes."""
+    """Control characters to spaces, invisible ones dropped, every whitespace run (line breaks
+    included) to one space, <, > and & to look-alikes, leading and trailing spaces trimmed."""
     s = _INVISIBLE.sub("", _CTRL.sub(" ", "" if s is None else str(s)))
-    s = re.sub(r"\s+", " ", s)
-    return s.replace("<", "‹").replace(">", "›").replace("&", "＆").strip()
+    s = _JS_SPACE.sub(" ", s)
+    s = s.replace("<", "‹").replace(">", "›").replace("&", "＆")
+    return re.sub(r"^ +| +$", "", s)
 
 
-def render_block(sections):
-    """The oracle's untrusted block, shaped as kb/answer's (RFC HC §2.2 step 3): one row per
-    section, `S<n> [<chunk id>] <title> > <heading path>`, then the body. Each body line is
-    neutralised on its own, so the body keeps its line breaks but no line can open a tag."""
-    rows = []
-    for n, s in enumerate(sections, 1):
-        head = " > ".join(neutral(x) for x in [s["title"]] + list(s["path"]) if neutral(x))
-        body = "\n".join(neutral(l) for l in (s["text"] or "").splitlines() if neutral(l))
-        rows.append("S%d [%s] %s\n%s" % (n, neutral(s["chunk_id"]), head, body))
-    return "\n\n".join(rows)
+def _u16(s):
+    return s.encode("utf-16-le", "surrogatepass")
 
 
-def oracle_segments(question, sections):
-    """The question as trusted text (it is benchmark data, not a user's), the sections as an
-    untrusted tool_output block, as kb/answer hands them to kb/read."""
+def _jslen(s):
+    """JS String.length: UTF-16 code units, so an astral character counts 2 as in kb/answer."""
+    return len(_u16(s)) // 2
+
+
+def clip(s, n):
+    """kb/answer's clip(): s.slice(0, n - 1) + "…" over UTF-16 units; a cut may split a
+    surrogate pair, as it does in JS."""
+    if _jslen(s) <= n:
+        return s
+    return _u16(s)[:2 * max(0, n - 1)].decode("utf-16-le", "surrogatepass") + "…"
+
+
+def where(s):
+    """The document title (its path, else a placeholder) > the section title, each made safe."""
+    return (neutral(s.get("doc_title") or s.get("doc_path") or "untitled document") + " > " +
+            neutral(s.get("section_title") or "untitled section"))
+
+
+def render_block(sections, contract):
+    """kb/answer's block(): the HEAD line, then one row per section,
+    `S<n> | <chunk id> | <document title> > <section title> | <text>`, rows joined by "\\n". The
+    text is one neutral line clipped at section_chars; the whole is held to context_chars by
+    cutting the last rows, and a row that would keep under min_text characters of text is left
+    out. Returns (text, the sections kept, in order)."""
+    first = contract["head"]
+    rows, left, kept = [first], contract["context_chars"] - _jslen(first), []
+    for s in sections:
+        head = "S%d | %s | %s | " % (len(kept) + 1, s["chunk_id"], where(s))
+        row = head + clip(neutral(s["text"]), contract["section_chars"])
+        if _jslen(row) + 1 > left:
+            if left - 1 - _jslen(head) < contract["min_text"]:
+                break
+            row = clip(row, left - 1)
+        rows.append(row)
+        left -= _jslen(row) + 1
+        kept.append(s)
+    return "\n".join(rows), kept
+
+
+def oracle_segments(question, sections, contract):
+    """kb/answer's ask() with a trusted question: ASK + "\\n\\nQUESTION: " + the question as
+    trusted text (benchmark data, not a user's), the block as an untrusted tool_output. A section
+    with no text is skipped first, as kb/answer's read step skips one. Returns (segments, the
+    sections kept)."""
+    text, kept = render_block([s for s in sections if neutral(s["text"])], contract)
+    q = _JS_TRIM.sub("", "" if question is None else str(question))
     return [{"role": "user", "content": [
-        {"type": "trusted-text", "text": "QUESTION:\n" + question},
-        {"type": "untrusted-block", "kind": "tool_output", "text": render_block(sections)}]}]
+        {"type": "trusted-text", "text": contract["ask"] + "\n\nQUESTION: " + q},
+        {"type": "untrusted-block", "kind": "tool_output", "text": text}]}], kept
 
 
 SOURCES = re.compile(r"^\s*\**\s*SOURCES\s*\**\s*:(.*)$", re.I | re.M)
@@ -191,10 +298,17 @@ class SetData:
         return prompts.question_text(q) if self.name == "cqa" else q["text"]
 
     def gold_sections(self, q):
+        """The gold sections as kb/answer reads them: the document's title, and the section's
+        chunk title (ingest.py: the page title for section 0, else its heading)."""
         d = self.cqa
         picks = [(q["doc_id"], i) for i in q["gold"] if d.readable(q["doc_id"], i)][:hcconfig.K]
-        return [{"chunk_id": d.chunkmap[did][i], "title": d.docs[did]["title"], "path": d.docs[did]["sections"][i]["path"],
-                 "text": d.docs[did]["sections"][i]["text"], "page": did} for did, i in picks]
+        out = []
+        for did, i in picks:
+            s = d.docs[did]["sections"][i]
+            out.append({"chunk_id": d.chunkmap[did][i], "doc_title": d.docs[did]["title"],
+                        "section_title": s["path"][-1] if s["path"] else d.docs[did]["title"],
+                        "text": s["text"], "page": did})
+        return out
 
 
 def key(ctx, arm, qid, rep, attempt):
@@ -284,8 +398,8 @@ def arm_agent(lc, data, arm, q, rep, attempt, usage, row, ctx):
 
 
 def arm_oracle(lc, data, arm, q, rep, attempt, usage, row, ctx):
-    secs = data.gold_sections(q)
-    r = lc.run(hcconfig.AGENTS["oracle"], segments=oracle_segments(data.prompt(q), secs),
+    segs, secs = oracle_segments(data.prompt(q), data.gold_sections(q), ctx["contract"])
+    r = lc.run(hcconfig.AGENTS["oracle"], segments=segs,
                metadata={"bench": "kbrag-hc", "arm": "oracle", "qid": q["qid"], "rep": rep}, user_tier="free",
                idempotency_key=key(ctx, arm, q["qid"], rep, attempt))
     row["agent"] = hcconfig.AGENTS["oracle"]
@@ -308,11 +422,20 @@ ARM_FN = {"kb-today": arm_agent, "kb-first": arm_agent, "kb-today+answer-first":
 
 class Runner:
     def __init__(self, lc, data, *, arms, out, split, spend, workers=1, retry_failed=False, deadline=None,
-                 budget=hcconfig.BUDGET_USD, key_prefix=None, state_fn=None, log=print, split_map=None):
+                 budget=hcconfig.BUDGET_USD, key_prefix=None, state_fn=None, log=print, split_map=None,
+                 contract=None, kb_yaml=None):
         self.lc, self.data, self.arms, self.split = lc, data, list(arms), split
         bad = [a for a in self.arms if a not in hcconfig.ARMS_FOR[data.name]]
         if bad:
             raise Stop("arm(s) %s do not run on set %s" % (", ".join(bad), data.name), 4)
+        # The oracle copies kb/answer's block and prompt; without kb/answer in the bundle it
+        # would measure some other reader input, so it stops before any run.
+        self.contract = contract
+        if "oracle" in self.arms and contract is None:
+            try:
+                self.contract = answer_contract(kb_yaml)
+            except (ContractError, OSError) as e:
+                raise Stop("ORACLE: %s" % e, 4)
         self.dir = os.path.join(out, data.name, "runs")
         self.prefix = key_prefix or "%s-%s" % (hcconfig.KEY_BASE, os.path.basename(os.path.abspath(out)))
         self.spend, self.budget, self.workers = spend, budget, max(1, int(workers or 1))
@@ -400,7 +523,7 @@ class Runner:
         t0 = time.time()
         try:
             ARM_FN[arm](self.lc, self.data, arm, q, rep, attempt, usage, row,
-                        {"prefix": self.prefix, "split": self.split})
+                        {"prefix": self.prefix, "split": self.split, "contract": self.contract})
         except Stop:
             raise
         except Exception as e:  # one broken run is a failed row, never a dead runner

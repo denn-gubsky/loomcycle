@@ -14,6 +14,8 @@ import fixture  # noqa: E402  (../../tests/fixture.py)
 from fixture import CHUNKS, DOCMAP, QS  # noqa: E402
 
 HAIKU = ("anthropic", "claude-haiku-5-5")
+# Invented kb/answer constants, so a runner test with the oracle needs no kb/answer in the bundle.
+CONTRACT = {"head": "H", "ask": "Read.", "section_chars": 1000, "context_chars": 100000, "min_text": 10}
 
 
 def question_of(text):

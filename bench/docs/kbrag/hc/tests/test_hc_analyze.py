@@ -27,7 +27,7 @@ class Study:
         self.lc = lc or FakeClient(wrong=WRONG)
         data = hcarms.SetData("cqa", self.cqa.qs, self.cqa)
         hcarms.Runner(self.lc, data, arms=hcconfig.ARMS, out=self.out, split="test", spend=FakeSpend(),
-                      log=lambda s: None).run(hcarms.plan(QIDS, 1))
+                      log=lambda s: None, contract=hcfixture.CONTRACT).run(hcarms.plan(QIDS, 1))
         call = hccondense.hc_condense_call(self.lc, self.cqa)
         for arm in hcconfig.ARMS:
             runs = passes.latest_ok_runs(arm, os.path.join(self.out, "cqa", "runs"))
