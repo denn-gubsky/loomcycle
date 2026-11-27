@@ -22,7 +22,7 @@
 
 ---
 
-> 🌳 **Stable and in production.** loomcycle is past v1.0 (currently v1.170) — feature-complete, hardened, and distribution-ready (Homebrew, multi-arch Docker, a Claude Code plugin, TS + Python adapters, a TrueNAS app). **Validated by two months of continuous production operation at JobEmber.ai** under real user load, with multi-replica HA on Postgres. Development since v1.0 has been new primitives plus hardening — see [`REVISIONS.md`](REVISIONS.md) for recent releases and [the releases page](https://github.com/denn-gubsky/loomcycle/releases) for the full history. Apache-2.0. We welcome bug reports, security disclosures, feature contributions, downstream consumers, and forks. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
+> 🌳 **Stable and in production.** loomcycle is past v1.0 (currently v1.171) — feature-complete, hardened, and distribution-ready (Homebrew, multi-arch Docker, a Claude Code plugin, TS + Python adapters, a TrueNAS app). **Validated by two months of continuous production operation at JobEmber.ai** under real user load, with multi-replica HA on Postgres. Development since v1.0 has been new primitives plus hardening — see [`REVISIONS.md`](REVISIONS.md) for recent releases and [the releases page](https://github.com/denn-gubsky/loomcycle/releases) for the full history. Apache-2.0. We welcome bug reports, security disclosures, feature contributions, downstream consumers, and forks. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ---
 
@@ -214,15 +214,23 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.170.0) completes git workspaces: a workspace opened
+The most recent line (v1.171.0) lets a person answer an agent's question in
+chat by typing: an Interruption may allow an answer outside its options
+(`allow_other`), every resolve path checks an answer the same way, gRPC
+clients now get the question itself, and the chat bridges number the
+options, take a typed number, option or own answer, and keep an open
+question across a restart. `File op=render` gains heading rules, capitals
+and weights, and `kb/ask` an opt-in first call. Read the upgrade notes in
+[`REVISIONS.md`](REVISIONS.md).
+
+Before it, v1.170.0 completes git workspaces: a workspace opened
 on a repository can fetch, pull and push its own branch, commit, diff and
 branch through typed ops, and fork with a branch of its own, over capped
 mirrors. The `agent-teams` bundle pushes through it with no token in a
 command. A subject's erasure reaches the kept ontology releases, and
-`File op=render` gains page counters and an inline style. Read the upgrade
-notes in [`REVISIONS.md`](REVISIONS.md).
+`File op=render` gains page counters and an inline style.
 
-Before it, v1.169.0 grew workspaces into a place an agent can
+Before that, v1.169.0 grew workspaces into a place an agent can
 keep working in: a workspace can outlive its run (durable), travel in a
 snapshot, start from a template, serve a page to its user and take updates
 back from it, show the agent a screenshot of that page, open on a git branch
