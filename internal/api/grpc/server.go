@@ -2288,6 +2288,35 @@ func eventToProto(ev providers.Event) *loomcyclepb.Event {
 	// half.
 	// A failed tool call's too: its classification and correct call format.
 	out.ErrorInfo = errorInfoToProto(ev.ErrorInfo)
+	out.Interruption = interruptionToProto(ev.Interruption)
+	return out
+}
+
+// interruptionToProto maps the interruption_pending payload (RFC HG D6).
+// Options arrive as the row's JSON array; one that does not decode as a list
+// of strings is dropped rather than guessed at, and a client then sees a
+// free-text question it can still answer.
+func interruptionToProto(in *providers.InterruptionEventInfo) *loomcyclepb.InterruptionInfo {
+	if in == nil {
+		return nil
+	}
+	out := &loomcyclepb.InterruptionInfo{
+		InterruptId: in.InterruptID,
+		Kind:        in.Kind,
+		Question:    in.Question,
+		Context:     in.Context,
+		Priority:    in.Priority,
+		AllowOther:  in.AllowOther,
+	}
+	if len(in.Options) > 0 {
+		var opts []string
+		if json.Unmarshal(in.Options, &opts) == nil {
+			out.Options = opts
+		}
+	}
+	if t, err := time.Parse(time.RFC3339Nano, in.ExpiresAt); err == nil {
+		out.ExpiresAt = timestamppb.New(t)
+	}
 	return out
 }
 

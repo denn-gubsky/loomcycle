@@ -372,24 +372,8 @@ func (s *Server) ResolveInterrupt(ctx context.Context, runID, interruptID, kind,
 	// A decline (RFC BH P2) carries no answer, so it SKIPS option-list validation
 	// entirely. The answer path is unchanged.
 	if !declined {
-		if len(row.Options) > 0 {
-			var opts []string
-			if err := json.Unmarshal(row.Options, &opts); err == nil && len(opts) > 0 {
-				ok := false
-				for _, o := range opts {
-					if o == answer {
-						ok = true
-						break
-					}
-				}
-				if !ok {
-					return "", connector.WithMessage(connector.ErrInterruptInvalidAnswer,
-						fmt.Sprintf("answer %q is not one of the declared options: %v", answer, opts))
-				}
-			}
-		} else if answer == "" {
-			return "", connector.WithMessage(connector.ErrInterruptInvalidAnswer,
-				"answer is required for free-text interrupts")
+		if err := connector.CheckInterruptAnswer(row, answer); err != nil {
+			return "", err
 		}
 	}
 

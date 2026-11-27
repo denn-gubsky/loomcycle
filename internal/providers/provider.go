@@ -1325,6 +1325,9 @@ type InterruptionEventInfo struct {
 	// kind=question (NULL/empty = free-text answer). Verbatim from
 	// the interrupt row; the Web UI parses it.
 	Options json.RawMessage `json:"options,omitempty"`
+	// AllowOther (RFC HG): with Options, an answer of the person's own is
+	// accepted too, so a client offers a text box beside the options.
+	AllowOther bool `json:"allow_other,omitempty"`
 	// Context is the optional hint string the agent provides ("47
 	// records pending"). Empty when the agent didn't pass context.
 	Context string `json:"context,omitempty"`

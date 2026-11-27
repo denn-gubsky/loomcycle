@@ -28,6 +28,8 @@ export interface PendingInterrupt {
   interruptId: string;
   question: string;
   options?: string[];
+  // allowOther: with options, an answer of the person's own is accepted too.
+  allowOther?: boolean;
   context?: string;
   priority?: string;
   expiresAt?: string;
@@ -167,6 +169,7 @@ export function useRunStream(): UseRunStream {
         interruptId: i.interrupt_id,
         question: i.question ?? "",
         options: i.options,
+        allowOther: i.allow_other,
         context: i.context,
         priority: i.priority,
         expiresAt: i.expires_at,

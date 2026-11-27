@@ -120,6 +120,9 @@ func (b *scriptedBackend) GetSession(ctx context.Context, sessionID string) (sto
 func (b *scriptedBackend) A2AServerCardDefGetActive(ctx context.Context, tenantID, name string) (store.A2AServerCardDefRow, error) {
 	return store.A2AServerCardDefRow{}, &store.ErrNotFound{Kind: "a2a_server_card_def", ID: name}
 }
+func (b *scriptedBackend) InterruptGet(ctx context.Context, interruptID string) (store.InterruptRow, error) {
+	return store.InterruptRow{}, &store.ErrNotFound{Kind: "interrupt", ID: interruptID}
+}
 func (b *scriptedBackend) InterruptListByRun(ctx context.Context, runID, statusFilter string) ([]store.InterruptRow, error) {
 	return nil, nil
 }
