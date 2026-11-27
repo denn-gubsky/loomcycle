@@ -179,10 +179,10 @@ The other `BRIDGE_VOICE_*` settings (length and size caps, the reply mode, the e
 
 ## Questions and reviews
 
-- A question with options shows one button per option (up to six) and **Decline**.
+- A question with options lists them all numbered (up to 20), with a button for each of the first six (in rows of five) and **Decline**. The conversation owner can also `/ask` the number or the option's text, or their own answer when the question allows one. See [Questions](../bridge-core#questions).
 - A question without options asks to be answered with `/ask <your answer>`: a Discord message has no text field. The conversation owner's next `/ask` is taken as the answer.
 - A review shows **Approve** and **Send back**. To send it back with notes, press **Send back**, then `/ask` the notes. A feedback form on **Send back** is planned for v1.1.
-- A pressed card is replaced by its result, so it cannot be answered twice. A card from before a restart says it is no longer open.
+- A pressed card is replaced by its result, so it cannot be answered twice. With `BRIDGE_STORE=file:<path>`, a question's card from before a restart still answers while the run waits on it; any other card from before a restart says it is no longer open.
 
 ## Limits
 
