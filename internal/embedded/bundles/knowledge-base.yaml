@@ -10231,10 +10231,17 @@ agents:
     max_tokens: 4096
     sampling:
       temperature: 0
+    # The one-situation rule: a question that describes someone's case and asks
+    # what applies to it ("what help can I get", "what documents do I need") has
+    # a list for an answer, but one page's list, so it is not an overview. Without
+    # it such questions went to kb/survey, slowly and badly. "If you are unsure,
+    # answer YES" still holds for everything else, so no overview is lost to doubt.
     system_prompt: |
       You classify one question that a user asks a knowledge base of documents. You do not answer it.
 
       Is the question asking for an overview: a list of everything a knowledge base holds on a subject, spread over several documents?
+
+      A question that describes one person's or one case's situation and asks what applies to it (the help, requirements, options, steps or kinds for that one case) is not an overview, even when its answer is a list. Answer NO for it.
 
       If you are unsure, answer YES.
 
