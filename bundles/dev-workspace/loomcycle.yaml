@@ -1,7 +1,7 @@
 # RFC GW P14 embedded bundle: dev-workspace
 #
-# The workspace successor of the `sandbox` + `dev-exec` pair (both deprecated:
-# RFC GW P15 removes them with the builder sidecar). A deterministic,
+# The workspace successor of the `sandbox` + `dev-exec` pair (both removed in
+# v1.172.0 with the builder sidecar, RFC GW P15). A deterministic,
 # zero-token code-js agent, `dev/exec`, runs a caller's command envelope in a
 # WORKSPACE on a workspace worker (open -> write files -> run commands -> read
 # artifacts), and the `dev/exec-usage` skill tells a delegating agent how to
@@ -17,8 +17,8 @@
 #     and npm install packages through the core's egress (no other network).
 #   - (optional) an mcp__browser__* server, as before.
 #
-# SELECT ONE: LOOMCYCLE_PRESETS=...,dev-workspace, INSTEAD of sandbox,dev-exec.
-# Both define dev/exec; with both selected the later one in the list wins.
+# Select it with LOOMCYCLE_PRESETS=...,dev-workspace where sandbox,dev-exec
+# stood; selecting either removed name now fails the start and names this one.
 #
 # What the old envelope had that a workspace does not:
 #   - session_id / keep_open / close: a workspace belongs to the run that

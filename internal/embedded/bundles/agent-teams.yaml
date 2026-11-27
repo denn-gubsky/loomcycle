@@ -13,8 +13,8 @@
 #                        interactive, steerable run that DRIVES a team: reads the
 #                        TeamDef as its map, moves a Document task board through the
 #                        states, spawns each state's handler agent, decides routing,
-#                        and (for software teams) sets up an ephemeral repo volume +
-#                        opens a PR. Complements the deterministic `TeamDef op=run`
+#                        and (for software teams) opens a git workspace on the
+#                        repository + opens a PR. Complements the deterministic `TeamDef op=run`
 #                        autopilot — op=run is headless/linear; the orchestrator is
 #                        intelligent, human-in-the-loop, and domain-general.
 #
@@ -29,11 +29,9 @@
 # driving many agents; compaction manages it but can't invent window. For
 # ollama-local set LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX >= 32768.
 # team/orchestrator additionally needs, for SOFTWARE teams only:
-# `git`/`gh` on the host image, a volume marked
-# `dynamic_root: true`, and the token wired through Bashbox's host-command
-# fallback — `LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS=git,gh` +
-# `LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV=GITHUB_TOKEN` (+ GITHUB_TOKEN in the host
-# env; per-tenant tokens are a deferred RFC BD enhancement). Marketing/accounting/
+# `workspace.mode` on with a worker that has git, the forge's host in
+# LOOMCYCLE_GIT_SOURCE_HOSTS and LOOMCYCLE_GIT_PUSH_HOSTS, and a stored
+# credential for the repository (see the team/repo skill). Marketing/accounting/
 # research teams need none of that. The operator overlay can re-declare any key
 # (last layer wins per field). It cannot WIDEN tools (the ceiling is unchanged).
 #
@@ -76,7 +74,7 @@ agents:
          and writes, and whether it needs memory, the filesystem, or the network.
       2. Choose least privilege. Grant only the tools the role needs — the `tools`
          list is a hard ceiling a fork can never widen, so start narrow. A planner
-         needs no Bash; a reviewer needs no Write. Prefer `tier` over pinning a
+         needs no Workspace; a reviewer needs no Write. Prefer `tier` over pinning a
          model (see the no-model-pinning norm).
       3. Name it with a `/` group so it sorts in the Library: `review/security`,
          `code/backend`, `research/analyst`. Groups mirror the team it serves.
@@ -172,9 +170,7 @@ agents:
     # Tool CEILING (a team uses a subset). Agent = spawn handlers; Document = drive
     # the task board; TeamDef = read the map (+ op=run autopilot); Channel =
     # coordinate parallel branches; Interruption = ask the human; Context = self-
-    # inspect; Memory = durable notes. VolumeDef + Bashbox are for SOFTWARE teams
-    # (ephemeral repo volume + git/gh via Bashbox's host-command fallback); unused
-    # by Documents-only teams. Workspace + File run a data team's scripts on a
+    # inspect; Memory = durable notes. Workspace + File run a data team's scripts on a
     # workspace worker (team/sqldata), and the grant is the ceiling the handlers
     # it spawns open their own workspaces under (a sub-agent holds only what its
     # parent holds). Software teams work on a git workspace (team/repo): the
@@ -183,18 +179,12 @@ agents:
     # branch, to hosts the operator lists (LOOMCYCLE_GIT_SOURCE_HOSTS,
     # LOOMCYCLE_GIT_PUSH_HOSTS). It names no egress route: to open the pull
     # request through the forge's API, the operator adds a route to the grant.
-    # Bashbox (with VolumeDef) stays as team/repo's fallback until RFC GW P15
-    # removes it.
-    tools: [Agent, Document, TeamDef, Channel, Interruption, Context, Memory, VolumeDef, Workspace, File, Bashbox]
+    tools: [Agent, Document, TeamDef, Channel, Interruption, Context, Memory, Workspace, File]
     workspace: {ops: [read, write, exec], open: true}
     git_remote: [fetch, push]
     channels:                               # coordinate parallel team branches on team/* channels (prefix wildcard); default-deny without this
       publish: [team/*]
       subscribe: [team/*]
-    # Create/purge the ephemeral scratch volume (software teams). Least-privilege:
-    # limited to the name the team/repo skill standardizes on ("work"). Overlay to
-    # `any` if a team needs other volume names. Default-deny without this.
-    volume_def_scopes: [named:work]
     memory_scopes: [user]
     sql_scopes: [user]
     skills: [team/*]
@@ -396,7 +386,7 @@ skills:
 
   team/repo:
     description: Software-team repository — a git workspace on the repository, handlers editing it through a share, a commit and a push of the team's own branch, then the pull request. Software teams ONLY.
-    tools: [Workspace, Agent, File, VolumeDef, Bashbox]
+    tools: [Workspace, Agent, File]
     body: |
       # Repo workspace (software teams)
 
@@ -414,8 +404,8 @@ skills:
         and in `LOOMCYCLE_GIT_PUSH_HOSTS` (to push), and, for a private
         repository or any push, a stored credential (`$cred:<name>`; see
         Context op=help topic=credentials).
-      - If `Workspace op=open` answers `workspaces_off`, use the fallback at the
-        end of this skill.
+      - If `Workspace op=open` answers `workspaces_off`, this install cannot
+        run a software team: tell the human and stop.
 
       ## 1. Open the repository
       `Workspace op=open name="repo" repo="https://github.com/<owner>/<repo>.git" credential="$cred:<name>"`
@@ -454,19 +444,9 @@ skills:
       `Workspace op=release name="repo"` when the PR is open; the run's end
       releases it anyway. The pushed branch stays on the forge.
 
-      ## Fallback while workspaces are off (until RFC GW P15)
-      Where `Workspace op=open` answers `workspaces_off`, the old path still
-      works: an ephemeral volume (`VolumeDef op=create ephemeral=true name="work"`)
-      and `git`/`gh` through **Bashbox's host-command fallback**
-      (`LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS=git,gh`, the token through
-      `LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV` or `_ALLOWED_CREDS`). It is
-      deprecated, and real host `git`/`gh` are not a sandbox: only operate on
-      the repository the human authorized, never interpolate untrusted text
-      into a command, never print the token.
-
   team/sqldata:
     description: Accounting/data-team workspace — per-scope SQL Memory tables (ledgers, reconciliation), and external SQL/Excel in a workspace or through an MCP tool. No git, no PR.
-    tools: [Memory, Workspace, File, Document, Bashbox]
+    tools: [Memory, Workspace, File, Document]
     body: |
       # SQL / data workspace (accounting + data teams)
 
@@ -492,9 +472,6 @@ skills:
          An API is reached only through an egress route the operator declared and
          added to your grant: the core adds its credential, so no token ever
          appears in a command. Or mount a database MCP server and call its tools.
-         If this install runs no workspaces, Bashbox's host-command fallback
-         (operator-allowlisted `psql`, `duckdb`, a python script) still works
-         until RFC GW P15 removes it.
 
       ## Drive it
       Represent each work-item as a Document chunk (status = the team's state) as

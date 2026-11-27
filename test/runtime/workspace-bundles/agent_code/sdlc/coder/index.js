@@ -1,5 +1,5 @@
 // sdlc/coder (team-examples bundle) as a code-js agent: the documented task
-// with the bundle's own Workspace grant and Bashbox withheld. It copies the
+// with the bundle's own tools and Workspace grant. It copies the
 // `work` volume's checkout into a workspace, fixes the bug in the volume with
 // Write, copies the changed file in again, and runs the tests there.
 function run(input) {

@@ -1,6 +1,6 @@
 // chat/medium (chat bundle) as a code-js agent: what its prompt tells it to do
-// to run code, with the bundle's own Workspace grant and Bash and Bashbox
-// withheld. It opens a workspace, writes a script, and runs it there.
+// to run code, with the bundle's own tools and Workspace grant. It opens a
+// workspace, writes a script, and runs it there.
 function run(input) {
   var open = JSON.parse(Workspace({ op: "open", name: "run" }));
   Workspace({ op: "write", name: "run", path: "fib.py", content:

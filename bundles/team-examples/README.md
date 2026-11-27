@@ -14,7 +14,7 @@ LOOMCYCLE_PRESETS=base,agent-teams,team-examples
   - software: `sdlc/architect`, `sdlc/coder`, `sdlc/reviewer`
   - marketing: `marketing/writer`, `marketing/editor`
 - Two **teams**, under the `teams:` key (RFC GS):
-  - **`sdlc`** — a software team (architecture → implementation → review ⇄ implementation → PR) that uses the software workspace (ephemeral `work` volume + `git`/`gh` via Bashbox; see the `agent-teams` `team/repo` skill + its operator prerequisites). `sdlc/coder` and `sdlc/reviewer` build and test in a workspace (RFC GW) when `workspace.mode` is on, the reviewer reads the diff with the `Git` tool, and both keep `Bashbox` as the fallback until RFC GW P15 removes it.
+  - **`sdlc`** — a software team (architecture → implementation → review ⇄ implementation → PR) that uses the software workspace (a git workspace; see the `agent-teams` `team/repo` skill + its operator prerequisites). `sdlc/coder` and `sdlc/reviewer` build and test in a workspace (RFC GW), so `workspace.mode` must be on, and the reviewer reads the diff with the `Git` tool.
   - **`marketing`** — a Documents-only team (draft → edit ⇄ draft → published) with **no volume/repo/PR** — the Document task board is the deliverable.
 - A **`team/examples`** skill: how to drive the two teams and how to fork them.
 
@@ -36,9 +36,9 @@ fork then runs in place of the configured one for that tenant.
 
 ## Notes
 
-- The `sdlc/*` handlers are meant to be **spawned by the orchestrator**, which
-  creates the shared ephemeral `work` volume; run standalone they have no volume
-  and their file ops are denied (expected).
+- The `sdlc/*` handlers are meant to be **spawned by the orchestrator**. Their
+  file tools work on a volume named `work`, which the operator binds; without
+  one their file ops are denied (expected).
 - `loomcycle.yaml` mirrors the embedded copy at
   `internal/embedded/bundles/team-examples.yaml`; keep the two in sync.
 - These are starters — fork them (`TeamDef op=fork`) or build your own with the

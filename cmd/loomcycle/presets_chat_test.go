@@ -81,7 +81,7 @@ func TestChatBundle_PromptsDoNotHandWriteAToolList(t *testing.T) {
 		if !strings.HasPrefix(name, "chat/") {
 			continue
 		}
-		for _, tool := range []string{"Read", "Write", "Edit", "Grep", "Glob", "WebSearch", "Bashbox"} {
+		for _, tool := range []string{"Read", "Write", "Edit", "Grep", "Glob", "WebSearch", "Workspace"} {
 			if strings.Contains(agent.SystemPrompt, "- "+tool+":") {
 				t.Errorf("agent %q: prompt hand-writes a %q list entry; let {{tool:Context.tools}} generate the inventory and keep only the preference guidance", name, tool)
 			}
