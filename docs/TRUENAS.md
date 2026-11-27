@@ -82,8 +82,8 @@ not source `.env.local` in a container — only real env + the mounted overlay.
    inline (TrueNAS's paste-YAML can't resolve `${VAR}`); set the non-secret env
    (`LOOMCYCLE_PRESETS`, `LOOMCYCLE_PUBLIC_URL`, the pool/host placeholders) inline;
    and point the host-path mounts at your datasets. **Pin the image tag** (`:latest`
-   is for testing only) — and choose toolbox vs distroless per the image-choice note
-   below and in [`INSTALL.md`](../deploy/truenas/INSTALL.md).
+   is for testing only); for agents that run commands, see "Code execution
+   (workspaces)" below and [`INSTALL.md`](../deploy/truenas/INSTALL.md).
 2. Apps → **Discover Apps** → the **⋮** menu → **Install via YAML**. Name it
    `loomcycle`, paste the file, install.
 3. The `loomcycle-migrate` service runs `migrate up` once; the runtime waits for it,
@@ -146,38 +146,19 @@ a `searxng/settings.yml` with three required knobs (`secret_key`, `limiter: fals
 `search_priority:` in the overlay. Full recipe + verification: **[`docs/SEARCH.md`](SEARCH.md)**
 (the commented sidecar is in [`docker-compose.example.yaml`](../docker-compose.example.yaml)).
 
-## Code execution (the toolbox image)
+## Code execution (workspaces)
 
-> **Deprecated.** The toolbox image, `LOOMCYCLE_BASH_ENABLED`, the `LOOMCYCLE_BASHBOX_FALLBACK_*` variables and the builder sidecar are deprecated, and a future release removes them (RFC GW P15). They still work, and boot and `loomcycle doctor` warn while they are set. Workspaces replace them: set `workspace.mode` and give the agent the `Workspace` tool with a `workspace` grant ([WORKSPACES.md](WORKSPACES.md)). [MIGRATING-FROM-BASH.md](MIGRATING-FROM-BASH.md) maps each variable to what replaces it.
+> **Removed in v1.172.0.** The `loomcycle-toolbox` image, the `Bash` and `Bashbox` tools, `LOOMCYCLE_BASH_ENABLED`, the `LOOMCYCLE_BASHBOX_FALLBACK_*` variables and the builder sidecar were removed in v1.172.0 (RFC GW P15). Each of those variables, still set, refuses the start with the line to remove. [MIGRATING-FROM-BASH.md](MIGRATING-FROM-BASH.md#upgrading-to-v11720) lists every line to change.
 
-By default the app runs the **distroless** image — no shell, no compilers, so agents
-can't run scripts or compile code. To let them, switch both services to the
-**`denngubsky/loomcycle-toolbox`** image (same uid + mount paths — a drop-in swap; it
-bakes in python / go / rust / c++ / node + git/gh/curl/jq/rsync/wget/unzip/sqlite3)
-and enable a shell tool, then grant it to an agent via its `tools:`:
+The app runs the **distroless** image, with no shell and no compilers, and agents do not run commands in loomcycle's container. They run them in a workspace on a workspace worker: give the agent the `Workspace` tool with a `workspace` grant, and attach a worker ([WORKSPACES.md](WORKSPACES.md)).
 
-> Either image is also on GHCR as `ghcr.io/denn-gubsky/…` — same build, same digest.
+The [browser + workspace variant](../deploy/truenas/INSTALL.md#browser--workspace-variant) ships it ready to use: a `denngubsky/loomcycle-ws-worker` on the **container engine** runs each workspace's commands in a container of its own (the `loomcycle-workspace-browser` session image: Python, Node, git and Chromium) with a read-only root, no capabilities and no network but the runtime's egress routes, and the `dev-workspace` preset supplies `dev/exec`. The paste compose is [`deploy/truenas/docker-compose.browser.yaml`](../deploy/truenas/docker-compose.browser.yaml).
+
+> Every image is also on GHCR as `ghcr.io/denn-gubsky/…` — same build, same digest.
 > Reach for it when a Docker Hub pull fails with `toomanyrequests`: the anonymous
 > quota is per source IP (per /64 on IPv6), so a whole network shares one, and
 > TrueNAS's periodic per-app update checks spend from it.
 > [`deploy/truenas/INSTALL.md`](../deploy/truenas/INSTALL.md) has the full recipe.
-
-- **`LOOMCYCLE_BASH_ENABLED=1`** — the raw `Bash` tool (unsandboxed: the whole
-  toolchain, and it can run a compiled `./binary`). Simplest for a trusted box.
-- **`LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS=<drivers>`**
-  + **`LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV=HOME`** — the mostly-sandboxed Bashbox,
-  where only allowlisted host commands escape. `HOME` is **required** or `go`/`cargo`/
-  `npm`/`pip` fail (they need it for their caches); don't allowlist `jq`/`awk` (native
-  to Bashbox) or `bash`/`sh`/`env`; a bare `./binary` can't run via Bashbox (use
-  `go run` / `cargo run`, or the raw `Bash` tool).
-
-⚠️ Code runs in loomcycle's OWN container — **single-tenant / trusted only**. For
-untrusted or multi-tenant code, keep the distroless image and run each session in an
-isolated, ephemeral container via the **builder sidecar** ([`SANDBOX.md`](SANDBOX.md)).
-Full tradeoff + tool reference: [`TOOLBOX_IMAGE.md`](TOOLBOX_IMAGE.md). The paste
-compose in [`deploy/truenas/docker-compose.yaml`](../deploy/truenas/docker-compose.yaml)
-ships this block ready to use (toolbox image); walkthrough in
-[`INSTALL.md`](../deploy/truenas/INSTALL.md).
 
 ## Volumes → datasets (RFC AH)
 

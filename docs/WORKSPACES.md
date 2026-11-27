@@ -16,9 +16,9 @@ A **workspace** is a directory on a *workspace worker*, a process apart from the
 
 ## Coming from Bash, Bashbox or the builder sidecar
 
-Workspaces replace the `Bash` tool, Bashbox and its host-command fallback, the builder sidecar's `mcp__sandbox__*` tools and the `shell_credentials` field. All of these still work, and a future release removes them (RFC GW P15). Boot and `loomcycle doctor` warn about each use. [MIGRATING-FROM-BASH.md](MIGRATING-FROM-BASH.md) maps each tool, variable and field to its replacement.
+Workspaces replace the `Bash` tool, Bashbox and its host-command fallback, the builder sidecar's `mcp__sandbox__*` tools and the `shell_credentials` field, all removed in v1.172.0 (RFC GW P15). Operator config that still names one refuses the start with the line to change; a stored definition that names one runs without it and says so in a `capability_inert` event (gate `removed`). [MIGRATING-FROM-BASH.md](MIGRATING-FROM-BASH.md) maps each tool, variable and field to its replacement.
 
-The embedded bundles have moved already. `sdlc/coder`, `sdlc/reviewer`, `team/orchestrator` and the three `chat` agents hold `Workspace` with a `{ops: [read, write, exec], open: true}` grant, and fall back to their old shell tool only when this install runs no workspaces. The `dev-workspace` bundle's `dev/exec` runs the old sandbox command envelope in a workspace.
+The embedded bundles hold `Workspace` only. `sdlc/coder`, `sdlc/reviewer`, `team/orchestrator` and the three `chat` agents hold it with a `{ops: [read, write, exec], open: true}` grant, and run no commands where this install runs no workspaces. The `dev-workspace` bundle's `dev/exec` runs the old sandbox command envelope in a workspace.
 
 ## Running a remote worker
 
@@ -287,7 +287,7 @@ A worked example: an agent writes a script, runs it and reads what it wrote.
 {"op": "read", "name": "py", "path": "out.txt"}
 ```
 
-The read returns `144`. When the run ends, the workspace is deleted. A command that exits non-zero, or times out (`"timed_out": true`), is returned as a failed call with its output, as the Bash tool does.
+The read returns `144`. When the run ends, the workspace is deleted. A command that exits non-zero, or times out (`"timed_out": true`), is returned as a failed call with its output.
 
 ## The interpreter
 

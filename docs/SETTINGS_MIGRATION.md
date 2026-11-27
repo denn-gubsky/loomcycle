@@ -161,7 +161,7 @@ Other removed variables keep rules of their own, listed in the tables: the featu
 
 The thin client's environment is usually set by an editor plugin or an MCP client configuration, not by your server's environment files. Check it separately: it used to read `LOOMCYCLE_MCP_UPSTREAM_HEADER_TIMEOUT_MS` and `LOOMCYCLE_MCP_UPSTREAM_RECONNECT_ATTEMPTS`, both now fixed.
 
-The sandbox builder sidecar is a separate program with its own rule: it refuses to start while any of its removed `SANDBOX_*` variables is set to a non-empty value. See [5.14](#514-sandbox-builder-sidecar).
+The sandbox builder sidecar was a separate program with its own rule: it refused to start while any of its removed `SANDBOX_*` variables was set to a non-empty value. The sidecar itself was removed in v1.172.0. See [5.14](#514-sandbox-builder-sidecar).
 
 ### Values are never printed
 
@@ -186,7 +186,7 @@ Seven features lost their switch and run on every server: the scheduler, the inb
 - A channel that declares `hooks:` now has them applied to every message. Before, the hooks were skipped.
 - A hook definition whose body is `code-js` now runs.
 - An agent definition with a `code_body` now runs, provided the config declares a `code-js` provider (the default providers layer does). Without one, creating or forking an agent definition that carries a `code_body` is refused with `a code_body cannot run here (no code-js provider is configured)`. A definition already stored is still loaded.
-- An agent that names `Bashbox` in its `tools` now gets the Bashbox sandbox.
+- An agent that names `Bashbox` in its `tools` now gets the Bashbox sandbox. (Bashbox was removed in v1.172.0; see [MIGRATING-FROM-BASH.md](MIGRATING-FROM-BASH.md#bashbox).)
 - A fan-out parent (an agent blocked in a parallel spawn) is now parked on pause and resumed with its children.
 
 **What to do.** Before the upgrade, list your schedule, webhook, hook and agent definitions and your channel `hooks:` blocks, in every tenant. Disable or delete each one you do not want to start working. To keep code agents unavailable, run without the default providers layer (`LOOMCYCLE_NO_DEFAULT_PROVIDERS=1`) and declare your own `providers:` with no `code-js` entry.
@@ -207,7 +207,7 @@ Seven features lost their switch and run on every server: the scheduler, the inb
 
 **What to do.** Set `LOOMCYCLE_MCP_ALLOW_PRIVILEGED_TOOLS=1` only if you trust every caller that can register an agent with a shell and with any host command you allowed for the Bashbox fallback.
 
-**Later:** `Bash` and Bashbox are now deprecated, and a future release removes them (RFC GW P15). Move such an agent to the `Workspace` tool; [MIGRATING-FROM-BASH.md](MIGRATING-FROM-BASH.md) maps each piece across.
+**Later:** `Bash` and Bashbox were removed in v1.172.0 (RFC GW P15). `LOOMCYCLE_MCP_ALLOW_PRIVILEGED_TOOLS` now governs `Write`, `Edit` and `Workspace`. Move such an agent to the `Workspace` tool; [MIGRATING-FROM-BASH.md](MIGRATING-FROM-BASH.md) maps each piece across.
 
 ### 4.4 SQL Memory turns on for SQLite instances
 
@@ -908,7 +908,7 @@ Remove the lines. If you had lowered one of these limits, the fixed value is loo
 
 These remain: `SANDBOX_LISTEN_ADDR`, `SANDBOX_AUTH_TOKEN`, `SANDBOX_ALLOW_ANON`, `SANDBOX_PODMAN_BIN`, `SANDBOX_IMAGE`, `SANDBOX_RUNTIME`, `SANDBOX_WORKSPACE_ROOT`, `SANDBOX_ALLOW_EGRESS`, `SANDBOX_EXPOSE_NETWORK`, `SANDBOX_ALLOW_ENV_INJECTION`, `SANDBOX_MAX_CPUS`, `SANDBOX_MAX_MEM_MB`, `SANDBOX_MAX_SESSIONS`.
 
-**Later:** the builder sidecar itself is now deprecated, and a future release removes it (RFC GW P15). A workspace worker with the `container` engine replaces it, and the `dev-workspace` bundle replaces `sandbox` + `dev-exec`; see [MIGRATING-FROM-BASH.md](MIGRATING-FROM-BASH.md#the-builder-sidecar).
+**Later:** the builder sidecar itself (`deploy/builder` and its images) was removed in v1.172.0 (RFC GW P15). A workspace worker with the `container` engine replaces it, and the `dev-workspace` bundle replaces `sandbox` + `dev-exec`, which now refuse the start when selected; see [MIGRATING-FROM-BASH.md](MIGRATING-FROM-BASH.md#the-builder-sidecar).
 
 ### 5.15 Sign-in mode
 
@@ -1109,7 +1109,7 @@ Notes:
     LOOMCYCLE_PG_DSN: ${LOOMCYCLE_PG_DSN:?set LOOMCYCLE_PG_DSN in the secret env file}
   ```
 
-- Remove the removed variables from the compose file itself, not only from the env files. A line such as `LOOMCYCLE_SCHEDULER_ENABLED: "1"` produces an advisory on every start; one that passes an empty value for a removed gate (`LOOMCYCLE_BASHBOX_ENABLED: ""`) is refused.
+- Remove the removed variables from the compose file itself, not only from the env files. A line such as `LOOMCYCLE_SCHEDULER_ENABLED: "1"` produces an advisory on every start; one that passes an empty value for a removed gate (`LOOMCYCLE_WEBHOOKS_ENABLED: ""`) is refused.
 - A typical server deployment before this release set, in its environment, the backend, the SQL Memory switch, the scheduler, webhook, code-agent and Bashbox switches, the metrics sampler, the retention block and the login origin. After it, the environment keeps the connection strings, keys, addresses and gates, and the yaml gains a `metrics:` block, a `retention:` block and `auth.login_origins`.
 
 ### 6.4 The TrueNAS app
@@ -1324,8 +1324,8 @@ The feature is always on, or is decided by another setting.
 | `LOOMCYCLE_CODE_AGENTS_ENABLED` | The `code-js` provider is registered whenever the config declares it; the default providers layer does. | As above |
 | `LOOMCYCLE_CODE_HOOKS_ENABLED` | A hook body may always be `code-js`. | As above |
 | `LOOMCYCLE_CHANNEL_HOOKS` | The channel-hook worker always runs. To keep it unused, declare no `hooks:` on any channel. | As above |
-| `LOOMCYCLE_BASHBOX_ENABLED` | Bashbox is always registered. An agent gets it through its `tools` list. | As above |
-| `LOOMCYCLE_RESUME_FANOUT` | A fan-out parent always parks on pause and is resumed with its children. This cannot be turned off. | As above |
+| `LOOMCYCLE_BASHBOX_ENABLED` | Nothing: Bashbox was removed in v1.172.0. Commands run in a workspace. | Set to any non-empty value |
+| `LOOMCYCLE_RESUME_FANOUT` | A fan-out parent always parks on pause and is resumed with its children. This cannot be turned off. | Set to anything other than `1`, the empty value included |
 | `LOOMCYCLE_HEARTBEAT_SWEEPER` | The run heartbeat sweeper always runs. | Set to `0` |
 | `LOOMCYCLE_USAGE_SWEEPER` | The usage rollup always runs; `retention.usage_detail.max_age` sets how long per-call rows are kept. | Set to `0` |
 | `LOOMCYCLE_MEMORY_PROVISION_IDENTITY_DOCS` | The tenant-root and user-root documents are always created when a principal is established. | Set to `0`, `false`, `no` or `off` |
@@ -1364,7 +1364,7 @@ These were not read by the previous release either. The runtime now reports them
 | `LOOMCYCLE_SNAPSHOT_MAX_BYTES` | Pass `max_bytes` on the snapshot request. | Never |
 | `LOOMCYCLE_READ_ROOT` | The filesystem jail is gone: declare a `volumes:` block and bind agents to it. | Set to any non-empty value |
 | `LOOMCYCLE_WRITE_ROOT` | As above. | Set to any non-empty value |
-| `LOOMCYCLE_BASH_CWD` | As above; Bash runs in the root of the agent's read-write volume. | Set to any non-empty value |
+| `LOOMCYCLE_BASH_CWD` | As above; commands run in a workspace (the `Bash` tool was removed in v1.172.0). | Set to any non-empty value |
 
 ### F. Settings that stay in the environment
 
@@ -1392,14 +1392,13 @@ Do **not** move these to the yaml. The rule: the environment keeps what is secre
 | `LOOMCYCLE_REPLICA_ID`, `LOOMCYCLE_REPLICAS_STALE_AFTER_MS`, `LOOMCYCLE_REPLICAS_SWEEP_INTERVAL_MS`, `LOOMCYCLE_HEARTBEAT_STALE_MS` | Cluster membership of this process. |
 | `LOOMCYCLE_PG_AUTOMIGRATE`, `LOOMCYCLE_PG_MAX_OPEN_CONNS`, `LOOMCYCLE_PG_MIN_IDLE_CONNS`, `LOOMCYCLE_PGVECTOR_ENABLED` | How this process uses its database. |
 | `LOOMCYCLE_LOG_LEVEL`, `LOOMCYCLE_LOG_FORMAT`, `LOOMCYCLE_ENVIRONMENT`, the standard `OTEL_*` variables | Logging and tracing of this process. |
-| `LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX`, `LOOMCYCLE_AUDIO_MAX_INFLIGHT`, `LOOMCYCLE_EXTRACT_CONCURRENCY`, `LOOMCYCLE_BASHBOX_OVERLAY_MAX_BYTES` | Sizes that follow this host's memory and GPU. |
+| `LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX`, `LOOMCYCLE_AUDIO_MAX_INFLIGHT`, `LOOMCYCLE_EXTRACT_CONCURRENCY` | Sizes that follow this host's memory and GPU. |
 
 **Security gates.** A gate is off unless you set it, and it has no yaml form, so that no config layer or preset can open it.
 
 | Variables | What they open or restrict |
 |---|---|
 | `LOOMCYCLE_ALLOW_OPEN_MODE`, `LOOMCYCLE_AUTH_MODE`, `LOOMCYCLE_ACL`, `LOOMCYCLE_UI_INSECURE_COOKIES`, `LOOMCYCLE_OPERATOR_KEY_RESTRICTION`, `LOOMCYCLE_TOKEN_AUTHORITY_INHERIT`, `LOOMCYCLE_LIMITS_ENFORCE` | Authentication and authorization posture. |
-| `LOOMCYCLE_BASH_ENABLED`, `LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS`, `LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV`, `LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS` | Host command execution. |
 | `LOOMCYCLE_MCP_ALLOW_PRIVILEGED_TOOLS`, `LOOMCYCLE_MCP_ALLOW_DYNAMIC_STDIO`, `LOOMCYCLE_MCP_ALLOW_PRIVATE_IPS` | What MCP callers and MCP servers may do. |
 | `LOOMCYCLE_HTTP_HOST_ALLOWLIST`, `LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST`, `LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST_MODE`, `LOOMCYCLE_HTTP_CALLER_AUTHORITATIVE` | Outbound network policy. |
 | `LOOMCYCLE_GIT_SOURCE_HOSTS`, `LOOMCYCLE_GIT_PUSH_HOSTS` | The Git network. Unset keeps it off. |
@@ -1409,7 +1408,7 @@ Do **not** move these to the yaml. The rule: the environment keeps what is secre
 | `LOOMCYCLE_SQLMEM_SCOPE_TTL_MS`, `LOOMCYCLE_SQLMEM_TOTAL_MAX_BYTES`, `LOOMCYCLE_SQLMEM_QUOTA_BYTES`, `LOOMCYCLE_SQLMEM_AUDIT_MODE`, `LOOMCYCLE_SQLMEM_SHARED_SCHEMAS` | SQL Memory data keeping and visibility. |
 | `LOOMCYCLE_MOCK_ENABLED`, `LOOMCYCLE_KMS_VAULT_ALLOW_HTTP` | Test and development shortcuts. |
 
-This is not the complete list of variables that are still read. The complete list is the environment variable reference in [`CONFIGURATION.md`](CONFIGURATION.md) and the annotated `.env.insecure.example`. A variable that is not in tables A to E is still read and needs no action.
+This is not the complete list of variables that are still read. The complete list is the environment variable reference in [`CONFIGURATION.md`](CONFIGURATION.md) and the annotated `.env.insecure.example`. A variable that is not in tables A to E is still read and needs no action, except the six `LOOMCYCLE_BASH*` and `LOOMCYCLE_BASHBOX*` variables of `Bash` and Bashbox, which v1.172.0 removed: each set to a non-empty value refuses the start ([MIGRATING-FROM-BASH.md](MIGRATING-FROM-BASH.md#environment-variables)).
 
 ## 8. Troubleshooting
 

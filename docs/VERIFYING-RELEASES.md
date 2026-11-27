@@ -69,7 +69,7 @@ tag.
 
 ```sh
 VERSION=1.142.0
-NAME=loomcycle                  # or loomcycle-toolbox, -media, -browser
+NAME=loomcycle                  # or loomcycle-worker, -browser, -workspace, -ws-worker
 
 # The signature: check whichever copy you pull. Each registry holds its own.
 cosign verify "denngubsky/$NAME:$VERSION" \
@@ -99,10 +99,11 @@ workflow and the git ref it ran at:
 
 | Image | Workflow | Ref in the certificate |
 |---|---|---|
-| `loomcycle`, `loomcycle-toolbox`, `loomcycle-worker`, `loomcycle-browser` (minor and major releases) | `release.yml` | `refs/tags/vX.Y.Z` |
+| `loomcycle`, `loomcycle-worker`, `loomcycle-browser`, `loomcycle-workspace`, `loomcycle-workspace-browser`, `loomcycle-ws-worker` (minor and major releases) | `release.yml` | `refs/tags/vX.Y.Z` |
 | `loomcycle-browser`, `loomcycle-worker` (patch releases, amd64) | `release.yml` | `refs/tags/vX.Y.Z` |
-| `loomcycle-builder`, `loomcycle-builder-docker`, `loomcycle-sandbox-session` | `publish-sandbox-images.yml` | `refs/tags/vX.Y.0`, or the branch a manual run used |
 | `loomcycle-bridge-<name>` | `publish-bridge-images.yml` | `refs/tags/bridge-<name>-vX.Y.Z`, or the branch a manual run used |
+
+Images removed in v1.172.0 keep their old, signed tags: `loomcycle-toolbox` (up to v1.171.x) from `release.yml`, and `loomcycle-builder`, `loomcycle-builder-docker` and `loomcycle-sandbox-session` from `publish-sandbox-images.yml` at `refs/tags/vX.Y.0`.
 
 For an image a manual run published, match the workflow and not the ref:
 

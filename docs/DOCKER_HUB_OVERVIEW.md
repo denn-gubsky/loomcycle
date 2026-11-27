@@ -123,18 +123,18 @@ The compose file documents the Postgres backend upgrade path (commented out by d
 - **No `docker exec ... sh`** — distroless has no shell. Use `docker logs` to debug.
 - **OCI labels** identify source, version, commit SHA, and Apache-2.0 license for supply-chain inspectors.
 
-### Variant: `denngubsky/loomcycle-toolbox`
+### Running commands: workspace workers
 
-> **Deprecated:** a future release removes this image (RFC GW P15). Agents run commands in a workspace on a workspace worker instead; the session image is `denngubsky/loomcycle-workspace`. See [`docs/MIGRATING-FROM-BASH.md`](https://github.com/denn-gubsky/loomcycle/blob/main/docs/MIGRATING-FROM-BASH.md).
+The distroless image has no shell, Python or compilers, and agents do not run commands in it. They run them in a workspace on a workspace worker, a process outside loomcycle's container that holds no credential. `denngubsky/loomcycle-ws-worker` is a worker that drives the host's Docker, and `denngubsky/loomcycle-workspace` is the session image it starts for each workspace (Python, Node, git). See [`docs/WORKSPACES.md`](https://github.com/denn-gubsky/loomcycle/blob/main/docs/WORKSPACES.md).
 
-Need agents to run scripts or compile/test code? The distroless image has no shell, Python, or compilers. `denngubsky/loomcycle-toolbox` is the **same binary on a Debian base with a dev toolchain** (Python / Go / Rust / C++ / Node + `git`/`gh`/`curl`), a drop-in image swap (same uid 65532, same mount paths). ⚠️ Weak isolation — code runs in loomcycle's own container, so **single-tenant / trusted deployments only**. See [`docs/TOOLBOX_IMAGE.md`](https://github.com/denn-gubsky/loomcycle/blob/main/docs/TOOLBOX_IMAGE.md).
+The `denngubsky/loomcycle-toolbox` image was removed in v1.172.0 (RFC GW P15), with the `Bash` and `Bashbox` tools it served; its old tags stay published. [`docs/MIGRATING-FROM-BASH.md`](https://github.com/denn-gubsky/loomcycle/blob/main/docs/MIGRATING-FROM-BASH.md) maps it across.
 
 ## What you get inside
 
 - **`POST /v1/runs`** — run an agent with SSE event stream (tool-use loop, native cache_control on Anthropic, retries with backoff).
 - **`POST /v1/_llm/chat`** (v0.11.0+) — direct LLM gateway bypassing the agent loop. LangChain-friendly request / Anthropic-style response. Use this from n8n's AI Agent Chat Model slot or any LangChain `BaseChatModel`.
 - **Web UI at `/ui`** — admin console for runs, library (agents / skills / MCP servers), memory, snapshots, channels.
-- **Built-in tools** (default-deny; enable via env vars): Read, Write, Edit, Grep, Glob, NotebookEdit, HTTP, WebFetch, WebSearch, Bash, Agent (sub-agents), Skill, Memory, Channel, AgentDef, SkillDef, MCPServerDef, Evaluation, Interruption, Context.
+- **Built-in tools** (default-deny; enable via env vars): Read, Write, Edit, Grep, Glob, NotebookEdit, HTTP, WebFetch, WebSearch, Workspace, Agent (sub-agents), Skill, Memory, Channel, AgentDef, SkillDef, MCPServerDef, Evaluation, Interruption, Context.
 - **MCP integration** — stdio pool + Streamable HTTP. Mount MCP server tools into any agent's `tools`.
 - **Resolver matrix** — multi-provider routing with per-user tier overlays, cascading fallback on retryable errors.
 
@@ -162,7 +162,7 @@ loomcycle            # start the server (default behaviour with no args)
 - **gRPC surface:** https://github.com/denn-gubsky/loomcycle/blob/main/docs/GRPC.md
 - **Release notes:** https://github.com/denn-gubsky/loomcycle/blob/main/REVISIONS.md
 
-In-binary docs (bundled help topics) are accessible via `GET /v1/_help/<topic>` against a running instance. Topic list: `installation`, `getting-started`, `llm-gateway`, `fairness`, `observability`, `vector-memory`, `voyage-embedder`, `sqlite-vec`, `dynamic-mcp`, `bashbox`, and more.
+In-binary docs (bundled help topics) are accessible via `GET /v1/_help/<topic>` against a running instance. Topic list: `installation`, `getting-started`, `llm-gateway`, `fairness`, `observability`, `vector-memory`, `voyage-embedder`, `sqlite-vec`, `dynamic-mcp`, `volumes`, and more.
 
 ## Adapters
 

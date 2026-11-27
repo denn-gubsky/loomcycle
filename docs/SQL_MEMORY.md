@@ -4,10 +4,10 @@ SQL Memory is a facet of the built-in `Memory` tool that lets **authorized**
 agents run arbitrary SQL against a **per-scope database the runtime hosts**,
 isolated from the main loomcycle store. It exists for sandboxed / short-lived
 agents that need related tables, joins, and aggregates — structured storage the
-K/V and vector Memory can't give — *without* the `Bash + sqlite3` cost and
-process-isolation hole (`bash.go` is explicitly not a sandbox).
+K/V and vector Memory can't give — *without* running `sqlite3` in a shell,
+which needs a workspace and gives the agent a process.
 
-**Why a separate store, not "just run `psql`/`sqlite3` in Bash":** the agent
+**Why a separate store, not "just run `psql`/`sqlite3` in a workspace":** the agent
 never gets a shell, never needs an external DB or credential bootstrap, and
 every statement is bounded (timeout + row cap + byte quota) and **fully
 audited**. The threat model is *not* SQL injection — the agent is authorized to
