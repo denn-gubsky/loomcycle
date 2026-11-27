@@ -162,6 +162,15 @@ shown above the title. Every key but `loomcycle_style` is optional:
   page or e-book page. `page_numbers` (default true) ends a paged file's
   footer with the page number. `logo_width_mm`: 10–80.
 
+- `headings`: the look of heading levels `h1`–`h4`, each
+  `{"rule": true|false, "uppercase": true|false, "weight": "regular"|"semibold"|"bold"}`.
+  `h1` is a top-level section (Word's Heading 1); in a Markdown file, the
+  first `#` is the title and `##` is `h1`. `rule` draws a line under the
+  heading in the heading colour. `uppercase` shows it in capitals: Word, ODT
+  and HTML keep the text in its own case, so a reader of the file's text gets
+  "Experience"; a PDF draws the capitals themselves. Word has no semibold
+  and draws it bold. A level not named keeps the built-in bold heading.
+
 A header or footer line may hold four placeholders:
 
 | Placeholder | Prints |
@@ -180,6 +189,7 @@ only its text before the separator (` · `, ` | `, ` — `, ` – `, ` - ` or
 
 ```json
 {"loomcycle_style": 1, "font": "serif",
+ "headings": {"h1": {"rule": true, "uppercase": true}},
  "header": {"left": "{title}", "right": "{date}"},
  "footer": {"right": "Page {page} of {pages}"}}
 ```

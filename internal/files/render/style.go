@@ -42,6 +42,8 @@ type Style struct {
 	Header      PageLine    `json:"header,omitzero"`
 	Footer      PageLine    `json:"footer,omitzero"`
 	PageNumbers *bool       `json:"page_numbers,omitempty"`
+	// Headings sets the look of heading levels 1–4 (RFC HB D2).
+	Headings *StyleHeadings `json:"headings,omitempty"`
 	LogoWidthMM float64     `json:"logo_width_mm,omitempty"`
 	// Logo is the picture above the title: an image of the Doc, by name.
 	// Set by the core from the style document, never by the JSON.
@@ -54,6 +56,49 @@ type Style struct {
 	// a line uses it, never by the JSON, so a render on another day is a
 	// new render only when its page text shows the day.
 	Date string `json:"date,omitempty"`
+}
+
+// StyleHeadings is the look of the file's headings by level: H1 is Word's
+// Heading 1, a top-level section (an HTML page's h2, under the title's h1).
+type StyleHeadings struct {
+	H1 *HeadingLook `json:"h1,omitempty"`
+	H2 *HeadingLook `json:"h2,omitempty"`
+	H3 *HeadingLook `json:"h3,omitempty"`
+	H4 *HeadingLook `json:"h4,omitempty"`
+}
+
+// HeadingLook is one heading level's decoration: a rule under it, capitals
+// as a display property (the text keeps its case), and its weight.
+type HeadingLook struct {
+	Rule      bool   `json:"rule,omitempty"`
+	Uppercase bool   `json:"uppercase,omitempty"`
+	Weight    string `json:"weight,omitempty"`
+}
+
+// zero reports a look that leaves the built-in heading as it is.
+func (h HeadingLook) zero() bool { return !h.Rule && !h.Uppercase && (h.Weight == "" || h.Weight == "bold") }
+
+// heading is the look of heading level n (1 = Heading 1), zero when the
+// style sets none.
+func (s *Style) heading(n int) HeadingLook {
+	if s == nil || s.Headings == nil {
+		return HeadingLook{}
+	}
+	var h *HeadingLook
+	switch n {
+	case 1:
+		h = s.Headings.H1
+	case 2:
+		h = s.Headings.H2
+	case 3:
+		h = s.Headings.H3
+	case 4:
+		h = s.Headings.H4
+	}
+	if h == nil {
+		return HeadingLook{}
+	}
+	return *h
 }
 
 // StyleColors are a style's colours, each #rrggbb.
@@ -166,6 +211,13 @@ func (s *Style) check() error {
 	}
 	if !styleLineOK(s.Date) || utf8.RuneCountInString(s.Date) > maxDateLine {
 		return bad("date", fmt.Sprintf("one line of at most %d characters", maxDateLine))
+	}
+	for n := 1; n <= 4; n++ {
+		switch w := s.heading(n).Weight; w {
+		case "", "regular", "semibold", "bold":
+		default:
+			return bad(fmt.Sprintf("headings.h%d.weight", n), "regular, semibold or bold")
+		}
 	}
 	if s.LogoWidthMM != 0 && (s.LogoWidthMM < minLogoMM || s.LogoWidthMM > maxLogoMM) {
 		return bad("logo_width_mm", fmt.Sprintf("between %g and %g", minLogoMM, maxLogoMM))
@@ -310,6 +362,25 @@ func (s *Style) cssOverrides(scope string) string {
 	fmt.Fprintf(&b, "h1{font-size:%.3gem}h2{font-size:%.3gem}h3{font-size:%.3gem}h4,h5,h6{font-size:%.3gem}\n", 2*k, 1.5*k, 1.25*k, 1.05*k)
 	fmt.Fprintf(&b, "a{color:%s}\n", s.linkColor())
 	b.WriteString(".style-header,.style-footer{color:#5b5b5b;font-size:.8em;margin:0 0 1.5em}.style-footer{margin:2em 0 0;border-top:1px solid #d6d3d1;padding-top:.5em}\n")
+	// A heading level's look: Heading N is h(N+1) on the page, under the
+	// title's h1.
+	for n := 1; n <= 4; n++ {
+		h := s.heading(n)
+		if h.zero() {
+			continue
+		}
+		fmt.Fprintf(&b, "h%d{", n+1)
+		if h.Rule {
+			fmt.Fprintf(&b, "border-bottom:1px solid %s;padding-bottom:.15em;", s.headingColor())
+		}
+		if h.Uppercase {
+			b.WriteString("text-transform:uppercase;")
+		}
+		if w := cssWeight(h.Weight); w != "" {
+			b.WriteString("font-weight:" + w + ";")
+		}
+		b.WriteString("}\n")
+	}
 	if !s.pageTextPlain() {
 		b.WriteString(".style-slots{display:flex;gap:1em}.style-slots span{flex:1}.style-slots span:nth-child(2){text-align:center}.style-slots span:nth-child(3){text-align:right}\n")
 	}
@@ -332,4 +403,15 @@ func (d *Doc) AddLogo(mediaType string, data []byte) bool {
 	d.Images = append(d.Images, Image{Name: name, MediaType: mediaType, Data: data})
 	d.Style.Logo = name
 	return true
+}
+
+// cssWeight is a heading weight as CSS; "" keeps the built-in bold.
+func cssWeight(w string) string {
+	switch w {
+	case "regular":
+		return "400"
+	case "semibold":
+		return "600"
+	}
+	return ""
 }
