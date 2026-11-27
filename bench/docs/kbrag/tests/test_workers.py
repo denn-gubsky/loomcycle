@@ -101,22 +101,30 @@ class TestRunnerWorkers(unittest.TestCase):
         self.assertEqual(self.runner(lc, workers=4).run(QIDS, reps=2), 0)
 
     def test_submission_order_is_the_seeded_order(self):
-        r = self.runner(fixture.FakeLC(), workers=4)
+        workers = 4
+        r = self.runner(fixture.FakeLC(), workers=workers)
         started, lock = [], threading.Lock()
         real = r.one
+        expected = r.jobs(QIDS, reps=1)
+        full = len(expected) - len(expected) % workers
+        # Only the order jobs are taken off the list is guaranteed, not the moment each
+        # thread reaches one(): a thread can be preempted in between. Holding every worker
+        # at a barrier until all four have entered makes each wave exactly the next four
+        # jobs of the list, so the check no longer depends on thread timing.
+        gate = threading.Barrier(workers, timeout=10)
 
         def one(arm, qid, rep, attempt):
+            job = (arm, qid, rep, attempt)
             with lock:
-                started.append((arm, qid, rep, attempt))
+                started.append(job)
+            if expected.index(job) < full:
+                gate.wait()
             return real(arm, qid, rep, attempt)
-        expected = r.jobs(QIDS, reps=1)
         r.one = one
         r.run(QIDS, reps=1)
-        # Workers take jobs off the list in order; the moment each enters one() can only
-        # swap neighbours that started together, never move a run past a later batch.
         self.assertEqual(sorted(started), sorted(expected))
-        for i, j in enumerate(started):
-            self.assertLess(abs(expected.index(j) - i), 4)
+        for k in range(0, full, workers):
+            self.assertEqual(set(started[k:k + workers]), set(expected[k:k + workers]))
 
     def test_provider_violation_under_workers_stops_all_with_whole_lines(self):
         lc = SlowLC(served=("deepseek", "deepseek-chat"))
