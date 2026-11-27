@@ -126,7 +126,7 @@ func (f *File) Export(ctx context.Context, req ExportRequest) (*ExportedFile, *E
 		return invalid("export: metadata must be none or embed")
 	}
 	in := fileInput{Document: req.Document, Scope: scope, Chunk: req.Chunk, Format: format, TOC: req.TOC,
-		TitlePage: req.TitlePage, Provenance: req.Provenance, PageSize: req.PageSize, Metadata: req.Metadata, Style: req.Style}
+		TitlePage: req.TitlePage, Provenance: req.Provenance, PageSize: req.PageSize, Metadata: req.Metadata, Style: renderStyleArg{Name: req.Style}}
 	in.Language = req.Language
 	job := &renderJob{f: f, in: in, format: format, dest: renderDest{download: true},
 		date: time.Now().UTC().Format("2006-01-02"), actor: req.Actor, exported: &ExportedFile{}}

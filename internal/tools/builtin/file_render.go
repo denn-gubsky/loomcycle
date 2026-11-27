@@ -77,6 +77,9 @@ func (f *File) renderOp(ctx context.Context, in fileInput) (tools.Result, error)
 	if !ok {
 		return res, nil
 	}
+	if res, ok := checkPageText(in.PageText); !ok {
+		return res, nil
+	}
 	job := &renderJob{f: f, in: in, format: format, dest: dest, date: time.Now().UTC().Format("2006-01-02")}
 	if res, ok := job.resolveStyle(ctx, true); !ok {
 		if res.Text == "" {

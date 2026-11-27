@@ -772,3 +772,32 @@ func TestFileTwin_RenderRefusesAMemberTheAgentScope(t *testing.T) {
 		t.Fatalf("member render of the agent scope = %s", text)
 	}
 }
+
+// The twin passes a style object and page_text through to the File tool as
+// given (RFC HB D3, D5): the file is written in the call's style.
+func TestFileTwin_RenderTakesAStyleAndPageTextOnTheCall(t *testing.T) {
+	f := newFileTwinFixture(t)
+	reports := f.mkVolume(t, "acme", "reports", "rw")
+	raw, _ := json.Marshal(map[string]any{"op": "import_md", "scope": "user", "markdown": "# Minutes\n\nFirst item.\n"})
+	res, err := f.srv.Document(sessionCtx(twinOwner), raw)
+	if err != nil || res.IsError {
+		t.Fatalf("import_md: %v %s", err, res.Text)
+	}
+	var doc map[string]any
+	_ = json.Unmarshal([]byte(res.Text), &doc)
+	id, _ := doc["document_id"].(string)
+
+	_, text, isErr := f.call(t, twinOwner, map[string]any{"op": "render", "document": id, "format": "html", "to": "volume:reports:m.html",
+		"style": map[string]any{"loomcycle_style": 1, "font": "serif"}, "page_text": map[string]any{"header": "Board · {title}"}})
+	if isErr {
+		t.Fatalf("render: %s", text)
+	}
+	b, err := os.ReadFile(filepath.Join(reports, "m.html"))
+	if err != nil || !strings.Contains(string(b), `"Noto Serif"`) || !strings.Contains(string(b), `<p class="style-header">Board · Minutes</p>`) {
+		t.Fatalf("written page (%v):\n%s", err, b)
+	}
+	if _, text, isErr := f.call(t, twinOwner, map[string]any{"op": "render", "document": id, "format": "html", "to": "volume:reports:n.html",
+		"style": map[string]any{"loomcycle_style": 1, "font": "comic"}}); !isErr || !strings.Contains(text, "font") {
+		t.Errorf("a bad inline style: %s", text)
+	}
+}
