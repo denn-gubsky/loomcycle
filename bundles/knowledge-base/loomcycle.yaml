@@ -7906,10 +7906,14 @@ agents:
         backlog_reads: 200,
         proposal_list: 1000,
         // The recurrence floor: a type on at least 3 rows in at least 2
-        // documents; a kind on at least 3 statements neither rejected nor
+        // documents, or on at least single_document_rows rows of one
+        // document (many entries of one shape, such as the posts of one
+        // launch plan: measured on dev, 56 rows of one document graded a
+        // class); a kind on at least 3 statements neither rejected nor
         // expired.
         min_rows: 3,
         min_documents: 2,
+        single_document_rows: 20,
         min_statements: 3,
         // A relation's domain and range: the dominant pair of end classes
         // when it holds at least 4/5 of the kind's statements. A starting
@@ -8140,7 +8144,7 @@ agents:
           c.populations.sort();
           out.push({
             section: "classes", name: c.name, proposal: c.proposal, count: c.rows,
-            floor: c.rows >= CONFIG.min_rows && c.documents >= CONFIG.min_documents,
+            floor: c.rows >= CONFIG.min_rows && (c.documents >= CONFIG.min_documents || c.rows >= CONFIG.single_document_rows),
             out: { section: "classes", name: c.name, signal: "undeclared_type", rows: c.rows, documents: c.documents,
                    tenant_scope: c.tenant, other_scopes: c.other, populations: c.populations, directives: {} }
           });
@@ -8305,17 +8309,23 @@ agents:
       ## REQUEST: class
       Is the candidate a kind of thing the knowledge base should declare as a
       class, judged from how the quotes use it? Answer not_a_class for a
-      formatting label, a status, a one-off tag, a person's or an
-      organisation's own name, or anything that is not a kind of thing. The
-      request lists the DECLARED CLASSES: pick as parent the one the
+      heading or layout word (such as Introduction, Summary or Notes), a
+      status, a one-off tag, a person's or an organisation's own name, or
+      anything that is not a kind of thing. A name that labels many records
+      of the same shape (each one a post, a row, an item or an entry) is a
+      class, even when all of them sit in one document. A name may be an
+      abbreviation or a house term: judge it by what the records it labels
+      are, as the quotes show, not by what the word usually means elsewhere.
+      The request lists the DECLARED CLASSES: pick as parent the one the
       candidate is a kind of, or "" when none is.
       Reply: {"verdict": "class" or "not_a_class", "parent": "...", "meaning": "..."}
 
       ## REQUEST: relation
       Is the candidate a way two things are related that the knowledge base
       should declare as a relation kind, judged from how the quotes use it?
-      Answer not_a_relation for a typo of a declared kind, a status, or a
-      label that does not relate two things. The request lists the DECLARED
+      Answer not_a_relation for a typo of a declared kind, a status, a
+      heading or layout word, or a label that does not relate two things.
+      The request lists the DECLARED
       RELATIONS: pick as parent the one the candidate is a narrower kind of,
       or "" when none is.
       Reply: {"verdict": "relation" or "not_a_relation", "parent": "...", "meaning": "..."}

@@ -33,15 +33,14 @@
 # does not contact Ollama: the server's own start log says whether it reached
 # it and which models it lists.
 #
-# WHAT THIS PRESET CANNOT DO. Its agents list Bash, HTTP and WebFetch, and
-# those stay idle: the switches that enable them (LOOMCYCLE_BASH_ENABLED,
-# LOOMCYCLE_HTTP_HOST_ALLOWLIST) exist only in the environment, so no preset
-# can set them. They stay lines in your environment file, each one a
-# deliberate opt-in. The file tools also need a volume, which names
-# a directory on your machine: add a `volumes:` entry to your own loomcycle.yaml.
-# Bash and Bashbox are deprecated (RFC GW P15 removes them): to run commands,
-# set `workspace.mode: local` in your loomcycle.yaml instead, and the chat
-# agents use their Workspace tool (docs/MIGRATING-FROM-BASH.md).
+# WHAT THIS PRESET CANNOT DO. Its agents list HTTP and WebFetch, and those
+# stay idle: the switch that enables them (LOOMCYCLE_HTTP_HOST_ALLOWLIST)
+# exists only in the environment, so no preset can set it. It stays a line in
+# your environment file, a deliberate opt-in. The file tools also need a
+# volume, which names a directory on your machine: add a `volumes:` entry to
+# your own loomcycle.yaml. To run commands, set `workspace.mode: local` in
+# your loomcycle.yaml, and the chat agents use their Workspace tool (Bash and
+# Bashbox were removed in v1.172.0; docs/MIGRATING-FROM-BASH.md).
 #
 # No agent here drains the memory queue: add the `memory` bundle
 # (`presets: [personal, memory]`) and enable its schedule if the chat

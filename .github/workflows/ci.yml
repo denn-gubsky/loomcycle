@@ -252,7 +252,7 @@ jobs:
       - name: Install LibreOffice Writer and epubcheck
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libreoffice-writer-nogui epubcheck
+          sudo apt-get install -y --no-install-recommends libreoffice-writer-nogui epubcheck fonts-inter fonts-crosextra-carlito fonts-liberation
 
       - name: Open the rendered files
         env:
@@ -299,6 +299,7 @@ jobs:
         env:
           LOOMCYCLE_REQUIRE_TYPST: "1"
           LOOMCYCLE_REQUIRE_MERMAN: "1"
+          LOOMCYCLE_REQUIRE_RENDER_FONTS: "1"
         run: |
           typst --version
           merman-cli --version
@@ -331,6 +332,11 @@ jobs:
           echo "$fonts" | grep -qx 'Noto Sans'
           echo "$fonts" | grep -qx 'Noto Sans Mono'
           echo "$fonts" | grep -qx 'Noto Serif'
+          # A house style's fonts (RFC HB D1).
+          echo "$fonts" | grep -qx 'Inter'
+          echo "$fonts" | grep -qx 'Carlito'
+          echo "$fonts" | grep -qx 'Liberation Sans'
+          echo "$fonts" | grep -qx 'Liberation Serif'
 
       # The workspace session image (RFC GW P3) is built only at release too.
       # Build it here and run it the way the container engine runs a session:

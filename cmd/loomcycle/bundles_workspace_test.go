@@ -9,24 +9,25 @@ import (
 )
 
 // movedBundleAgents are the embedded bundle agents RFC GW P14 moved onto
-// workspaces, with the shell tool each keeps until P15 (owner ruling Q4 a).
+// workspaces. Since P15 (v1.172.0) a workspace is the only place they run a
+// command: the shell tools they kept as a fallback are removed.
 var movedBundleAgents = []struct {
-	bundle, agent, keeps string
+	bundle, agent string
 }{
-	{"team-examples", "sdlc/coder", "Bashbox"},
-	{"team-examples", "sdlc/reviewer", "Bashbox"},
-	{"agent-teams", "team/orchestrator", "Bashbox"},
-	{"chat", "chat/medium", "Bash"},
-	{"chat", "chat/local", "Bash"},
-	{"chat", "chat/local-small", "Bash"},
+	{"team-examples", "sdlc/coder"},
+	{"team-examples", "sdlc/reviewer"},
+	{"agent-teams", "team/orchestrator"},
+	{"chat", "chat/medium"},
+	{"chat", "chat/local"},
+	{"chat", "chat/local-small"},
 }
 
 // Each moved agent holds Workspace with the narrowest grant (D-P14-6: no
-// share, expose, templates or connect), keeps its old shell tool until P15,
-// and its bundle loads on an install with workspaces off without an advisory
-// naming it. The runtime suite test/runtime/workspace-bundles runs the
-// documented tasks on a workspace with the shell tool withheld.
-func TestBundles_MovedAgentsHoldANarrowWorkspaceGrantAndKeepTheirShellTool(t *testing.T) {
+// share, expose, templates or connect) and no removed shell tool, and its
+// bundle loads on an install with workspaces off without an advisory naming
+// it. The runtime suite test/runtime/workspace-bundles runs the documented
+// tasks on a workspace.
+func TestBundles_MovedAgentsHoldANarrowWorkspaceGrantAndNoShellTool(t *testing.T) {
 	t.Setenv("LOOMCYCLE_SKILLS_ROOT", "")
 	for _, m := range movedBundleAgents {
 		t.Run(m.agent, func(t *testing.T) {
@@ -38,8 +39,13 @@ func TestBundles_MovedAgentsHoldANarrowWorkspaceGrantAndKeepTheirShellTool(t *te
 			if !ok {
 				t.Fatalf("%s has no agent %s", m.bundle, m.agent)
 			}
-			if !slices.Contains(a.Tools, "Workspace") || !slices.Contains(a.Tools, m.keeps) {
-				t.Errorf("tools = %v, want Workspace and %s", a.Tools, m.keeps)
+			if !slices.Contains(a.Tools, "Workspace") {
+				t.Errorf("tools = %v, want Workspace", a.Tools)
+			}
+			for _, removed := range []string{"Bash", "Bashbox", "VolumeDef"} {
+				if slices.Contains(a.Tools, removed) {
+					t.Errorf("tools = %v, want no %s", a.Tools, removed)
+				}
 			}
 			w := a.Workspace
 			if w == nil || !w.Open || !slices.Contains(w.Ops, "exec") {

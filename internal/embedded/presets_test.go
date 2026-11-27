@@ -30,9 +30,7 @@ func TestUnits_RegistryShape(t *testing.T) {
 		"document-agent": "bundle",
 		"agent-teams":    "bundle",
 		"team-examples":  "bundle",
-		"sandbox":        "bundle",
 		"doc-colorizer":  "bundle",
-		"dev-exec":       "bundle",
 		"dev-workspace":  "bundle",
 		"knowledge-base": "bundle",
 		"skybits-sync":   "bundle",
@@ -314,5 +312,74 @@ func TestEnvTemplate_MatchesRepoRootCopy(t *testing.T) {
 	if !bytes.Equal(root, EnvTemplate()) {
 		t.Fatal(".env.insecure.example and internal/embedded/env.insecure.example differ; " +
 			"edit the repo-root file, then: cp .env.insecure.example internal/embedded/env.insecure.example")
+	}
+}
+
+// TestPresets_RetiredUnitNamesItsReplacement: selecting a bundle removed in
+// v1.172.0 (RFC GW P15) fails with an error that names the bundle to select
+// instead, not the generic unknown-name list an operator would have to read
+// to find it.
+func TestPresets_RetiredUnitNamesItsReplacement(t *testing.T) {
+	for _, name := range []string{"sandbox", "dev-exec"} {
+		t.Run(name, func(t *testing.T) {
+			_, _, err := ExpandSelection([]string{"base", name})
+			if err == nil {
+				t.Fatalf("selecting %q must fail", name)
+			}
+			for _, want := range []string{name, "removed in v1.172.0", "dev-workspace"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q does not name %q", err, want)
+				}
+			}
+			if _, err := Show(name); err == nil || !strings.Contains(err.Error(), "dev-workspace") {
+				t.Errorf("Show(%q) error %v does not name dev-workspace", name, err)
+			}
+		})
+	}
+}
+
+// TestEmbedded_NoBundleNamesARemovedItem: no embedded unit grants a tool
+// removed in v1.172.0 (Bash, Bashbox), an mcp__sandbox__ tool of the deleted
+// sandbox bundle, or sets the removed shell_credentials field. The walk is
+// structural — any `tools`-named list, any map key, any scalar naming an
+// mcp__sandbox__ tool — so an agent nested under a team is covered too, and
+// prose that mentions a removed name in passing is not.
+func TestEmbedded_NoBundleNamesARemovedItem(t *testing.T) {
+	removedTool := map[string]bool{"Bash": true, "Bashbox": true}
+	for _, u := range Units() {
+		var root yaml.Node
+		if err := yaml.Unmarshal(u.Data, &root); err != nil {
+			t.Fatalf("unit %q: %v", u.Name, err)
+		}
+		var walk func(n *yaml.Node, path string)
+		walk = func(n *yaml.Node, path string) {
+			switch n.Kind {
+			case yaml.DocumentNode, yaml.SequenceNode:
+				for _, c := range n.Content {
+					walk(c, path)
+				}
+			case yaml.MappingNode:
+				for i := 0; i+1 < len(n.Content); i += 2 {
+					k, v := n.Content[i], n.Content[i+1]
+					p := path + "." + k.Value
+					if k.Value == "shell_credentials" {
+						t.Errorf("unit %q sets the removed shell_credentials at %s", u.Name, p)
+					}
+					if strings.Contains(k.Value, "tools") && v.Kind == yaml.SequenceNode {
+						for _, e := range v.Content {
+							if removedTool[e.Value] {
+								t.Errorf("unit %q grants the removed tool %s at %s", u.Name, e.Value, p)
+							}
+						}
+					}
+					walk(v, p)
+				}
+			case yaml.ScalarNode:
+				if strings.HasPrefix(n.Value, "mcp__sandbox__") {
+					t.Errorf("unit %q names %s at %s", u.Name, n.Value, path)
+				}
+			}
+		}
+		walk(&root, "")
 	}
 }

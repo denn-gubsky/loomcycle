@@ -92,6 +92,11 @@ func walkAgents(dir string, report *ImportReport) error {
 			})
 		}
 		entry.unmappedFields = nil
+		if entry.droppedBash {
+			report.Warnings = append(report.Warnings, fmt.Sprintf(
+				"agent %s: `Bash` was not imported: loomcycle runs commands in a workspace; "+
+					"add `Workspace` and a `workspace:` grant", path))
+		}
 		report.Agents = append(report.Agents, entry.AgentEntry)
 	}
 	return nil
@@ -102,6 +107,9 @@ func walkAgents(dir string, report *ImportReport) error {
 type agentEntryBuilder struct {
 	*AgentEntry
 	unmappedFields []*UnmappedField
+	// droppedBash is set when the agent's tools named Bash, which
+	// loomcycle removed in v1.172.0 (RFC GW P15).
+	droppedBash bool
 }
 
 // buildAgentEntry parses one .claude/agents/<name>.md file into an
@@ -137,6 +145,12 @@ func buildAgentEntry(name, path string, raw []byte) (*agentEntryBuilder, error) 
 	if fm.Tools != nil {
 		tools = coerceToolsField(fm.Tools)
 	}
+	// Bash was removed from loomcycle (RFC GW P15), and a config naming
+	// it refuses to load, so it is dropped here and reported. It is not
+	// mapped to Workspace: that tool is inert without a workspace:
+	// grant, and a guessed grant is authority the operator did not
+	// choose. Tools is an allowlist, so dropping never widens.
+	tools, droppedBash := dropBash(tools)
 
 	// Substrate-field heuristics (v0.12.7).
 	heuristics := []string{}
@@ -201,7 +215,24 @@ func buildAgentEntry(name, path string, raw []byte) (*agentEntryBuilder, error) 
 			V0_12_7_Heuristics: heuristics,
 		},
 		unmappedFields: unmapped,
+		droppedBash:    droppedBash,
 	}, nil
+}
+
+// dropBash removes Bash from tools, both the bare name and Claude
+// Code's permission form Bash(<pattern>), and reports whether any was
+// there.
+func dropBash(tools []string) ([]string, bool) {
+	out := tools[:0:0]
+	dropped := false
+	for _, t := range tools {
+		if t == "Bash" || strings.HasPrefix(t, "Bash(") {
+			dropped = true
+			continue
+		}
+		out = append(out, t)
+	}
+	return out, dropped
 }
 
 // coerceToolsField accepts Claude Code's comma-string OR an explicit

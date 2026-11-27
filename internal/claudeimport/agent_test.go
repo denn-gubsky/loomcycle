@@ -323,3 +323,66 @@ func TestMatchesEvolver(t *testing.T) {
 		t.Errorf("unexpected match for coder")
 	}
 }
+
+// RFC GW P15 (ruling Q6): Bash was removed from loomcycle, so an
+// imported agent must not carry it — neither the bare name nor Claude
+// Code's permission form Bash(<pattern>) — and the report must say so
+// once per agent. It is not mapped to Workspace: that tool is inert
+// without a workspace: grant, and guessing a grant would be authority
+// the operator did not choose.
+func TestImportAgent_DropsBashAndReportsIt(t *testing.T) {
+	root := t.TempDir()
+	writeAgent(t, root, "builder", `---
+name: builder
+tools: "Read, Bash, Bash(npm run test:*), Edit"
+---
+Body.
+`)
+	writeAgent(t, root, "reader", `---
+name: reader
+tools: "Read"
+---
+Body.
+`)
+	report, err := Walk(root, WalkOptions{})
+	if err != nil {
+		t.Fatalf("Walk: %v", err)
+	}
+	var builder *AgentEntry
+	for _, a := range report.Agents {
+		if a.Name == "builder" {
+			builder = a
+		}
+	}
+	if builder == nil {
+		t.Fatalf("builder agent missing from report: %+v", report.Agents)
+	}
+	var probe map[string]struct {
+		Tools []string `yaml:"tools"`
+	}
+	if err := yaml.Unmarshal([]byte(builder.YAMLFragment), &probe); err != nil {
+		t.Fatalf("emitted yaml is invalid: %v\n%s", err, builder.YAMLFragment)
+	}
+	got := probe["builder"].Tools
+	if strings.Join(got, ",") != "Read,Edit" {
+		t.Errorf("tools: got %v, want [Read Edit]\n%s", got, builder.YAMLFragment)
+	}
+	if strings.Contains(builder.YAMLFragment, "Bash") {
+		t.Errorf("fragment still names Bash:\n%s", builder.YAMLFragment)
+	}
+
+	var lines []string
+	for _, w := range report.Warnings {
+		if strings.Contains(w, "Bash") {
+			lines = append(lines, w)
+		}
+	}
+	if len(lines) != 1 {
+		t.Fatalf("want exactly one Bash report line (for builder only), got %d: %v", len(lines), report.Warnings)
+	}
+	for _, want := range []string{"builder", "`Bash` was not imported", "Workspace", "workspace:"} {
+		if !strings.Contains(lines[0], want) {
+			t.Errorf("report line %q lacks %q", lines[0], want)
+		}
+	}
+}

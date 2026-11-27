@@ -154,7 +154,7 @@ func writeDOCX(ctx context.Context, w io.Writer, d *Doc, opts Options) error {
 		{"word/styles.xml", docxStylesFor(d.Style)},
 		{"word/numbering.xml", x.numbering()},
 		{"word/settings.xml", docxSettings},
-		{"word/fontTable.xml", docxFontTable},
+		{"word/fontTable.xml", docxFontTableFor(d.Style)},
 	}
 	if x.headerFooter {
 		// The style's header and footer as their own parts; the footer's
@@ -275,8 +275,23 @@ func (x *docxWriter) document() {
 			x.s(`</w:p>`)
 		}
 	}
+	// The photo (RFC HB D4): above the title as the logo is, or anchored
+	// in the title's paragraph with square wrapping, never in a table
+	// (applicant-tracking systems read tables badly). Word draws a circle
+	// as a square.
+	photo, photoOK := d.photo()
+	photoOK = photoOK && x.media[photo.Name].ok
+	if photoOK && d.Style.photoPlace() == "above" {
+		x.s(`<w:p>`)
+		x.imageWidth(Node{Kind: KindImage, Asset: photo.Name, Alt: "photo"}, int64(d.Style.photoMM()*36000))
+		x.s(`</w:p>`)
+		photoOK = false
+	}
 	// The title, with the Draft or Review label beside it (D15).
 	x.s(`<w:p><w:pPr><w:pStyle w:val="Title"/></w:pPr>`)
+	if photoOK {
+		x.anchoredImage(Node{Kind: KindImage, Asset: photo.Name, Alt: "photo"}, int64(d.Style.photoMM()*36000), d.Style.photoPlace())
+	}
 	x.bookmarkStart(d.Anchor)
 	x.run(oneLine(d.Title), "")
 	if l := statusLabel(d.Status); l != "" {
@@ -868,10 +883,7 @@ func docxStylesFor(st *Style) string {
 	if st == nil {
 		return docxStyles
 	}
-	font := "Noto Sans"
-	if st.serif() {
-		font = "Noto Serif"
-	}
+	font := st.bodyFont().office
 	half := strconv.Itoa(int(st.BaseSize()*2 + 0.5))
 	color := strings.ToUpper(strings.TrimPrefix(st.textColor(), "#"))
 	s := docxStyles
@@ -905,7 +917,11 @@ func docxHeadingStylesFor(st *Style) string {
 		if h.Uppercase {
 			caps = "<w:caps/>"
 		}
-		fmt.Fprintf(&b, `<w:style w:type="paragraph" w:styleId="Heading%s"><w:name w:val="heading %s"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/><w:keepLines/>%s<w:spacing w:before="240" w:after="80"/><w:outlineLvl w:val="%d"/></w:pPr><w:rPr>%s%s<w:color w:val="%s"/><w:sz w:val="%s"/><w:szCs w:val="%s"/></w:rPr></w:style>`, n, n, border, i, bold, caps, color, s, s)
+		fonts := ""
+		if f, ok := st.headFont(); ok {
+			fonts = `<w:rFonts w:ascii="` + f.office + `" w:hAnsi="` + f.office + `" w:eastAsia="` + f.office + `" w:cs="` + f.office + `"/>`
+		}
+		fmt.Fprintf(&b, `<w:style w:type="paragraph" w:styleId="Heading%s"><w:name w:val="heading %s"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/><w:keepLines/>%s<w:spacing w:before="240" w:after="80"/><w:outlineLvl w:val="%d"/></w:pPr><w:rPr>%s%s%s<w:color w:val="%s"/><w:sz w:val="%s"/><w:szCs w:val="%s"/></w:rPr></w:style>`, n, n, border, i, fonts, bold, caps, color, s, s)
 	}
 	return b.String()
 }
@@ -973,4 +989,46 @@ func docxPageSlots(kind string, p pageSlots, textTwips int) string {
 	}
 	b.WriteString(`</w:p></` + root + `>`)
 	return b.String()
+}
+
+// docxFontTableFor is the font table, with the style's own fonts after the
+// Noto set: each named as the reader expects it, the bundled twin as its
+// stand-in (RFC HB D1).
+func docxFontTableFor(st *Style) string {
+	extra := st.extraFonts()
+	if len(extra) == 0 {
+		return docxFontTable
+	}
+	var b strings.Builder
+	b.WriteString(strings.TrimSuffix(docxFontTable, `</w:fonts>`))
+	for _, f := range extra {
+		b.WriteString(`<w:font w:name="` + f.office + `"><w:altName w:val="` + f.alt + `"/><w:charset w:val="00"/><w:family w:val="` + f.generic + `"/><w:pitch w:val="variable"/></w:font>`)
+	}
+	b.WriteString(`</w:fonts>`)
+	return b.String()
+}
+
+// anchoredImage writes a picture anchored to its paragraph at the left or
+// right margin, text wrapping square around it (RFC HB D4), width EMU wide.
+func (x *docxWriter) anchoredImage(n Node, width int64, align string) {
+	m := x.media[n.Asset]
+	cx, cy := width, int64(1)
+	if m.w > 0 {
+		cy = int64(m.h) * width / int64(m.w)
+	}
+	if cx > x.textW/2 {
+		cy = cy * (x.textW / 2) / cx
+		cx = x.textW / 2
+	}
+	cy = max(cy, 1)
+	x.docPr++
+	id := strconv.Itoa(x.docPr)
+	alt := xmlText(oneLine(n.Alt))
+	ext := `cx="` + strconv.FormatInt(cx, 10) + `" cy="` + strconv.FormatInt(cy, 10) + `"`
+	x.s(`<w:r><w:drawing><wp:anchor distT="0" distB="114300" distL="114300" distR="114300" simplePos="0" relativeHeight="251658240" behindDoc="0" locked="0" layoutInCell="1" allowOverlap="0">`)
+	x.s(`<wp:simplePos x="0" y="0"/><wp:positionH relativeFrom="margin"><wp:align>` + align + `</wp:align></wp:positionH><wp:positionV relativeFrom="paragraph"><wp:posOffset>0</wp:posOffset></wp:positionV>`)
+	x.s(`<wp:extent ` + ext + `/><wp:effectExtent l="0" t="0" r="0" b="0"/><wp:wrapSquare wrapText="bothSides"/><wp:docPr id="` + id + `" name="Picture ` + id + `" descr="` + alt + `"/><wp:cNvGraphicFramePr/>`)
+	x.s(`<a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic><pic:nvPicPr><pic:cNvPr id="` + id + `" name="` + n.Asset + `" descr="` + alt + `"/><pic:cNvPicPr/></pic:nvPicPr>`)
+	x.s(`<pic:blipFill><a:blip r:embed="` + m.relID + `"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>`)
+	x.s(`<pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext ` + ext + `/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:anchor></w:drawing></w:r>`)
 }

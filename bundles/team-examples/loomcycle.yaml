@@ -9,30 +9,30 @@
 #   - handler agents for two domains:
 #       software: sdlc/architect, sdlc/coder, sdlc/reviewer
 #       marketing: marketing/writer, marketing/editor
-#   - two TEAMS, under `teams:` (RFC GS): `sdlc` (software workspace: repo volume +
-#     PR) and `marketing` (Documents-only). The boot writes them into the store's
+#   - two TEAMS, under `teams:` (RFC GS): `sdlc` (software workspace: a git
+#     workspace + PR) and `marketing` (Documents-only). The boot writes them into the store's
 #     shared tier, so every tenant can run them by name, and fork them into its own
 #     tenant to change them. Their handler agents are global for the same reason
 #     (RFC GS D9). To change a team here, overlay its `teams:` key in your config.
 #   - a `team/examples` skill: how to drive and fork the two teams.
 #
-# Two domains on purpose: the SDLC team exercises the software workspace (ephemeral
-# volume + git/gh via Bashbox — see the agent-teams `team/repo` skill + its
-# operator prereqs; sdlc/coder and sdlc/reviewer build and test in a workspace
-# when workspace.mode is on, and fall back to Bashbox until RFC GW P15 removes
-# it); the marketing team proves the domain-general design with NO
+# Two domains on purpose: the SDLC team exercises the software workspace (see the
+# agent-teams `team/repo` skill + its operator prereqs; sdlc/coder and
+# sdlc/reviewer build and test in a workspace, so workspace.mode must be on);
+# the marketing team proves the domain-general design with NO
 # volume/repo/PR — its deliverable is the Document task board itself.
 #
-# The handler agents are meant to be SPAWNED BY the orchestrator (which creates the
-# shared ephemeral `work` volume for software teams); the sdlc/* agents' file/exec
-# tools resolve that shared volume. Run standalone (no orchestrator), an sdlc/*
-# agent has no `work` volume and its file ops are denied — expected.
+# The handler agents are meant to be SPAWNED BY the orchestrator. The sdlc/*
+# agents' file tools work on a volume named `work`, which the operator binds:
+# the orchestrator no longer creates one (its VolumeDef grant went with the
+# Bashbox fallback in v1.172.0). Without a `work` volume their file ops are
+# denied — expected.
 #
 # No provider matrix here (agents declare `tier: middle`); bring `base`. Overlay to
 # retarget tiers / swap prompts. Cannot widen tools (the ceiling is unchanged).
 
 agents:
-  # ---- software (SDLC) handlers — operate the shared ephemeral `work` volume ----
+  # ---- software (SDLC) handlers — operate the operator's `work` volume ----
   sdlc/architect:
     tier: middle
     max_tokens: 8192
@@ -49,10 +49,8 @@ agents:
     tier: middle
     max_tokens: 16384
     effort: medium
-    # Workspace runs the build and tests on a workspace worker (RFC GW). Bashbox
-    # stays until the release that removes it (RFC GW P15), for installs that
-    # have not turned workspaces on (workspace.mode).
-    tools: [Read, Write, Edit, Grep, Glob, Workspace, File, Bashbox, Context]
+    # Workspace runs the build and tests on a workspace worker (RFC GW).
+    tools: [Read, Write, Edit, Grep, Glob, Workspace, File, Context]
     workspace: {ops: [read, write, exec], open: true}
     system_prompt: |
       You are the CODER on a software team. Implement the approved design in the
@@ -71,7 +69,7 @@ agents:
       to="workspace:build:repo/<path>" overwrite=true`). The `work` volume is the
       team's tree: never edit only the workspace copy.
       If `Workspace op=open` is refused because this install runs no workspaces,
-      use Bashbox (volume="work") for the command instead.
+      say so and stop: you cannot build or test here.
 
       When done, summarize what you changed (files + one line each) — the
       reviewer reads it next. Do not commit or push; the orchestrator opens the PR.
@@ -81,8 +79,7 @@ agents:
     max_tokens: 8192
     effort: high
     # Git reads the diff; Workspace runs the tests on a workspace worker (RFC GW).
-    # Bashbox stays until RFC GW P15, for installs without workspaces.
-    tools: [Read, Grep, Glob, Git, Workspace, File, Bashbox, Context]
+    tools: [Read, Grep, Glob, Git, Workspace, File, Context]
     workspace: {ops: [read, write, exec], open: true}
     system_prompt: |
       You are the REVIEWER on a software team. Review the coder's change in the
@@ -90,8 +87,8 @@ agents:
       correctness, tests, and style. To run the tests, open a workspace
       (`Workspace op=open name="review"`), copy the checkout in (`File op=copy
       from="volume:work:." to="workspace:review:repo"`) and run them with
-      `Workspace op=exec name="review" cwd="repo"`. If this install runs no workspaces, use Bashbox
-      (volume="work") instead.
+      `Workspace op=exec name="review" cwd="repo"`. If this install runs no
+      workspaces, review the diff without running the tests and say so.
       Return a verdict the orchestrator routes on:
       "approve" (advance to PR) or "pushback: <specific, actionable reasons>" (back
       to the coder). Be concrete — name files + lines. Do not edit code yourself.
@@ -174,8 +171,9 @@ skills:
       architecture (sdlc/architect) → implementation (sdlc/coder) → review
       (sdlc/reviewer) → pr; a review pushback (`pushback:code-fix`) loops back to
       implementation. Needs the software prerequisites from the `team/repo` skill
-      (Bashbox + git/gh + a dynamic_root volume + GITHUB_TOKEN). Set up the `work`
-      volume + clone per team/repo BEFORE driving, and open the PR at `pr`.
+      (workspace.mode on with git, the forge's host allowlisted, a stored
+      credential). Open the repository per team/repo BEFORE driving, and open
+      the PR at `pr`.
 
       ## `marketing` — a Documents-only team (no repo, no PR)
       draft (marketing/writer) → edit (marketing/editor) → published; an editor
