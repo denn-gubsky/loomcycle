@@ -14,7 +14,7 @@
 # LOOMCYCLE_PRESETS, when set, is used instead. A preset named here is trusted
 # as this file is: it is yaml, and can carry agents, MCP servers or sign-in
 # clients. `server` and what it includes set no gate, volume or principal, and
-# no preset can enable Bash or web access: those are environment switches.
+# no preset can enable web access: that is an environment switch.
 presets: [server]
 
 # ─── Volumes ───────────────────────────────────────────────────────────

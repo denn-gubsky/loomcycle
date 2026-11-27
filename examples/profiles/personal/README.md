@@ -68,9 +68,8 @@ a line you add yourself:
   `BRAVE_API_KEY` in `env.local` for search.
 - **Commands.** `workspace.mode: local` in `loomcycle.yaml` runs the chat
   agents' commands in a workspace on a worker the runtime starts itself
-  (`docs/WORKSPACES.md`). `Bashbox` (a sandbox confined to the volume, needing
-  only the volume) and `LOOMCYCLE_BASH_ENABLED=1` (`Bash`, which is not a
-  sandbox) still work, and are deprecated: a future release removes them
+  (`docs/WORKSPACES.md`). That worker runs commands as you, with no isolation.
+  The `Bash` and `Bashbox` tools were removed in v1.172.0
   (`docs/MIGRATING-FROM-BASH.md`).
 - **Durable memory.** `presets: [personal, memory]` and the `scheduled_runs`
   block, both in `loomcycle.yaml`.

@@ -106,25 +106,38 @@ services:
   #     SEARXNG_BASE_URL: http://searxng:8080/
   #   # No ports: — only loomcycle needs to reach it, in-network.
 
-  # --- builder sidecar (uncomment for the isolated code-execution sandbox) ---
-  # Runs a dev toolchain in per-session, network-off, ephemeral containers via
-  # rootless podman; loomcycle drives it over HTTP-MCP and stays distroless.
-  # loomcycle reaches it in-network at http://builder-sidecar:9000/mcp — no host
-  # port. Build it + the session image from deploy/builder/ (see docs/SANDBOX.md),
-  # then select the `sandbox` bundle (LOOMCYCLE_PRESETS=…,sandbox) and set
-  # SANDBOX_AUTH_TOKEN on the loomcycle service to the same shared secret.
-  # builder-sidecar:
-  #   image: denngubsky/loomcycle-builder:1.147.0
-  #   container_name: builder-sidecar
+  # --- workspace worker (uncomment so agents can run commands) ---
+  # Agents run commands in workspaces (the Workspace tool) on a workspace worker;
+  # on the container engine each workspace runs in a session container of its own
+  # on the host's Docker, with no network but the runtime's egress routes. The
+  # image is published from v1.171.0: run the runtime at the same release. Add to
+  # your loomcycle.yaml:
+  #   worker_endpoint: { listen: "0.0.0.0:7788", insecure: true }
+  #   workspace: { mode: remote }
+  # and LOOMCYCLE_WORKER_TOKEN (32+ characters) to the loomcycle service. The
+  # worker's own token is a minted operator token with the single scope
+  # workers:attach (`loomcycle operator-token create --scopes workers:attach …`),
+  # set as WS_WORKER_TOKEN in .env. docs/WORKERS.md "Workspace workers" is the
+  # guide; make both host directories first, owned by 65532:65532, mode 0700.
+  # workspace-worker:
+  #   image: denngubsky/loomcycle-ws-worker:1.171.0
+  #   command: [--role, workspace, --id, ws1]   # keep the id across restarts
   #   restart: unless-stopped
-  #   # Nested podman needs a capable host runtime — Sysbox (secure) is preferred;
-  #   # privileged: true is the fallback (accept the risk; e.g. on TrueNAS).
-  #   runtime: sysbox-runc
   #   environment:
-  #     SANDBOX_AUTH_TOKEN: ${SANDBOX_AUTH_TOKEN}     # same secret as loomcycle's
-  #     SANDBOX_IMAGE: localhost/loomcycle-sandbox-session:latest
-  #     SANDBOX_MAX_MEM_MB: "2048"
-  #     SANDBOX_MAX_CPUS: "2"
-  #     # SANDBOX_RUNTIME: runsc          # set once gVisor is installed in the image
-  #     # SANDBOX_ALLOW_EGRESS: "1"       # permit network:"egress" sessions
-  #   # No ports: — only loomcycle needs to reach it, in-network.
+  #     LOOMCYCLE_WORKER_TOKEN: ${WS_WORKER_TOKEN:?WS_WORKER_TOKEN required}
+  #     LOOMCYCLE_WORKER_DISPATCHER: loomcycle:7788
+  #     LOOMCYCLE_WORKER_INSECURE: "1"   # plain gRPC on the compose network
+  #     LOOMCYCLE_WORKSPACE_ROOT: /srv/loomcycle/workspaces
+  #     LOOMCYCLE_WORKSPACE_ENGINE: container
+  #     LOOMCYCLE_WORKSPACE_CONTAINER_IMAGE: denngubsky/loomcycle-workspace:1.171.0
+  #     LOOMCYCLE_WORKSPACE_CONTAINER_EGRESS_DIR: /srv/loomcycle/wse
+  #   group_add: ["<gid of /var/run/docker.sock>"]
+  #   volumes:
+  #     - /var/run/docker.sock:/var/run/docker.sock              # host Docker control
+  #     - /srv/loomcycle/workspaces:/srv/loomcycle/workspaces    # the same path inside and out
+  #     - /srv/loomcycle/wse:/srv/loomcycle/wse
+  #   tmpfs: ["/scratch:size=1g,mode=0700,uid=65532,gid=65532"]
+  #   read_only: true
+  #   cap_drop: [ALL]
+  #   security_opt: ["no-new-privileges:true"]
+  #   # No ports: — it dials the runtime.

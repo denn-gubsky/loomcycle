@@ -4,7 +4,7 @@ A single Docker Compose stack that runs **everything** loomcycle needs and expos
 it publicly through Cloudflare — built for `cloud-home.local` (Ubuntu 25.04) but
 portable to any Docker host. Unlike `deploy/truenas/` (which depends on external
 TrueNAS apps for Postgres/SearXNG/Ollama), this bundles Postgres 18 + pgvector,
-SearXNG, the code-exec sandbox, a Tailscale egress sidecar, a **Node landing
+SearXNG, a workspace worker for agents' commands, a Tailscale egress sidecar, a **Node landing
 server** (static site + self-serve token minting), and a Cloudflare tunnel — one
 `make up`.
 
@@ -21,7 +21,7 @@ Internet ─▶ Cloudflare edge ─▶ cloudflared ─┬─ app.loomcycle.cloud
               (+ Access on         │         ├─ loomcycle.cloud      ─▶ landing:8080    (Node → cloud-web/ + /api/mint)
                loomcycle.cloud/api)│         └─ telegram.loomcycle.cloud/telegram/webhook ─▶ telegram-bridge:8443 (optional)
 compose network `loomnet`:
-  postgres(pg18+pgvector)   loomcycle-migrate(one-shot)   builder-sidecar(:9000)
+  postgres(pg18+pgvector)   loomcycle-migrate(one-shot)   pinchtab
   searxng(:8080)            landing(node:8080)            cloudflared
   tailscale ◀── loomcycle (network_mode: service:tailscale) ──▶ Ollama @ 100.x:11434 (tailnet)
 ```
@@ -33,9 +33,9 @@ compose network `loomnet`:
 | `postgres` | `pgvector/pgvector:pg18` | Main store (`loomcycle`) + SQL-Memory aux (`loomcycle_sqlmem`). |
 | `loomcycle-migrate` | `denngubsky/loomcycle-browser:${LOOMCYCLE_VERSION}` | One-shot `migrate up` on the main db, then exits. Same image and tag as the runtime. |
 | `tailscale` | `tailscale/tailscale` | Kernel-mode egress to the tailnet; **owns the netns loomcycle shares**. |
-| `builder-sidecar` | `denngubsky/loomcycle-builder-docker:${LOOMCYCLE_SIDECAR_VERSION}` | Sandboxed code exec (`mcp__sandbox__*`) via the host Docker socket. |
 | `loomcycle` | `denngubsky/loomcycle-browser:${LOOMCYCLE_VERSION}` | The runtime (distroless) with the PinchTab MCP client binary. `network_mode: service:tailscale`. |
 | `conversion-worker` ×2 | `denngubsky/loomcycle-worker:${LOOMCYCLE_VERSION}` | Every file conversion (extraction, voice to WAV, Opus encoding), with ffmpeg and poppler, a 1 GiB memory limit, no volume. Shares the runtime's netns; attaches to `127.0.0.1:7788`. |
+| `workspace-worker` | `denngubsky/loomcycle-ws-worker:${LOOMCYCLE_WS_WORKER_VERSION}` | **Compose profile `workspace`**: the workspace worker on the container engine. Each workspace's commands run in a session container of their own (`denngubsky/loomcycle-workspace-browser`) on the host's Docker, through the mounted socket. Shares the runtime's netns; attaches to `127.0.0.1:7788` with a minted `workers:attach` token. See INSTALL.md → "Workspace worker". |
 | `searxng` | `searxng/searxng` | Keyless search backend (wired via `config/loomcycle.yaml`). |
 | `landing` | Node (`./landing`, built) | Serves `cloud-web/`, proxies the public reads `/healthz` + `/v1/config` (inner links), mints `substrate:tenant` tokens behind Cloudflare Access, and — with `LOOMCYCLE_AUTH_MANAGE_TOKEN` — runs signup and team management on loomcycle's password gate. |
 | `cloudflared` | `cloudflare/cloudflared` | Outbound tunnel; routes managed in the Cloudflare dashboard (token method). |
@@ -102,7 +102,7 @@ over the tailnet. Consequences baked into this compose:
   **`http://tailscale:8787`** (on `loomnet`; the cloudflared route for `app.loomcycle.cloud` uses the
   `edge`-only alias `http://loomcycle-edge:8787` so loomcycle can trust its `CF-Connecting-IP`; and
   the landing's `/v1` + `/healthz` proxy target).
-- loomcycle still reaches `postgres:5432`, `searxng:8080`, `builder-sidecar:9000`
+- loomcycle still reaches `postgres:5432`, `searxng:8080`, `pinchtab:9867`
   by name (tailscale is a normal member of `loomnet`).
 - loomcycle reaches Ollama by **raw tailnet IP** (`OLLAMA_BASE_URL=http://100.x:11434`),
   not MagicDNS. `TS_ACCEPT_DNS=false` keeps the netns DNS usable for service names.
@@ -153,8 +153,10 @@ file is kept in step with the TrueNAS deployment, which shares the Ollama host.
   secret authenticates each call.
 - **`LOOMCYCLE_HTTP_HOST_ALLOWLIST=*`** lets agents fetch any host — permissive on
   a public box. Tighten for production.
-- **The builder-sidecar has effective host-root via the Docker socket** — the one
-  privileged component by design; in-network, bearer-authed, no host port.
+- **The workspace worker has effective host-root via the Docker socket** — the one
+  privileged component by design; no host port, and the session containers it
+  starts hold no such right (read-only root, no capabilities, no network but the
+  runtime's egress routes).
 - Real secrets are authored **on the host only**; the repo ships no secret file.
 
 ## Quick start

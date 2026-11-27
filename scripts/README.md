@@ -57,8 +57,9 @@ The in-tree modules are the root module plus every module the root `go.mod`
 replaces with a directory inside the tree (`replace <path> => ./<dir>`). They
 are read from the root `go.mod` (`scripts/ci/gomodules`), so there is no list
 to keep: the directive that puts a module into the binary is the one that
-makes the tooling visit it. `deploy/builder` is a separate module the root does
-not replace; it is not one of them (`security.yml` scans it on its own).
+makes the tooling visit it. A module the root does not replace is not one of
+them; `internal/archtest` lists such modules in `standaloneModules` (none
+today).
 
 ```sh
 scripts/ci/modules.sh                      # one directory per line, root (".") first

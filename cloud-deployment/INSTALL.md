@@ -164,7 +164,7 @@ POSTGRES_PASSWORD=REPLACE_ME_STRONG
 LOOMCYCLE_PG_DSN=postgres://loomcycle:REPLACE_ME_STRONG@postgres:5432/loomcycle?sslmode=disable
 LOOMCYCLE_SQLMEM_PG_DSN=postgres://loomcycle:REPLACE_ME_STRONG@postgres:5432/loomcycle_sqlmem?sslmode=disable
 # ── sidecars ──
-SANDBOX_AUTH_TOKEN=REPLACE_ME                # openssl rand -hex 32 (shared with builder-sidecar)
+# WORKSPACE_WORKER_TOKEN=                    # after Phase 7: the workspace worker's minted token ("Workspace worker")
 TS_AUTHKEY=tskey-auth-REPLACE_ME             # Phase 3 (reusable, tagged)
 CLOUDFLARE_TUNNEL_TOKEN=REPLACE_ME           # Phase 4
 SEARXNG_SECRET=REPLACE_ME                    # openssl rand -hex 32
@@ -194,16 +194,11 @@ Notes:
   (`denngubsky/loomcycle-worker`, RFC GO), which do every file conversion. Nothing is built locally for the runtime any more. The sidecar is internal-only (no published port), and PinchTab keeps
   browsing **local-only** until you widen its domain allowlist (IDPI) — to test
   external sites or your own deployment, follow the pinchtab security guide.
-- **Serve-and-test (browse a server the session runs):** the compose ships a
-  dedicated `loom-dev` bridge network with pinchtab attached and
-  `SANDBOX_EXPOSE_NETWORK=loom-dev` on the builder-sidecar. A `dev/exec` envelope
-  with `expose:<alias>` then attaches its session there, reachable from the browser
-  at `http://<alias>:<port>`. This needs the **runtime AND sidecar at ≥ 1.43.0** (the
-  expose seam) — the images pin to `1.147.0`; the sidecar is a separate,
-  multi-arch image (`docker pull` a `linux/amd64` tag on TrueNAS, not a hand-built
-  single-arch one). Add each alias to PinchTab's IDPI allowlist first
-  (`pinchtab config set security.allowedDomains "127.0.0.1,localhost,::1,<alias>"`,
-  then restart the sidecar) — see [`../docs/SANDBOX.md`](../docs/SANDBOX.md).
+- **Agents' commands:** they run in workspaces on the `workspace-worker` service
+  (compose profile `workspace`), which you turn on after the first bring-up — see
+  "Workspace worker" below. An agent looks at a page its own workspace serves with
+  `Workspace op=screenshot` (the session image carries Chromium); PinchTab is for
+  browsing the web.
 - **PinchTab allowlist — persistence & declarative option:** `pinchtab config set`
   writes to `/data/.config/pinchtab/config.json`, which is the `./pinchtab-data`
   bind mount, so **the allowlist already survives restarts and reboots** (the "restart
@@ -252,8 +247,9 @@ make ps          # all services `running`/`healthy`; loomcycle-migrate `exited (
    In per-person mode (`LANDING_TENANT=` empty) the old flow applies instead: **Create
    token** mints a `substrate:tenant` token for the derived `t_…` tenant.
 7. **Functional**: run a `chat/medium` agent that uses WebSearch (proves SearXNG),
-   a `dev/exec` run (proves the builder sidecar via `mcp__sandbox__*` — e.g.
-   `{"commands":["uname -a"]}`), and a Document op (proves SQL Memory + pgvector).
+   a `dev/exec` run once the workspace worker is on (proves the worker and its
+   container engine — e.g. `{"commands":["uname -a"]}`), and a Document op (proves
+   SQL Memory + pgvector).
 
 ---
 
@@ -501,9 +497,7 @@ the order; the notes after it are what changed underneath you.
    - remove `LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX` and `LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU`
      (the YAML sets them now; the first, left set, would win over the YAML's
      `num_ctx`, and the second is no longer read);
-   - remove `LOOMCYCLE_SCHEDULER_FIRE_TIMEOUT_SECONDS` if present (no longer read);
-   - set `SANDBOX_IMAGE` to the `1.108.0` tag (the compose file sets the value the
-     sidecar uses; this line only keeps the env file in step).
+   - remove `LOOMCYCLE_SCHEDULER_FIRE_TIMEOUT_SECONDS` if present (no longer read).
    In `.env.secure`, add `GEMINI_API_KEY` if you want the Gemini candidates, and
    `OLLAMA_API_KEY` for the hosted-Ollama alias. A provider with no key is skipped.
    If `pgdata` is still mounted at `/var/lib/postgresql/data`, leave your working
@@ -704,7 +698,7 @@ The image versions are variables in `docker-compose.yaml`:
 | Variable | Sets | Default in the compose file |
 |---|---|---|
 | `LOOMCYCLE_VERSION` | the `loomcycle-browser` tags (runtime and migration) and the `loomcycle-worker` tag | the release this directory was written for |
-| `LOOMCYCLE_SIDECAR_VERSION` | `loomcycle-builder-docker` and the sandbox session image | the last minor release |
+| `LOOMCYCLE_WS_WORKER_VERSION` | the `loomcycle-ws-worker` tag and the `loomcycle-workspace-browser` session image | `1.171.0`, the first release that publishes the worker image |
 | `LOOMBOARD_VERSION` | the `ghcr.io/denn-gubsky/loomboard` tag of the hosted board (`X.Y.Z`, no `v`) | the loomboard release this directory was written for |
 
 Put them in a `versions.env` file next to the compose file; the Makefile passes it
@@ -712,9 +706,10 @@ when it exists. Then `make pull && make up`. If the new version bumped the schem
 `loomcycle-migrate` re-runs automatically on the next `up`.
 
 - A **minor** release (`x.y.0`): move `LOOMCYCLE_VERSION` and
-  `LOOMCYCLE_SIDECAR_VERSION` together.
-- A **patch** release (`x.y.1`): move only `LOOMCYCLE_VERSION`. The sidecar and the
-  session image are published on minor releases only.
+  `LOOMCYCLE_WS_WORKER_VERSION` together.
+- A **patch** release (`x.y.1`): move only `LOOMCYCLE_VERSION`. The workspace
+  worker and its session image are published on minor releases only; a worker of
+  another build is logged, not refused.
 
 Read the release's notes in `REVISIONS.md` first; a jump across several minors
 needs the steps in the section above.
@@ -814,7 +809,7 @@ the board's settings are environment variables of the `loomboard` service.
    ```bash
    mkdir -p ~/work/loomcycle-cloud-deploy/bin
    install -m 755 deploy/loomcycle-cloud-deploy ~/work/loomcycle-cloud-deploy/bin/
-   printf 'LOOMCYCLE_VERSION=1.108.1\nLOOMCYCLE_SIDECAR_VERSION=1.108.0\nLOOMBOARD_VERSION=0.4.0\n' > versions.env
+   printf 'LOOMCYCLE_VERSION=1.171.0\nLOOMCYCLE_WS_WORKER_VERSION=1.171.0\nLOOMBOARD_VERSION=0.4.0\n' > versions.env
    ~/work/loomcycle-cloud-deploy/bin/loomcycle-cloud-deploy status
    ```
 2. A key pair for CI (`ssh-keygen -t ed25519 -N "" -f ~/work/loomcycle-cloud-deploy/ci_deploy`).
@@ -841,21 +836,57 @@ By hand on the host, the same requests work as arguments:
 
 ---
 
-## Durable sandbox workspaces (advanced, optional)
+## Workspace worker
 
-The sandbox uses per-session tmpfs `/work` by default (nothing persists). Durable
-**named** workspaces (`sandbox_open {workspace:…}`) require the sidecar's
-`SANDBOX_WORKSPACE_ROOT` to be an **absolute host path bind-mounted into the
-sidecar at the identical path** (the sidecar drives the host Docker engine, so the
-path it creates must equal the path the host mounts). To enable, set in the
-`builder-sidecar` service:
+Agents run commands in workspaces (the `Workspace` tool; the `dev-workspace`
+preset's `dev/exec`) on the `workspace-worker` service: a workspace worker on the
+**container engine**, which runs each workspace's commands in a session container
+of its own on the host's Docker (read-only root, no capabilities, no network but
+the runtime's egress routes). `config/loomcycle.yaml` turns workspaces on
+(`workspace: {mode: remote}`); the worker attaches to the same loopback endpoint
+as the conversion workers. Guide: [`../docs/WORKERS.md`](../docs/WORKERS.md),
+"Workspace workers".
 
-```yaml
-environment:
-  SANDBOX_WORKSPACE_ROOT: /home/denn/work/loomcycle-cloud/work
-volumes:
-  - ./work:/home/denn/work/loomcycle-cloud/work
-```
+The worker drives the host's Docker through its socket, so it is the one
+privileged component of the stack; give the host to this stack alone.
+
+**Turn it on, once:**
+
+1. The two host directories, mounted at the same path inside the worker so the
+   host's Docker finds what the worker names, owned by the worker's uid:
+   ```bash
+   sudo mkdir -p /srv/loomcycle/workspaces /srv/loomcycle/wse
+   sudo chown 65532:65532 /srv/loomcycle/workspaces /srv/loomcycle/wse
+   sudo chmod 0700 /srv/loomcycle/workspaces /srv/loomcycle/wse
+   ```
+   Other paths go in `.env.insecure` as `WORKSPACE_DIR` and `WORKSPACE_EGRESS_DIR`
+   (keep the second short: it holds Unix sockets).
+2. `DOCKER_GID` in `.env.insecure`: the group of the socket,
+   `stat -c %g /var/run/docker.sock`.
+3. Mint the worker's token, with the single scope `workers:attach`, shared across
+   tenants (the container engine allows that), as the admin:
+   ```bash
+   loomcycle operator-token create --target https://app.loomcycle.cloud \
+     --name cloud-ws1 --tenant loomcycle-dev --scopes workers:attach --worker-shared
+   ```
+   Put the token it prints in `.env.secure` as `WORKSPACE_WORKER_TOKEN=…`. It is not
+   `LOOMCYCLE_WORKER_TOKEN` (the conversion workers' token never attaches a
+   workspace worker).
+4. Add `workspace` to `COMPOSE_PROFILES` in `.env.insecure`
+   (`COMPOSE_PROFILES=workspace` or `workspace,telegram`), then `make up`.
+5. Check: `make logs S=workspace-worker` shows it attached, and a `dev/exec` run of
+   `{"commands":["python3 --version"]}` answers.
+
+**Upgrading from the builder sidecar** (before 1.172.0): the `sandbox` and
+`dev-exec` presets, the `builder-sidecar` service, `SANDBOX_AUTH_TOKEN`,
+`SANDBOX_IMAGE`, `SANDBOX_MAX_*`, `LOOMCYCLE_BASH_ENABLED` and the
+`LOOMCYCLE_BASHBOX_FALLBACK_*` variables are gone (1.172.0 refuses to start while
+one of the variables is set, naming it). Take this directory's `.env.insecure.example`
+lines for `LOOMCYCLE_PRESETS` and the workspace worker, delete the others from
+`.env.insecure` and `SANDBOX_AUTH_TOKEN` from `.env.secure`, follow the steps above,
+and remove the old `loom-dev` network once the stack is up:
+`docker network rm loom-dev`. In `versions.env`, `LOOMCYCLE_SIDECAR_VERSION` is no
+longer read; the deploy script writes `LOOMCYCLE_WS_WORKER_VERSION` in its place.
 
 ---
 
@@ -886,4 +917,6 @@ volumes:
 | A tool's file shows as `[file not kept: …]` | No `dynamic_root` volume, or the runtime cannot write it: `./dynamic` must exist and be owned by 65532 (see *Upgrading to 1.122.0*). |
 | `403 {"code":"acl_denied", …}` on a request that worked before | `LOOMCYCLE_ACL=enforce` and no rule allows it, or a deny bound to the caller. The body names the rules; **Settings → Access → Simulator** shows every rule considered. Set `shadow` while you fix the list. |
 | `503 acl_unavailable` | The caller's rules could not be read (a Postgres fault). Under `enforce` the request is refused rather than admitted. |
-| Bashbox fallback commands (`git`/`go`/…) "not found" | The plain `denngubsky/loomcycle` image is minimal — either switch the `loomcycle` + `loomcycle-migrate` images to `denngubsky/loomcycle-toolbox:<same-tag>`, or rely on the `sandbox` preset (its session image has the full toolchain). |
+| A `Workspace` call or a `dev/exec` run fails: no workspace worker | The `workspace-worker` service is not running (`workspace` missing from `COMPOSE_PROFILES`), or its token is refused: `make logs S=workspace-worker` says why. `WORKSPACE_WORKER_TOKEN` must be a minted `workers:attach` token, never `LOOMCYCLE_WORKER_TOKEN`. |
+| The workspace worker exits, `permission denied` on `/var/run/docker.sock` | `DOCKER_GID` is unset or not the socket's group (`stat -c %g /var/run/docker.sock`). |
+| Every `open` fails `making the workspace: … permission denied` | The workspace or egress directory is not owned by 65532, or is missing (see "Workspace worker"). |

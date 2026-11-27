@@ -26,20 +26,13 @@
 #      container-create) is the mechanism that works.
 #   5. Fill the placeholders below (TRUENAS_HOST, OLLAMA_HOST, the pool) and paste.
 #
-# ── IMAGE CHOICE (this file uses the toolbox image; read this) ────────────────
-#   DEPRECATED: the toolbox image and the Bash/Bashbox switches below still work,
-#   and a future release removes them (RFC GW P15). Agents run commands in a
-#   workspace on a workspace worker instead: docs/MIGRATING-FROM-BASH.md.
-#   • denngubsky/loomcycle-toolbox — SHIPS A DEV TOOLCHAIN (python/go/rust/c++/node
-#     + git/gh/curl/jq/rsync/wget/unzip/sqlite3), so agents can run + compile + test
-#     code via Bash/Bashbox. Code runs in loomcycle's OWN container → WEAK isolation:
-#     use for SINGLE-TENANT / TRUSTED deployments only (docs/TOOLBOX_IMAGE.md).
-#   • denngubsky/loomcycle — the secure DISTROLESS default (no shell/toolchain). For
-#     a locked-down / multi-tenant deploy, switch BOTH images to this and DELETE the
-#     "code execution" env block below. For ISOLATED untrusted code execution, keep
-#     distroless and add the builder sidecar (docs/SANDBOX.md).
+# ── IMAGE ─────────────────────────────────────────────────────────────────────
+#   denngubsky/loomcycle — the DISTROLESS runtime (no shell, no toolchain). Agents
+#   do not run commands in it: they run them in a workspace on a workspace worker
+#   (the Workspace tool). ./docker-compose.browser.yaml is this compose plus a
+#   workspace worker on the container engine; docs/WORKERS.md "Workspace workers".
 #
-#   Registry: whichever you pick is also on GHCR — prefix it with
+#   Registry: every loomcycle image is also on GHCR — prefix it with
 #   `ghcr.io/denn-gubsky/` (same build, same digest) if a Docker Hub pull fails
 #   with `toomanyrequests`. INSTALL.md → "Docker Hub rate limits".
 
@@ -49,7 +42,7 @@ services:
   # One-shot schema migration: runs `loomcycle migrate up`, then exits; the runtime
   # waits for it (LOOMCYCLE_PG_AUTOMIGRATE=0 below keeps schema bumps explicit).
   loomcycle-migrate:
-    image: denngubsky/loomcycle-toolbox:1.153.0   # keep in lockstep with the runtime
+    image: denngubsky/loomcycle:1.153.0   # keep in lockstep with the runtime
     user: "65532:65532"
     restart: "no"
     command: ["migrate", "up"]
@@ -58,7 +51,7 @@ services:
       - /mnt/tank/loomcycle/config/loomcycle.secrets.env
 
   loomcycle:
-    image: denngubsky/loomcycle-toolbox:1.153.0
+    image: denngubsky/loomcycle:1.153.0
     user: "65532:65532"
     restart: unless-stopped
     depends_on:
@@ -100,22 +93,6 @@ services:
       OLLAMA_BASE_URL: "http://OLLAMA_HOST:11434"
       LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX: "65535"     # pin the local context window
       # GPU offload (num_gpu) is in the config overlay: providers.ollama-local.options.
-
-      # ── code execution — TOOLBOX IMAGE ONLY, single-tenant/trusted ─────────
-      # DEPRECATED (RFC GW P15 removes these): see docs/MIGRATING-FROM-BASH.md.
-      # DELETE this whole block on the distroless image. Grant Bash/Bashbox to an
-      # agent via its tools:. Bashbox is the in-process sandbox (rooted at the
-      # agent's rw volume, no network); Bash is the unsandboxed escape hatch.
-      LOOMCYCLE_BASH_ENABLED: "1"
-      # Host commands that ESCAPE the gbash sandbox to the real toolchain. Only list
-      # what gbash LACKS — do NOT add jq/awk (native to Bashbox) or bash/sh/env
-      # (they'd defeat the sandbox; that's what raw Bash is for).
-      LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS: >-
-        git,gh,curl,rsync,python3,pip3,go,gofmt,cargo,rustc,node,npm,npx,gcc,g++,cc,c++,clang,clang++,make,cmake,pkg-config
-      # REQUIRED for go/cargo/npm/pip: the fallback scrubs the child env down to
-      # PATH only, and those tools need HOME for their caches (go build errors
-      # "neither $XDG_CACHE_HOME nor $HOME are defined" without it).
-      LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV: HOME
 
       # ── HTTP / WebFetch host policy ───────────────────────────────────────
       # "*" allows any host — an SSRF surface, fine for a TRUSTED single-tenant box

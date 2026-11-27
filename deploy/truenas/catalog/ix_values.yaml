@@ -1,10 +1,9 @@
 # Static defaults — images + template constants (not user-editable). RFC AR.
 images:
   image:
-    # The wizard defaults to the SECURE distroless image. For in-container code
-    # execution swap to denngubsky/loomcycle-toolbox via Route A (paste compose) —
-    # see ../INSTALL.md / ../../docs/TOOLBOX_IMAGE.md; the catalog wizard stays
-    # distroless (single-tenant code-exec is an explicit Route-A opt-in).
+    # The distroless image. Agents run commands in a workspace on a workspace
+    # worker, not in this container: the browser variant of Route A (paste
+    # compose, ../docker-compose.browser.yaml) runs one; see ../INSTALL.md.
     repository: denngubsky/loomcycle
     # Bump this + app_version in app.yaml in lockstep on an image bump.
     tag: "1.23.1"
