@@ -720,28 +720,26 @@ First-party integrations the runtime makes more valuable:
 
 ### Operator posture: sandbox vs agentic, no profile flag
 
-> **Later:** `LOOMCYCLE_BASH_ENABLED` and the `Bash` tool are deprecated, and RFC GW P15 removes them. In the agentic recipe, commands now run in a workspace: `workspace.mode: local` on a single trusted machine, or workspace workers, with the `Workspace` tool and a `workspace` grant. See [MIGRATING-FROM-BASH.md](MIGRATING-FROM-BASH.md).
+> **Later:** `LOOMCYCLE_BASH_ENABLED` and the `Bash` tool were removed in v1.172.0 (RFC GW P15); the variable, still set, refuses the start. The recipes below show the current form: in the agentic recipe, commands run in a workspace (`workspace.mode: local` on a single trusted machine, or workspace workers) with the `Workspace` tool and a `workspace` grant. See [MIGRATING-FROM-BASH.md](MIGRATING-FROM-BASH.md).
 
 v1.0 keeps a single binary and a single config schema. There is **no** `--profile=sandbox` flag and no separate `loomcycle-server` / `loomcycle-agentic` binaries. Operators compose their own posture by setting individual env vars and YAML keys; the docs ship a cookbook of common shapes.
 
 **Sandbox recipe** — server-style deployment, agents process untrusted prompts, no host filesystem reach:
 
 ```bash
-LOOMCYCLE_BASH_ENABLED=0
 LOOMCYCLE_HTTP_HOST_ALLOWLIST=             # empty — agents reach no hosts unless caller supplies allowed_hosts
 LOOMCYCLE_HTTP_CALLER_AUTHORITATIVE=1      # caller's per-request allowed_hosts is the policy
 LOOMCYCLE_SKILLS_ROOT=/srv/loomcycle/skills
 ```
 
 No `volumes:` block in the yaml — sandbox-by-default (RFC AH Phase 3): with no
-volume declared, Read/Write/Edit/Bash refuse every call.
+volume declared, Read/Write/Edit refuse every call.
 
 YAML: every agent's `tools` lists only the network-restricted set (`HTTP` only with caller-supplied hosts, `WebSearch` with `web_search_filter: drop`, `Agent` for orchestration). Run inside a container; rely on the container for true filesystem isolation.
 
 **Agentic recipe** — the runtime has read/write access to a real working directory, can run shell commands, reaches a broad set of hosts:
 
 ```bash
-LOOMCYCLE_BASH_ENABLED=1                   # bash on (still NOT a real sandbox; container required)
 LOOMCYCLE_HTTP_HOST_ALLOWLIST=api.anthropic.com,api.brave.com,github.com,...
 # or LOOMCYCLE_HTTP_HOST_ALLOWLIST=*  # allow ALL public hosts (dial-time private-IP guard still applies)
 LOOMCYCLE_SKILLS_ROOT=/work/.claude/skills
@@ -750,11 +748,15 @@ LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST=localhost,127.0.0.1
 
 The filesystem reach is a `volumes:` block in the yaml (RFC AH Phase 3 retired
 the `LOOMCYCLE_READ_ROOT`/`WRITE_ROOT`/`BASH_CWD` jail). A `default` rw volume
-gives Read/Write/Edit/Bash access to `/work`:
+gives Read/Write/Edit access to `/work`. Shell commands run in a workspace;
+`workspace.mode: local` runs them on this machine with no isolation, so keep
+the container:
 
 ```yaml
 volumes:
   default: { path: /work, mode: rw, default: true }
+workspace:
+  mode: local
 ```
 
 YAML: agents can list any tool. The bearer token (`LOOMCYCLE_AUTH_TOKEN`) is the trust boundary; treat anyone with the token as fully trusted to drive the runtime.

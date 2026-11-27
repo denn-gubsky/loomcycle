@@ -34,8 +34,7 @@ LOOMCYCLE_SECRET_KEY=$(openssl rand -base64 32)   # 32 bytes, base64
   is removed, rotated without `LOOMCYCLE_SECRET_KEY_PREVIOUS`, or wrong — or a
   row is corrupt — every credential stored under it is *held but unusable*,
   exactly like an expired one: a provider call that names it fails instead of
-  using the operator's provider key, a Bash / Bashbox variable is left unset
-  instead of taking the operator's host variable, an MCP / hook header or a
+  using the operator's provider key, an MCP / hook header or a
   webhook verification secret refuses the call or delivery. The error names
   the credential, never key material. Only a name with **no stored row** falls
   back as before. (A store *read* error still falls back, logged: it says
@@ -77,8 +76,7 @@ referenced — a `$cred:` header (the MCP call is refused; a closed hook denies)
 remote peer's or git source's key (the dial or clone is refused), a `$ghapp:` App
 config (no token is minted, a cached one is not served), a webhook's stored
 verification secret (the delivery is refused; an expired `previous_secret` just
-drops out of a rotation), a provider / tool key override, and a Bash / Bashbox
-env injection. The error names the credential,
+drops out of a rotation), and a provider / tool key override. The error names the credential,
 its scope and when it expired, never the value.
 
 **An expired credential is never replaced by the operator's value.** Where a
@@ -93,10 +91,6 @@ one does not:
   expired as one it can key — the same answer a URL-restricted key gets — so it
   is routed to a provider it holds a valid key for, or refused
   `operator_key_restricted`.
-- **Bash / Bashbox env injection**: the variable is left **unset**, and an
-  operator-allowlisted host variable of the same name is removed too; the
-  command's output (Bash) or stderr (the Bashbox host-command fallback) says
-  which variable and why.
 
 Also:
 
@@ -135,7 +129,7 @@ It answers a question a secret store otherwise cannot. When the destination of a
   - a remote memory backend's or document source's `api_key_env: "$cred:<name>"`: its `base_url` (saving such a definition checks this too);
   - a git source for an ephemeral volume: the repository's URL.
 
-  A provider key and a `Bash` / `Bashbox` environment name no destination, and a restricted credential does **not** resolve there — and, like an expired one, nothing is used in its place: the provider call fails naming it instead of taking the operator's key, and the `Bash` / `Bashbox` variable is left unset, the operator's same-named host variable included.
+  A provider key names no destination, and a restricted credential does **not** resolve there — and, like an expired one, nothing is used in its place: the provider call fails naming it instead of taking the operator's key.
 - **A webhook's verification secret is compared, never sent.** A webhook's `auth.secret: "$cred:<name>"` (and its `previous_secret`) is a tenant-level credential of the webhook's own tenant, which the receiver checks a request's signature or token against. It resolves whatever its list says, so store it with `allowed_urls: []`: then it can verify deliveries and can never be sent anywhere (`Context.help input-webhooks`).
 - **A request carrying a restricted credential follows no redirect.** The request's URL was checked; a redirect is the server choosing another one, and an HTTP client forwards most headers to it (a custom header such as `X-API-Key` to any host). So the redirect is refused and the call fails. An unrestricted credential follows redirects as before.
 - **Rotation keeps the list.** Creating the credential again without `allowed_urls` keeps the list it has; sending a list replaces it. To remove a restriction, delete the credential and create it again.
@@ -207,14 +201,14 @@ Store the App config as a credential whose value is a JSON object:
 
 ```jsonc
 // create it (the value is the JSON above, as a single JSON-escaped string)
-credentialdef  op=create  scope=user  name=sandbox_github_app  value='{"app_id":"123456",…}'
+credentialdef  op=create  scope=user  name=my_github_app  value='{"app_id":"123456",…}'
 ```
 
 Then reference it in an http-MCP header, the same place a `$cred:` would go:
 
 ```yaml
 headers:
-  Authorization: "Bearer $ghapp:my_github_app"   # or X-Loom-Sandbox-Env-Gh-Token for the dev sandbox
+  Authorization: "Bearer $ghapp:my_github_app"
 ```
 
 An unresolved ref — or a mint failure (bad key, network) — **refuses the call**.
@@ -429,64 +423,13 @@ credentialdef  op=create  scope=tenant  name=ANTHROPIC_API_KEY  value=sk-ant-…
 
 ## Into a shell — `Bash` and Bashbox host commands
 
-> **Deprecated.** `LOOMCYCLE_BASH_ALLOWED_CREDS`, `LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS` and the `shell_credentials` agent field are deprecated with the `Bash` and Bashbox tools, and a future release removes them (RFC GW P15). They still work. Their replacement keeps the credential out of the model's reach: an egress route with a credential (`workspace.egress.routes`, or a tenant's `EgressRouteDef`), which the core adds to a workspace's outgoing request so no shell sees it. [MIGRATING-FROM-BASH.md](MIGRATING-FROM-BASH.md#shell_credentials) maps each across.
+> **Removed in v1.172.0.** `LOOMCYCLE_BASH_ALLOWED_CREDS`, `LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS` and the `shell_credentials` agent field went with the `Bash` and Bashbox tools (RFC GW P15). Each variable, still set, refuses the start, and so does `shell_credentials` on a yaml or markdown agent; a stored definition that holds the field runs without it.
 
-`LOOMCYCLE_BASH_ALLOWED_CREDS` and `LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS`
-name credentials injected, by name, into the environment of a `Bash` command or
-of a Bashbox host command (the `git` / `gh` an operator allowlisted with
-`LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS`), resolved for each run like the key
-override above.
-
-**Unlike every other use on this page, the model can read these.** A `Bash`
-command prints them with `env`; an allowlisted host command can be told to
-(`git -c alias.x='!env' x` runs a host shell that does). The value is masked
-in the stored transcript (unless `LOOMCYCLE_REDACT_SECRETS=0`), but the live
-tool result carries it, and so does the conversation sent to the LLM provider
-on the next call. Give a shell
-only credentials you would hand the model, and prefer the ones that keep the
-token out of reach: the `Git` tool for repository work (see "In the Git tool"
-below), a git-source volume (`VolumeDef create source:{git:…}`) for a single
-commit, an MCP server with a `$cred:` header for an API.
-
-For the Bashbox fallback, bind each credential to the one command that needs
-it: `LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS=git:GITHUB_TOKEN,gh:GH_TOKEN`
-hands `GITHUB_TOKEN` to `git` only. A bare name still reaches every
-allowlisted command. A binding does not stop the command from passing the
-value on: whatever it starts inherits it.
-
-**Per agent: `shell_credentials`.** The two lists above apply to every agent
-that holds `Bash` or `Bashbox`. An agent can keep only some of them:
-
-```yaml
-agents:
-  reviewer:
-    tools: [Read, Grep, Bash]
-    shell_credentials: []              # its shell gets none of them
-  releaser:
-    tools: [Bash, Bashbox]
-    shell_credentials: [GITHUB_TOKEN]  # only this one, where the operator lists it
-```
-
-Unset keeps every credential the operator lists, as before. The field only
-narrows: a name neither list contains keeps nothing (a boot warning says so),
-and a `git:GITHUB_TOKEN` binding still hands the credential to `git` alone. A
-sub-agent gets only the names both it and its parent allow, a resumed run gets
-back the narrowing it had, and a caller cannot change it per run. `Context
-op=self` lists, under `shell_credentials`, the names a run's shell receives
-(never a value), so an agent can tell why a variable is unset. A name the
-agent gives up reaches its shell from neither source: when
-`LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV` also admits a host variable of that
-name, the agent's host commands do not get it either, whatever command the
-credential is bound to, and `Context op=self` lists it under
-`bashbox_fallback_withheld_env`. Other host variables are the operator's own
-setting and are not affected. An agent written from inside a run may keep at
-most the names its author's shell keeps plus those of the version it forks;
-the operator's lists stay the ceiling either way. The field does not hide a
-credential the agent still receives, which its shell can print as before.
+No credential reaches a shell any more. A script in a workspace reaches an API through an egress route with a credential (`workspace.egress.routes`, or a tenant's `EgressRouteDef`): the core adds the credential to the request on the way out, and the workspace's session never holds it. For repository work, open a git workspace with the credential (`Workspace op=open repo=… credential="$cred:<name>"`), use the `Git` tool (see "In the Git tool" above), or a git-source volume for a single commit. [MIGRATING-FROM-BASH.md](MIGRATING-FROM-BASH.md#shell_credentials) maps each across, and [WORKSPACES.md](WORKSPACES.md) covers egress routes.
 
 ## Crypto keys and the `Crypto` tool
 
-A credential can also be a **crypto key** (`usage: crypto`): a key the `Crypto` tool uses to encrypt, decrypt, sign, verify, MAC or make one-time codes. Its material is never shown — not when it is generated, not to the agent that uses it, not in `get` or `list`. A crypto key is never sent anywhere either: `$cred:<name>` refuses it on every path (MCP headers, provider keys, Bash variables), and does not fall back to a same-named credential in a wider scope.
+A credential can also be a **crypto key** (`usage: crypto`): a key the `Crypto` tool uses to encrypt, decrypt, sign, verify, MAC or make one-time codes. Its material is never shown — not when it is generated, not to the agent that uses it, not in `get` or `list`. A crypto key is never sent anywhere either: `$cred:<name>` refuses it on every path (MCP headers, provider keys), and does not fall back to a same-named credential in a wider scope.
 
 ```yaml
 agents:

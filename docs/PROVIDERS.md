@@ -320,8 +320,8 @@ For sensitive data, name the geography you need; the `bedrock` preset never pick
 - **Restricted runs.** A run that may not use the operator's provider credentials (`providers:operator-key`) is refused before anything is signed. The AWS credentials are the operator's, as a host key is.
 - **A tenant's own key** overrides the operator's AWS credentials when it is stored as a credential named `AWS_BEARER_TOKEN_BEDROCK` (a Bedrock API key), and is billed to that tenant. A tenant's `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` is never sent to Bedrock.
 - **Service blocks.** A `memory.reranker`, `memory.unit_generator` or `decision:` block that points at another `base_url`, or names its own key, does not carry the provider's AWS auth there.
-- **Agents cannot fetch the credentials.** The HTTP and WebFetch tools refuse the instance metadata service and the ECS / EKS credential endpoints. While any provider uses `auth`, the bashbox-fallback, scheduler and webhook env allowlists may not name `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `AWS_CONTAINER_AUTHORIZATION_TOKEN` or `AWS_BEARER_TOKEN_BEDROCK`.
-- **Host commands can.** Bash and the Bashbox host fallback are not network-sandboxed, so on EC2 a host command can read the instance role's credentials. When loomcycle runs in a container, set the instance's IMDS hop limit to 1, and do not enable host commands where the role can reach sensitive data. `loomcycle doctor` warns about this combination.
+- **Agents cannot fetch the credentials.** The HTTP and WebFetch tools refuse the instance metadata service and the ECS / EKS credential endpoints. While any provider uses `auth`, the scheduler and webhook env allowlists may not name `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `AWS_CONTAINER_AUTHORIZATION_TOKEN` or `AWS_BEARER_TOKEN_BEDROCK`.
+- **Host commands can.** A workspace command on the `host` engine (`workspace.mode: local`) runs on the host as the loomcycle user and is not network-sandboxed, so on EC2 it can read the instance role's credentials. Use workspace workers on the `container` engine there, or set the instance's IMDS hop limit to 1 when loomcycle runs in a container. `loomcycle doctor` warns about this combination.
 
 ### Checking it
 
@@ -481,7 +481,6 @@ agents:
       - Read
       - Write
       - Edit
-      - Bash
       - Grep
       - Glob
       - Memory       # exposed via the mcp__loomcycle__memory wire name
@@ -491,7 +490,7 @@ agents:
     max_iterations: 64
 ```
 
-**All loomcycle tools are admissible under OAuth-dev.** The 10-tool Claude-Code canonical overlap (`Read`, `Write`, `Edit`, `Bash`, `Grep`, `Glob`, `NotebookEdit`, `WebFetch`, `WebSearch`, `Skill`) and any real MCP tool (`mcp__<server>__<tool>` from `mcp_servers:` yaml or `MCPServerDef` substrate) pass through unchanged. Loomcycle's substrate primitives (`Memory`, `Channel`, `Agent`, `AgentDef`, `SkillDef`, `MCPServerDef`, `Evaluation`, `Interruption`, `Context`, `HTTP`) are exposed under the `mcp__loomcycle__*` wire mask — to Anthropic's subscription-billing layer they look like tools from an MCP server registered as "loomcycle"; to the loomcycle dispatcher they continue to work exactly as today.
+**All loomcycle tools are admissible under OAuth-dev.** The Claude-Code canonical overlap (`Read`, `Write`, `Edit`, `Grep`, `Glob`, `NotebookEdit`, `WebFetch`, `WebSearch`, `Skill`; loomcycle's `Bash` was removed in v1.172.0) and any real MCP tool (`mcp__<server>__<tool>` from `mcp_servers:` yaml or `MCPServerDef` substrate) pass through unchanged. Loomcycle's substrate primitives (`Memory`, `Channel`, `Agent`, `AgentDef`, `SkillDef`, `MCPServerDef`, `Evaluation`, `Interruption`, `Context`, `HTTP`) are exposed under the `mcp__loomcycle__*` wire mask — to Anthropic's subscription-billing layer they look like tools from an MCP server registered as "loomcycle"; to the loomcycle dispatcher they continue to work exactly as today.
 
 ### Tier configuration (with API-key fallback)
 
