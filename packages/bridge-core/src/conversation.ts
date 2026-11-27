@@ -13,13 +13,25 @@ import { randomBytes } from "node:crypto";
 
 import type { AgentEvent, PromptContent, PromptSegment } from "@loomcycle/client";
 
-import { isButtonInput, optionLabels, VERB, type CanonicalCard, type CardAction, type CardButton, type CardInput } from "./cards.js";
+import {
+  isButtonInput,
+  MAX_OPTION_BUTTONS,
+  MAX_OPTIONS,
+  numberedOptions,
+  optionLabels,
+  pickOption,
+  VERB,
+  type CanonicalCard,
+  type CardAction,
+  type CardButton,
+  type CardInput,
+} from "./cards.js";
 import type { Health } from "./health.js";
 import { legacySubject, type RunAs, type Speaker } from "./identity.js";
 import type { PlatformCapabilities, PlatformInfo } from "./platform.js";
 import type { BridgePort, ClientFactory, Logger, RunClient } from "./ports.js";
 import { MessageSink, StreamSink, type MessageSinkOptions, type StreamSinkOptions, type TurnSink } from "./renderer.js";
-import type { ConversationRecord, ConversationStore } from "./store.js";
+import type { ConversationRecord, ConversationStore, StoredQuestion } from "./store.js";
 import { HELP_TEXT, parseCommand, VOICE_HELP_TEXT, type Command } from "./text.js";
 import { statusOf, type TokenSource } from "./tokens.js";
 import {
@@ -131,6 +143,25 @@ interface PendingQuestion {
   runId: string;
   interruptId: string;
   options: string[];
+  /** The question takes an answer outside its options (RFC HG). */
+  allowOther: boolean;
+}
+
+/** The longest answer of a person's own loomcycle takes (RFC HG §3.2). */
+export const MAX_OTHER_ANSWER_CHARS = 4000;
+
+/** What an owner hears when a typed reply is none of the options. */
+export function numberPromptText(n: number): string {
+  return `Please reply with a number from 1 to ${n}.`;
+}
+
+export const OTHER_ANSWER_TOO_LONG_TEXT = `That answer is too long. Please keep it under ${MAX_OTHER_ANSWER_CHARS} characters.`;
+
+/** allowsOther reads an Interruption's allow_other. A loomcycle older than
+ *  RFC HG P1 sends none, and the installed @loomcycle/client types none, so
+ *  it is read off the event as an unknown and only true counts. */
+function allowsOther(intr: object): boolean {
+  return (intr as { allow_other?: unknown }).allow_other === true;
 }
 
 /** friendlyError turns a failed run start into something a chat user can act on. */
@@ -174,8 +205,9 @@ export class Conversation<TRef> {
   private live?: Live;
   private sink?: TurnSink;
   private pending?: PendingQuestion;
-  /** The actions behind the buttons of the open card, by button id. A restart
-   *  ends the live run (see the header), so these need not outlive the process. */
+  /** The actions behind the buttons of the open card, by button id. A
+   *  question's are saved with it in the record (rec.question), so its card
+   *  still works after a restart (RFC HG §4.3); a review's are not. */
   private buttons = new Map<string, CardAction>();
   /** Untrusted messages that arrived mid-turn, delivered when the turn ends. */
   private deferred: string[] = [];
@@ -355,23 +387,35 @@ export class Conversation<TRef> {
    *  question, into the live run, or as a new run. voice is set when the text
    *  is a voice message's transcript. */
   private async deliver(speaker: Speaker, text: string, voice: TurnInput | undefined): Promise<void> {
+    await this.restoreQuestion();
     const isOwner = speaker.subject === this.rec.ownerSubject;
-    // A plain reply from the owner answers an open free-text question.
+    // A plain reply from the owner answers the open question.
     if (this.pending && isOwner && this.pending.runId === this.live?.runId) {
-      if (this.pending.options.length > 0) {
-        await this.say("Please choose one of the options on the card above.");
-        return;
-      }
-      // An answer reaches the agent as the question's result, not as an
-      // untrusted block, so an untrusted speaker cannot type one.
-      if (speaker.trust === "untrusted") {
-        await this.say(UNTRUSTED_TYPED_ANSWER_TEXT);
-        return;
-      }
       const p = this.pending;
-      this.pending = undefined;
-      this.buttons.clear();
-      await this.resolve(p, text, speaker.subject);
+      // A pick by number or by an option's text is an answer the agent
+      // offered, as a drawn button is, so an untrusted speaker may make it.
+      let answer = p.options.length > 0 ? pickOption(text, p.options) : undefined;
+      if (answer === undefined) {
+        if (p.options.length > 0 && !p.allowOther) {
+          await this.say(numberPromptText(p.options.length));
+          return;
+        }
+        // An answer of their own reaches the agent as the question's
+        // result, not as an untrusted block, so an untrusted speaker cannot
+        // type one.
+        if (speaker.trust === "untrusted") {
+          await this.say(UNTRUSTED_TYPED_ANSWER_TEXT);
+          return;
+        }
+        // loomcycle caps an "other" answer; a free-text question has no cap.
+        if (p.options.length > 0 && text.length > MAX_OTHER_ANSWER_CHARS) {
+          await this.say(OTHER_ANSWER_TOO_LONG_TEXT);
+          return;
+        }
+        answer = text;
+      }
+      this.clearQuestion();
+      await this.resolve(p, answer, speaker.subject);
       await this.save();
       return;
     }
@@ -538,14 +582,17 @@ export class Conversation<TRef> {
       live.markStarted();
       if (this.live === live) {
         this.live = undefined;
-        this.pending = undefined;
-        this.buttons.clear();
+        // A lost run may still wait on its question: the saved one stays, and
+        // the next message checks it against the run as after a restart.
+        const saved = this.rec.question;
+        this.clearQuestion();
         await this.finishTurn().catch(() => undefined);
         // A run that ended rather than parked: its last turn is spoken too.
         if (!live.abort.signal.aborted) this.speakTurn();
         if (lost) {
           this.rec.runId = live.runId;
           this.rec.agentId = live.agentId;
+          this.rec.question = saved;
         } else {
           this.rec.runId = undefined;
           this.rec.agentId = undefined;
@@ -636,13 +683,16 @@ export class Conversation<TRef> {
         if (!intr || !live.runId) return;
         await this.finishTurn();
         const options = optionLabels(intr.options);
+        const allowOther = options.length > 0 && allowsOther(intr);
         const runId = live.runId;
         const interruptId = intr.interrupt_id;
-        this.pending = { runId, interruptId, options };
+        this.pending = { runId, interruptId, options, allowOther };
         const base = { runId, interruptId };
+        // Buttons for the first options only; every option is numbered in
+        // the card's text and answered by its number (RFC HG D4).
         const buttons = this.drawButtons([
           ...(options.length > 0
-            ? options.map((o) => ({ label: o, action: { verb: VERB.answer, ...base, answer: o } }))
+            ? options.slice(0, MAX_OPTION_BUTTONS).map((o) => ({ label: o, action: { verb: VERB.answer, ...base, answer: o } }))
             : [{ label: "Send", action: { verb: VERB.answer, ...base } }]),
           { label: "Decline", action: { verb: VERB.decline, ...base } },
         ]);
@@ -652,10 +702,20 @@ export class Conversation<TRef> {
           interruptId,
           question: intr.question ?? "",
           context:
-            this.rec.scope === "personal" ? intr.context : [intr.context, `Only ${this.ownerLabel()} can answer.`].filter(Boolean).join("\n\n"),
+            [
+              intr.context,
+              numberedOptions(options, allowOther),
+              this.rec.scope === "personal" ? "" : `Only ${this.ownerLabel()} can answer.`,
+            ]
+              .filter(Boolean)
+              .join("\n\n") || undefined,
           options,
           buttons,
         };
+        // Saved before the card goes out: a card a restart could not answer
+        // is the failure this record exists for.
+        this.rec.question = { ...this.pending, options: [...options], buttons: Object.fromEntries(this.buttons) };
+        await this.save();
         await this.deps.port.send(this.rec.ref, { type: "message", card });
         return;
       }
@@ -719,6 +779,13 @@ export class Conversation<TRef> {
     if (speaker.subject !== this.rec.ownerSubject) {
       return { message: `Only ${this.ownerLabel()} can answer this.` };
     }
+    try {
+      await this.restoreQuestion();
+    } catch (err) {
+      // No token for the check: the question stays saved for the next try.
+      this.deps.log.error("card action failed", { conversation: this.rec.conversationId, status: statusOf(err) });
+      return { message: "Could not reach the agent. Please try again." };
+    }
     const action = this.actionOf(input, speaker);
     if (!action || !this.live?.runId || action.runId !== this.live.runId) {
       return { card: resultCard("This is no longer open.") };
@@ -731,15 +798,13 @@ export class Conversation<TRef> {
         case VERB.answer: {
           if (!action.interruptId) return { card: resultCard("This is no longer open.") };
           if (!action.answer) return { message: speaker.trust === "untrusted" ? UNTRUSTED_TYPED_ANSWER_TEXT : "Type an answer first." };
-          this.pending = undefined;
-          this.buttons.clear();
+          this.clearQuestion();
           await client.resolveInterrupt(runId, action.interruptId, { answer: action.answer, resolvedBy: speaker.subject });
           return { card: resultCard(`Answered: ${action.answer}`) };
         }
         case VERB.decline:
           if (!action.interruptId) return { card: resultCard("This is no longer open.") };
-          this.pending = undefined;
-          this.buttons.clear();
+          this.clearQuestion();
           await client.cancelInterrupt(runId, action.interruptId, { resolvedBy: speaker.subject });
           return { card: resultCard("Declined.") };
         case VERB.approve:
@@ -759,6 +824,50 @@ export class Conversation<TRef> {
     } finally {
       await this.save().catch(() => undefined);
     }
+  }
+
+  /** clearQuestion forgets the open question, in memory and in the record
+   *  (saved with the record's next write). */
+  private clearQuestion(): void {
+    this.pending = undefined;
+    this.buttons.clear();
+    this.rec.question = undefined;
+  }
+
+  /** restoreQuestion takes back a question a restart (or a lost stream) left
+   *  open (RFC HG §4.3), on the first message or card action after it. The
+   *  saved question is checked against the run: still pending, its buttons
+   *  and typed answers work again, and the run's stream is re-attached to
+   *  show what it says once answered; gone, it is forgotten, and the message
+   *  goes on as an ordinary one. A failed check forgets it too: the message
+   *  then continues the session in a new run, as it did before questions
+   *  were saved. */
+  private async restoreQuestion(): Promise<void> {
+    const q = this.rec.question;
+    if (!q || this.live) return;
+    const conversation = this.rec.conversationId;
+    const forget = async (reason: string, status?: number) => {
+      this.deps.log.info("question: the saved question is not restored", { conversation, reason, ...(status ? { status } : {}) });
+      this.rec.question = undefined;
+      await this.save();
+    };
+    if (!isStoredQuestion(q) || q.runId !== this.rec.runId) return forget("record");
+    const client = await this.runClient();
+    if (!client.listRunInterrupts || !client.streamRunByID) return forget("client");
+    let open: boolean;
+    try {
+      const res = await client.listRunInterrupts(q.runId, { status: "pending" });
+      open = (res.interrupts ?? []).some((i) => i.interrupt_id === q.interruptId && (i.status ?? "pending") === "pending");
+    } catch (err) {
+      return forget("check_failed", statusOf(err));
+    }
+    if (!open) return forget("gone");
+    const live: Live = { abort: new AbortController(), runId: q.runId, agentId: this.rec.agentId, parked: false, started: Promise.resolve(), markStarted: () => undefined };
+    this.live = live;
+    this.pending = { runId: q.runId, interruptId: q.interruptId, options: [...q.options], allowOther: q.allowOther };
+    this.buttons = new Map(Object.entries(q.buttons));
+    this.deps.log.info("question: restored the saved question", { conversation, run: q.runId });
+    void this.pump(afterQuestion(client.streamRunByID(q.runId, { signal: live.abort.signal }), q.interruptId), live);
   }
 
   private async resolve(p: PendingQuestion, answer: string, by: string): Promise<void> {
@@ -1010,6 +1119,7 @@ export class Conversation<TRef> {
     // block, which a live run's input cannot carry; neither can its files.
     if (speaker.trust === "untrusted") return refuseAll(FILE_TEXT.unavailable, "untrusted", true);
     // The text would answer the open question; the person sends both again.
+    await this.restoreQuestion();
     if (this.pending && this.pending.runId === this.live?.runId) return refuseAll(FILE_TEXT.answerFirst, "question_open", false);
 
     const client = await this.runClient();
@@ -1201,8 +1311,7 @@ export class Conversation<TRef> {
   private dropLive(): void {
     this.live?.abort.abort();
     this.live = undefined;
-    this.pending = undefined;
-    this.buttons.clear();
+    this.clearQuestion();
     this.rec.runId = undefined;
     this.rec.agentId = undefined;
   }
@@ -1218,6 +1327,39 @@ export class Conversation<TRef> {
     }
     await this.save();
   }
+}
+
+/** afterQuestion is a re-attached run's stream from just after the question
+ *  it waits on. The re-attach replays the whole run first, which the chat
+ *  has already seen, so everything up to that question's own
+ *  interruption_pending is dropped, but for the frames that name the run. */
+export async function* afterQuestion(events: AsyncIterable<AgentEvent>, interruptId: string): AsyncIterable<AgentEvent> {
+  let past = false;
+  for await (const ev of events) {
+    if (past || ev.type === "agent" || ev.type === "session") yield ev;
+    else if (ev.type === "interruption_pending" && ev.interruption?.interrupt_id === interruptId) past = true;
+  }
+}
+
+/** isStoredQuestion checks a question read back from the store before it is
+ *  trusted to draw buttons: the file is the operator's, but a hand edit or
+ *  a record from another version must not become a card action. */
+export function isStoredQuestion(q: unknown): q is StoredQuestion {
+  const r = q as Partial<StoredQuestion> | null;
+  if (!r || typeof r !== "object" || typeof r.runId !== "string" || typeof r.interruptId !== "string" || typeof r.allowOther !== "boolean") return false;
+  if (!Array.isArray(r.options) || r.options.length > MAX_OPTIONS || !r.options.every((o) => typeof o === "string")) return false;
+  if (!r.buttons || typeof r.buttons !== "object" || Array.isArray(r.buttons)) return false;
+  const actions = Object.values(r.buttons);
+  if (actions.length > MAX_OPTION_BUTTONS + 1) return false;
+  return actions.every(
+    (a) =>
+      !!a &&
+      typeof a === "object" &&
+      (a.verb === VERB.answer || a.verb === VERB.decline) &&
+      a.runId === r.runId &&
+      a.interruptId === r.interruptId &&
+      (a.answer === undefined || (typeof a.answer === "string" && r.options!.includes(a.answer))),
+  );
 }
 
 function isVoiceSetting(c: Command | undefined): boolean {

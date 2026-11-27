@@ -302,6 +302,29 @@ describe("cards", () => {
     expect(body.content!.length).toBeLessThanOrEqual(2000);
   });
 
+  /** numbered is the context bridge-core writes for a question's options (RFC HG). */
+  const numbered = (options: string[]) => `${options.map((o, i) => `${i + 1}. ${o}`).join("\n")}\n\nReply with a number, or tap a button.`;
+  const eight = ["o1", "o2", "o3", "o4", "o5", "o6", "o7", "o8"];
+
+  it("shows all eight numbered options and buttons for the six the core drew, then Decline, in rows of five", () => {
+    const body = renderCard({ ...question(eight.slice(0, 6)), options: eight, context: numbered(eight) } as CanonicalCard);
+    for (const [i, o] of eight.entries()) expect(body.content).toContain(`${i + 1}. ${o}`);
+    expect(body.components!.map((r) => r.components.length)).toEqual([5, 2]);
+    expect(body.components!.flatMap((r) => r.components.map((b) => b.label))).toEqual([...eight.slice(0, 6), "Decline"]);
+  });
+
+  it("cuts a long question, not the numbered options after it", () => {
+    const body = renderCard({ ...question(eight.slice(0, 6)), options: eight, question: "q".repeat(5000), context: numbered(eight) } as CanonicalCard);
+    expect(body.content!.length).toBeLessThanOrEqual(2000);
+    expect(body.content).toContain("8. o8\n\nReply with a number, or tap a button.");
+  });
+
+  it("breaks a masked link in a numbered option", () => {
+    const options = ["[safe](https://evil.example/x)", "no"];
+    const body = renderCard({ ...question(options), context: numbered(options) } as CanonicalCard);
+    expect(body.content).toContain("1. safe (<https://evil.example/x>)");
+  });
+
   it("renders a review as Approve and Send back, and a result with no buttons", () => {
     const review = renderCard({ kind: "review", runId: "r1", round: 2, buttons: [btn("a", "Approve", VERB.approve), btn("r", "Send back", VERB.reject)] });
     expect(review.components![0].components.map((b) => [b.label, b.style])).toEqual([
