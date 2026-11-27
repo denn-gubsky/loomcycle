@@ -106,6 +106,12 @@ type ontologyResponse struct {
 	// OntologyVersion it changes only when an entry does, not on a proposal, a review
 	// rule or a reorder. Absent when the document could not be read whole.
 	ContentVersion string `json:"content_version,omitempty"`
+	// FactContent and StatementContent split the tenant scope's facts and statements by
+	// the content version they were written under: the current one, another, or none
+	// recorded (RFC GQ P3.2). Filled beside FactVersions and StatementVersions, and only
+	// when ContentVersion is known.
+	FactContent      *builtin.ContentCount `json:"fact_content,omitempty"`
+	StatementContent *builtin.ContentCount `json:"statement_content,omitempty"`
 	// UndeclaredTypes are chunks.type values in use in the TENANT scope that no class
 	// declares (structural types excluded), with counts — what an operator would declare
 	// or map with @renamed_from. Tenant scope only: user scopes are per person and are
@@ -252,6 +258,22 @@ func (s *Server) handleOntologySetStatus(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// RELEASES (RFC GQ P3.3, owner ruling Q2). Before a confirm, a catch_up release when
+	// the content version in force has none — direct edits since the last release are
+	// recorded as what they are rather than folded into this confirm. After a confirm that
+	// flips the ontology, a confirm release. A re-confirm of a confirmed ontology takes
+	// only the catch_up: a confirm release then would copy the same ontology twice.
+	// Records, never gates: a failure is a note and the confirm stands.
+	var releaseNotes []string
+	confirming := status == meminject.OntologyConfirmedStatus
+	if confirming {
+		if _, _, rerr := doc.CatchUpOntologyRelease(dctx); rerr != nil {
+			slog.Warn("ontology: catch_up release before a confirm failed", "tenant", tenant, "err", rerr)
+			releaseNotes = append(releaseNotes, "No release was taken of the ontology before this confirm.")
+		}
+	}
+	flipped := false
+
 	// NO WRITE WHEN NOTHING CHANGES. Confirming an already-confirmed ontology is how an
 	// operator re-applies its concept tags and instances; rewriting the same status would
 	// bump the root's revision — the ontology_version every fact and statement is
@@ -279,6 +301,7 @@ func (s *Server) handleOntologySetStatus(w http.ResponseWriter, r *http.Request)
 			writeJSONError(w, http.StatusInternalServerError, "ontology_write_failed", msg)
 			return
 		}
+		flipped = true
 	}
 
 	// Confirming applies the Schemes section: every concept chunk gets its mirror tag
@@ -313,6 +336,14 @@ func (s *Server) handleOntologySetStatus(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
+	// After the mirror, focus and adoption, so the release holds what the confirm left.
+	if confirming && flipped {
+		if _, rerr := doc.TakeOntologyRelease(dctx, builtin.OntologyReleaseConfirm, nil); rerr != nil {
+			slog.Warn("ontology: confirm release failed", "tenant", tenant, "err", rerr)
+			releaseNotes = append(releaseNotes, "The ontology is confirmed, but no release of it was taken.")
+		}
+	}
+
 	// Re-read rather than synthesizing the new state: the response then shows the
 	// EFFECTIVE ontology after the flip, which is what the operator wanted to know.
 	resp, err := s.ontologyState(r.Context(), tenant)
@@ -326,6 +357,7 @@ func (s *Server) handleOntologySetStatus(w http.ResponseWriter, r *http.Request)
 	if mirrorNote != "" {
 		resp.Notes = append(resp.Notes, mirrorNote)
 	}
+	resp.Notes = append(resp.Notes, releaseNotes...)
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -437,6 +469,14 @@ func (s *Server) ontologyState(ctx context.Context, tenant string) (ontologyResp
 			resp.FactVersions = usage.Versions
 			if hasRelations {
 				resp.StatementVersions = usage.StatementVersions
+			}
+			if resp.ContentVersion != "" {
+				if cu, cerr := doc.OntologyContentUsageIn(dctx, "tenant", resp.ContentVersion); cerr == nil {
+					resp.FactContent = &cu.Facts
+					if hasRelations {
+						resp.StatementContent = &cu.Statements
+					}
+				}
 			}
 			// A type that is a class's former name (@renamed_from) is declared: that is
 			// the mapping this list tells the operator to write.

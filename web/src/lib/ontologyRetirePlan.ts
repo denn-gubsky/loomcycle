@@ -20,6 +20,8 @@ export interface OntologyPlannedChange {
   counts: Record<string, OntologyPlanCount>;
   subtree?: { chunk_id: string; name: string; kind: string }[];
   notes?: string[];
+  /** The release a rollback plans toward (op release); absent otherwise. */
+  release?: number;
 }
 
 export interface OntologyPlanResult {
@@ -27,6 +29,8 @@ export interface OntologyPlanResult {
   changes: OntologyPlannedChange[];
   complete: boolean;
   scopes_skipped?: number;
+  /** Advisories of the ontology after every change that it does not report now. */
+  new_issues?: string[];
 }
 
 // retireConfirmText is the confirmation the operator reads before the retire: the

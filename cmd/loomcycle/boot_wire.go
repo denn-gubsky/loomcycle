@@ -205,7 +205,13 @@ func (b *boot) wireCredentials() {
 		// limits and slots; push has its own host list and a resolver whose
 		// $ghapp: tokens may write.
 		gitTool.Source = gitSource
+		// RFC GW P11: a git workspace's open is a fetch, held to the same
+		// hosts, bounds, slots and read resolver.
+		b.workspaceTool.GitSource = gitSource
 		gitTool.PushCredential = builtin.GitPushCredentialResolver(credEngine, ghAppMinter.TokenForRepositoryWrite, registerSecret)
+		// A git workspace's push: the same push hosts and resolver.
+		b.workspaceTool.GitPushHosts = gitTool.PushHosts
+		b.workspaceTool.GitPushCredential = gitTool.PushCredential
 		if len(gitTool.PushHosts) > 0 {
 			pushHosts := strings.Join(gitTool.PushHosts, ", ")
 			slog.Info(fmt.Sprintf("git: push enabled for %s (max %d MiB per push)", pushHosts, gitTool.PushMaxBytes>>20),
@@ -287,6 +293,8 @@ func (b *boot) bindStoreToTools() {
 	// document id first, so the rename cannot lose track of it (RFC FY Part C).
 	pathTool.Identities = documentTool
 	pathTool.Annotations = documentTool
+	// ls with_counts and the listing filters read the documents' metadata (RFC HA).
+	pathTool.Documents = documentTool
 	documentTool.Store = storeIface
 	// Document op=search runs the SAME backend instance as the Memory tool, so a
 	// document search and a memory search over the same chunks rank them alike.
@@ -313,10 +321,21 @@ func (b *boot) bindStoreToTools() {
 			MaxPerRun: ws.MaxPerRun, MaxPerTenant: ws.MaxPerTenant, LostAfter: time.Duration(ws.LostAfterS) * time.Second,
 			DiskQuotaBytes: ws.DiskQuotaMB << 20, CopyMaxFiles: ws.Copy.MaxFiles, CopyMaxBytes: ws.Copy.MaxBytes,
 			CheckoutMaxDocuments: ws.Checkout.MaxDocuments, CheckoutMaxBytes: ws.Checkout.MaxBytes, MaxCheckpoints: ws.Checkpoint.MaxPerWorkspace,
+			TemplateMaxBytes: ws.Template.MaxMB << 20, MaxTemplates: ws.Template.MaxPerTenant, MaxTemplatesPerUser: ws.Template.MaxPerUser,
 			ConvertQuarantine: time.Duration(b.cfg.Conversion.Resolved().QuarantineTTLS) * time.Second,
 		}, slog.Default())
+		// RFC GW §5.5: template archives rest under the data directory.
+		b.workspaces.SetTemplateDir(b.cfg.WorkspaceTemplateDir())
 		b.workspaces.SetExpose(lifecycle.ExposeLimits{Enabled: ws.Expose.Enabled, MaxPerWorkspace: ws.Expose.MaxPerWorkspace,
 			IdleTimeout: time.Duration(ws.Expose.IdleTimeoutS) * time.Second})
+		// RFC GW P12: durable workspaces, off unless the operator turns them on.
+		b.workspaces.SetDurable(lifecycle.DurableLimits{Enabled: ws.Durable.Enabled, MaxPerUser: ws.Durable.MaxPerUser})
+		// RFC GW P11: a git fork's branch is held to workspace.push.
+		b.workspaces.SetGitPush(ws.Push)
+		// A fetch may not take a mirror past workspace.git.mirror_max_mb.
+		b.workspaces.SetGitMirrorMax(ws.Git.MirrorMaxMB << 20)
+		// A run is told when one of its pages goes (RFC GW D24).
+		b.workspaces.SetSurfaceNotifier(builtin.SurfaceNotifier(storeIface))
 		b.workspaceTool.Manager = b.workspaces
 		b.wireWorkspaceEgress()
 		// File reaches workspaces by reference (RFC GW P2) through the same
@@ -348,7 +367,10 @@ func (b *boot) wireWorkspaceEgress() {
 	}
 	// PyPI's file links go to the operator's file-host route whether a
 	// workspace holds it or not, so its absence is refused by name (O34).
-	opt.PyPIFilesRoute = egress.PyPIFilesRoute(lifecycle.OperatorRoutes(eg.Routes))
+	// The same for the crates index's download host (RFC GW P11).
+	operatorRoutes := lifecycle.OperatorRoutes(eg.Routes)
+	opt.PyPIFilesRoute = egress.PyPIFilesRoute(operatorRoutes)
+	opt.CratesDLRoute = egress.CratesDLRoute(operatorRoutes)
 	proxy, err := egress.New(opt)
 	if err != nil {
 		fatal("workspace: cannot build the egress proxy", "err", err)
@@ -361,6 +383,15 @@ func (b *boot) wireWorkspaceEgress() {
 		b.workspaces.SetTenantRoutes(b.storeIface, eg.TenantHosts)
 	}
 	b.workspace.SetEgress(b.workspaces.Egress)
+	// Git workspaces reach their forge through the core too (RFC GW §6.1,
+	// P11): the same dial guard, and a request goes out only under a live
+	// ticket of the git op that asked for it.
+	gitProxy, err := egress.NewGitProxy(egress.GitOptions{PrivateHostAllowlist: b.cfg.Env.HTTPPrivateHostAllowlist})
+	if err != nil {
+		fatal("workspace: cannot build the git proxy", "err", err)
+	}
+	b.workspaces.SetGitProxy(gitProxy)
+	b.workspace.SetGitEgress(b.workspaces.GitEgress)
 	if n := len(eg.Routes); n > 0 {
 		slog.Info("workspace: egress routes", "routes", n)
 	}

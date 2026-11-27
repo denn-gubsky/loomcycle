@@ -1,19 +1,23 @@
 # exp1 — tool access (write → save → run → verify)
 
 A single coding agent (`code-guru`) exercises loomcycle's **built-in tools**
-(`Read`/`Write`/`Edit`/`Bash`/`Grep`/`Glob`/`WebSearch`/`WebFetch`), all scoped to
-`./work`. You ask it to write a program, it saves the file, runs it, reads the
+(`Read`/`Write`/`Edit`/`Grep`/`Glob`/`WebSearch`/`WebFetch`), all scoped to
+`./work`, and runs commands in a workspace (`Workspace`, RFC GW) on the local
+worker the runtime starts itself (`workspace.mode: local`). You ask it to write a program, it saves the file, runs it, reads the
 output back, and reports a PASS/FAIL verdict — the end-to-end "operator enables
 tools → agent uses them → result is independently verifiable" loop.
 
 This is the simplest example: one agent, no channels/MCP/webhooks. Start here.
 
 ## What it demonstrates
-- Operator tool-enablement (env roots + `LOOMCYCLE_BASH_ENABLED`) ∩ the agent's
-  `tools` anchored allowlist.
-- The sandbox path model: `Read`/`Write` resolve relative paths against the process
-  CWD; `run.sh` launches from `./work`, so the Write base, Bash CWD, and the
-  read/write roots all line up (no surprises).
+- Operator tool-enablement (the `default` volume and `workspace.mode`) ∩ the
+  agent's `tools` allowlist and its `workspace` grant.
+- The path model: `Read`/`Write` resolve relative paths against the `default`
+  volume (`./work`); the agent copies a file into its workspace with `File
+  op=copy`, runs it with `Workspace op=exec`, and copies results back.
+- Local mode runs commands as your own user with no isolation: run it on your
+  own machine. This example used the `Bash` tool until RFC GW P14; Bash is
+  deprecated, see `docs/MIGRATING-FROM-BASH.md`.
 - Provider routing with fallback: **Anthropic OAuth (sonnet) → deepseek-v4-pro**.
 
 ## Prerequisites
@@ -57,7 +61,7 @@ JSON
   -H 'Content-Type: application/json' -d @/tmp/exp1.json
 ```
 Expect SSE events: `session → agent → started → text/tool_call/tool_result… → usage → done`.
-The tool calls should include `Bash` and `Write`; `done` reports the resolved
+The tool calls should include `Write`, `File` (copy) and `Workspace` (exec); `done` reports the resolved
 `provider` (`anthropic-oauth-dev` or `deepseek`) and `model`.
 
 ## Verify independently (don't trust the agent's report)

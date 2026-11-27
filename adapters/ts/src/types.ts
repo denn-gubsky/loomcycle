@@ -64,6 +64,11 @@ export type EventType =
   // the source, the engine, the units and tokens spent and the cost, never the
   // text. The payload rides `AgentEvent.transcription`.
   | "transcription"
+  // A page the run exposed from its workspace (RFC GW D24), and its close
+  // (unexposed, released, idle or lost). On the run's own stream only. The payload
+  // rides `AgentEvent.surface`.
+  | "surface"
+  | "surface_closed"
   // RFC DC per-run overrides. `override` = a server-generated notice that the
   // RUN's own configuration changed while it was running, because an operator
   // retuned it. Distinct from a provider fallback on purpose: a fallback means
@@ -761,6 +766,24 @@ export interface FileCapturedInfo {
   run_id?: string;
 }
 
+/** Payload on `event: surface` / `event: surface_closed` (RFC GW D24): a page
+ *  the run exposed from its workspace. Never a bearer, a ticket or a host path;
+ *  open it with the caller's own credential under `base_path`. */
+export interface SurfaceInfo {
+  exposure_id: string;
+  /** On `surface`: the workspace's name in its run. */
+  workspace?: string;
+  title?: string;
+  /** `page` or `panel`: how the chat shows it. */
+  kind?: string;
+  /** The exposure route's prefix the page is served under. */
+  base_path?: string;
+  /** The idle deadline when told (RFC 3339); every use moves it on. */
+  expires_at?: string;
+  /** On `surface_closed`: `unexposed`, `released`, `idle` or `lost` (its worker went away). */
+  reason?: string;
+}
+
 /** Payload on `event: transcription`: one OCR or speech-to-text pass a File
  *  tool call made over an inbox file. Never the transcribed text. */
 export interface TranscriptionInfo {
@@ -1039,6 +1062,9 @@ export interface AgentEvent {
   /** Payload on `event: transcription` — one OCR or speech-to-text pass a
    *  File tool call made. Nil on all other event types. */
   transcription?: TranscriptionInfo;
+  /** Payload on `event: surface` / `event: surface_closed` — a page the run
+   *  exposed from its workspace. Nil on all other event types. */
+  surface?: SurfaceInfo;
   /** Payload on `event: queued` (why the run waits, and its place) and
    *  `event: admitted` (how long it waited), and on `event: call_queued` /
    *  `event: call_admitted` (the same for one model call, with its provider
@@ -2346,13 +2372,16 @@ export interface BindSubjectPrincipalResult {
 
 /** One change {@link LoomcycleClient.planOntology} is asked about: a direct
  *  change of an entry, or an open proposal by its chunk id. */
-export type OntologyChange = OntologyEntryChange | OntologyProposalChange;
+export type OntologyChange = OntologyEntryChange | OntologyProposalChange | OntologyReleaseChange;
 
 /** A direct change. `entry` is an in-force entry of the tenant ontology by its
- *  chunk id. */
+ *  chunk id; for `unretire` a retired one; for `add` a chunk id of release
+ *  `seq` that is not in force now (RFC GQ P5.7). */
 export interface OntologyEntryChange {
-  op: "retire" | "rename" | "move" | "edit" | "delete";
+  op: "retire" | "unretire" | "rename" | "move" | "edit" | "delete" | "add";
   entry: string;
+  /** add: the release the entry is added back from. */
+  seq?: number;
   /** rename: the new name, one line. */
   name?: string;
   /** move: the new parent's chunk id (an entry of the same section, or the section). */
@@ -2368,6 +2397,15 @@ export interface OntologyEntryChange {
 export interface OntologyProposalChange {
   op: "proposal";
   id: string;
+}
+
+/** Rolling the ontology back to release `seq` (RFC GQ P5.7), the request's only
+ *  change: the plan lists the direct changes that make the ontology declare what
+ *  the release declared, each carrying `release`. Apply it with
+ *  {@link LoomcycleClient.rollbackOntology} and the plan's fingerprint. */
+export interface OntologyReleaseChange {
+  op: "release";
+  seq: number;
 }
 
 /** An entry of the ontology as a plan names it. */
@@ -2406,6 +2444,138 @@ export interface OntologyPlannedChange {
   /** The proposal's chunk id when the change is one accepting it makes;
    *  absent for a direct change. */
   proposal?: string;
+  /** What the ontology job the change would start would do: the class-rename
+   *  job for a rename of a class something rests on, the concept re-tag job
+   *  for a change that moves a concept's or scheme's tag (`job.kind` says
+   *  which); absent for every other change. */
+  job?: OntologyRenameJobPlan;
+  /** The release a rollback plans toward (op `release`), on every change it
+   *  expands to; absent otherwise. */
+  release?: number;
+}
+
+/** One write a rollback made. */
+export interface OntologyRollbackStep {
+  op: string;
+  /** The entry's chunk id. */
+  entry: string;
+  name: string;
+  /** add: the chunk the entry was added back as. */
+  new_id?: string;
+}
+
+/** What rolling the ontology back to a release did. */
+export interface OntologyRollbackReport {
+  release: number;
+  /** What the release declared, and what the ontology in force declares now. */
+  release_content_version: string;
+  content_version: string;
+  /** Whether the two are equal: not after an entry was added back under a new
+   *  chunk id, or a class renamed through the rename job kept `@renamed_from`. */
+  matches: boolean;
+  risk: "destroys" | "stales" | "none";
+  applied: OntologyRollbackStep[];
+  /** The class-rename jobs the rollback's renames started. */
+  rename_jobs?: OntologyJobStatus[];
+  /** The release taken of the ontology the rollback left. */
+  rollback_release?: number;
+  notes?: string[];
+  warnings?: string[];
+}
+
+/** Result of {@link LoomcycleClient.rollbackOntology}. */
+export interface ApplyOntologyRollbackResult {
+  tenant: string;
+  rollback: OntologyRollbackReport;
+}
+
+/** The class-rename job a rename would start (RFC GQ P5): the rows each step
+ *  rewrites, whether it can run now, and the stored keys that would collide
+ *  under the new name. `blocked` says why the rename is refused
+ *  (`rename_job_pending`); collisions refuse it too
+ *  (`rename_identity_collision`). */
+export interface OntologyRenameJobPlan {
+  steps: OntologyRenameJobStep[];
+  runnable: boolean;
+  blocked?: string[];
+  /** The tenant scope's first five colliding keys. */
+  collisions?: OntologyRenameCollision[];
+  collisions_total: number;
+  /** The part of `collisions_total` in user and agent scopes, counted and
+   *  never listed. */
+  collisions_other_scopes?: number;
+  /** The user and agent scopes the plan could not count. */
+  scopes_not_counted: number;
+  /** The tenant's unfinished job, when one exists: a second rename waits for it. */
+  running?: OntologyJobStatus;
+  notes?: string[];
+  /** The job's kind. */
+  kind?: "class_rename" | "concept_retag";
+  /** `concept_retag`: the tags the change moves, the topmost only; every tag
+   *  equal to `from`, or under it, becomes `to` with the same rest. */
+  tag_moves?: OntologyTagMove[];
+}
+
+/** One tag a concept re-tag job moves. */
+export interface OntologyTagMove {
+  from: string;
+  to: string;
+}
+
+/** One step of the rename job: the stored rows under the old name. */
+export interface OntologyRenameJobStep {
+  name: string;
+  tenant_scope: number;
+  other_scopes?: number;
+}
+
+/** A stored key the rename would turn into a key another row already holds. */
+export interface OntologyRenameCollision {
+  column: "identity_key" | "natural_key";
+  key: string;
+  into: string;
+  holder: string;
+}
+
+/** A job carrying an ontology change through the stored rows of the tenant
+ *  scope and every user and agent scope (RFC GQ P5): a class rename or a
+ *  concept re-tag. */
+export interface OntologyJobStatus {
+  id: string;
+  kind: "class_rename" | "concept_retag";
+  /** The renamed or moved entry's chunk id. */
+  entry: string;
+  /** The old names (a class rename) or the old tags (a re-tag). */
+  from: string[];
+  /** The new name; for a re-tag the new tags joined by ", ". */
+  to: string;
+  /** A re-tag's new tags, index-aligned with `from`. */
+  to_tags?: string[];
+  state: "pending" | "running" | "blocked" | "done" | "abandoned";
+  /** The step it is at; absent once done. */
+  step?: string;
+  /** Rows rewritten so far, by step. */
+  done?: Record<string, number>;
+  /** Why a blocked job cannot go on. */
+  error?: string;
+  /** Rows still under an old name in the scope the job is at. */
+  remaining: number;
+  /** The kind of scope the job is at. */
+  scope?: "tenant" | "user" | "agent";
+  scopes_done?: number;
+  /** The scopes the job walks; set by the status read and the resume. */
+  scopes_total?: number;
+  /** Unix nanoseconds; set by the status read and the resume. */
+  created_at?: number;
+  updated_at?: number;
+}
+
+/** Result of {@link LoomcycleClient.getOntologyJob} and
+ *  {@link LoomcycleClient.resumeOntologyJob}: the unfinished job, else the one
+ *  updated last; `null` when the tenant never had one (the status read only). */
+export interface OntologyJobResult {
+  tenant: string;
+  job: OntologyJobStatus | null;
 }
 
 /** Result of {@link LoomcycleClient.planOntology}. It wrote nothing. */
@@ -2428,6 +2598,96 @@ export interface PlanOntologyResult {
   /** False when some user or agent scope was not counted; the other-scope
    *  counts are then a floor. */
   complete: boolean;
+}
+
+/** The header of one complete release of the tenant ontology: a copy taken
+ *  when it was confirmed (`confirm`), when an accepted change was applied
+ *  (`apply`) or rolled back (`rollback`), or before either when the ontology
+ *  had moved without one (`catch_up`). */
+export interface OntologyRelease {
+  seq: number;
+  /** What the ontology declared then, as stamped on the rows written under it. */
+  content_version: string;
+  /** The plan fingerprint it had. */
+  fingerprint: string;
+  reason: "confirm" | "apply" | "rollback" | "catch_up";
+  /** The user who took it; absent when none was known. */
+  actor?: string;
+  /** Unix nanoseconds. */
+  created_at: number;
+  /** How many chunks of the ontology document it copied. */
+  entries: number;
+  /** A subject erasure changed the release (an entry or its plan summary); its
+   *  content_version stays as recorded, so its copy no longer hashes to it. */
+  redacted?: boolean;
+}
+
+/** Result of {@link LoomcycleClient.listOntologyReleases}: every complete
+ *  release kept (the newest 50), newest first. */
+export interface ListOntologyReleasesResult {
+  tenant: string;
+  releases: OntologyRelease[];
+}
+
+/** Result of {@link LoomcycleClient.getOntologyRelease}. */
+export interface GetOntologyReleaseResult {
+  tenant: string;
+  release: OntologyRelease;
+  /** The plan summary of the change an `apply` release applied; absent
+   *  otherwise. */
+  plan_summary?: Record<string, unknown>;
+  /** The ontology the release copied, rendered as Markdown. */
+  export_md: string;
+}
+
+/** One side of a release diff: a release (`seq`), or the ontology in force
+ *  (`current: true`). */
+export interface OntologyDiffSide {
+  seq?: number;
+  current?: boolean;
+  content_version: string;
+  /** The release on this side was changed by a subject erasure. */
+  redacted?: boolean;
+}
+
+/** An entry as one side of a diff declares it. `parent` is the chunk of the
+ *  entry it sits under, absent at the top of its section; `parent_name` that
+ *  entry's name. `directives` is the parsed declaration without its name,
+ *  status, meaning and parent. */
+export interface OntologyEntryState {
+  name: string;
+  parent?: string;
+  parent_name?: string;
+  status?: string;
+  meaning?: string;
+  directives: Record<string, unknown> | null;
+}
+
+/** One entry that differs between the two sides, by its chunk id: a rename
+ *  keeps the chunk, so it is one `changed` entry, never an add and a remove. */
+export interface OntologyEntryDiff {
+  chunk_id: string;
+  /** class | relation | scheme | concept | instance | grammar */
+  kind: string;
+  /** erased: a subject erasure redacted the entry from a release on either side; no before or after. */
+  change: "added" | "removed" | "changed" | "erased";
+  /** On a changed entry: what differs. */
+  changed?: ("renamed" | "moved" | "kind" | "status" | "meaning" | "directives")[];
+  /** Absent for an added entry. */
+  before?: OntologyEntryState;
+  /** Absent for a removed entry. */
+  after?: OntologyEntryState;
+}
+
+/** Result of {@link LoomcycleClient.diffOntologyReleases}. It wrote nothing. */
+export interface DiffOntologyReleasesResult {
+  tenant: string;
+  from: OntologyDiffSide;
+  to: OntologyDiffSide;
+  /** Ordered by kind, then name, then chunk id. */
+  changes: OntologyEntryDiff[];
+  /** What a side could not read. */
+  issues: string[];
 }
 
 /** Narrows the statement review queue and selects what a bulk ruling rules
@@ -4458,6 +4718,24 @@ export type PathToolInput = {
   with_summary?: boolean;
   /** ls with_summary: the most abstract characters the page carries (default 2000). */
   summary_chars?: number;
+  /** ls (one level, RFC HA): add `documents` to each directory entry, and to a
+   *  document entry with names below it — how many documents the caller may read
+   *  are named at or under it, each once, not counting the entry's own document.
+   *  Exact up to 10,000; above that `documents: 10000` with `documents_capped: true`.
+   *  With a filter, the number that match. Absent (never 0) where the scope's
+   *  documents cannot be counted. Not taken with `recursive`. */
+  with_counts?: boolean;
+  /** ls (one level, RFC HA): keep only entries with a matching document at or
+   *  under them — one whose Path name or title contains this text, ignoring case
+   *  (`%` and `_` are literal). A folder's own name is not matched. A filtered
+   *  answer echoes what it applied as `filters`, and a document entry that
+   *  matches itself carries `matched: true`. At most 256 characters. */
+  name_contains?: string;
+  /** ls (one level, RFC HA): filter by the document's type, including its
+   *  subtypes (`type_expanded_to` reports the widening). */
+  type?: string;
+  /** ls (one level, RFC HA): filter by the document's exact status. */
+  status?: string;
   [extra: string]: unknown;
 };
 
@@ -4625,9 +4903,10 @@ export type DocumentToolInput = {
    *  rests on: the fingerprint of a plan of the change (`planOntology`). A rename,
    *  retire, move under another parent or change of any directive without it is
    *  refused 409 `plan_required`; with one that is not current, 409 `plan_stale`.
-   *  Each refusal carries the current `fingerprint` (RFC GQ P2.4). A class something
-   *  rests on is not renamed at all until the rename job exists: 422, with
-   *  `rename_job_pending` in the error, whatever the fingerprint. */
+   *  Each refusal carries the current `fingerprint` (RFC GQ P2.4). Renaming a class
+   *  something rests on starts the rename job (RFC GQ P5.3); where the job cannot
+   *  carry it yet the rename is refused 422 with `rename_job_pending` in the error,
+   *  whatever the fingerprint. */
   plan_fingerprint?: string;
   type?: string;
   body?: string;
@@ -4911,7 +5190,10 @@ export type DocumentToolInput = {
   /** get_document / get_chunk / search / related / graph_recall / documents_summary /
    *  query_documents: add each row's nearest annotation as `summary`
    *  ({level, brief, abstract?, stale?, chunk_id?}); a row that is a taxonomy node
-   *  (tenant scope) also gets `series`, its latest count, share and trend. */
+   *  (tenant scope) also gets `series`, its latest count, share and trend.
+   *  query_chunks (a document's chunk list, RFC HA): each chunk's OWN annotation
+   *  only, as `summary` ({level, brief, stale?}) — never the abstract, never one
+   *  inherited from above; a chunk with none has no `summary`. */
   with_summary?: boolean;
   /** with_summary: the most abstract characters a response carries (default 2000, max 8000). */
   summary_chars?: number;
@@ -6683,6 +6965,13 @@ export interface AgentWorkspaceGrant {
   /** Whether the agent may share a workspace it owns with another run of
    *  the same user (RFC GW P8). It hands over only operations it holds. */
   share?: boolean;
+  /** Whether the agent may save and delete workspace templates (RFC GW P6);
+   *  a tenant template also needs the tenant value in memory_scopes. */
+  templates?: boolean;
+  /** Whether the agent may open a workspace on a root: a folder of its
+   *  user's own machine, offered by their personal worker (RFC GW P13).
+   *  The workspace is the user's real files, not a copy. */
+  roots?: boolean;
   /** The egress routes a workspace the agent opens may reach the network
    *  through, by name (RFC GW P4), e.g. `["pypi", "pypi-files"]`. Unset =
    *  none. A sub-agent holds only the names its parent also holds. */
@@ -6813,9 +7102,11 @@ export interface AgentDefOverlay {
    *  than filed for review. `'remember'`: its runs may call Document
    *  `remember`. `'annotate'` (code-js only): its runs may write document
    *  annotations (Document `set_annotation`) and hold the `annotator` lease.
+   *  `'ontology'` (code-js only): its runs may read Document
+   *  `ontology_signals` and hold the `ontologist` lease.
    *  Unset or `[]` = none. A new agent may list only what its author holds; a
    *  fork only what the version it forks held. */
-  statement_methods?: Array<'rule' | 'extractor' | 'judge' | 'link' | 'remember' | 'annotate'>;
+  statement_methods?: Array<'rule' | 'extractor' | 'judge' | 'link' | 'remember' | 'annotate' | 'ontology'>;
   /** Channel tool ACL (default-deny until set). */
   channels?: AgentChannelACL;
   /** Interruption tool gate — `enabled: true` REQUIRED for the tool to work. */

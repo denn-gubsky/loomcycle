@@ -13,26 +13,59 @@ import {
   pickOntologyTab,
   relationSummary,
   typedFieldLabel,
+  type OntologyTab,
   type RelationNode,
 } from "../lib/ontologySections";
+import {
+  diffRows,
+  diffSideLabel,
+  diffSummary,
+  previousRelease,
+  refusalText,
+  releaseReasonLabel,
+  releaseTime,
+  releasesRefused,
+} from "../lib/ontologyReleaseDiff";
+import ErrorNotice from "../components/ErrorNotice";
+import { forbiddenKind } from "../lib/apiError";
 import { proposedOutlineText } from "../lib/ontologyProposedScheme";
 import { changeConfirmText, proposedChangeText } from "../lib/ontologyProposedChange";
 import {
+  DiffOntologyReleasesResult,
+  GetOntologyReleaseResult,
   OntologyProposal,
+  OntologyRelease,
   ProposedChange,
   ProposedSchemeView,
   OntologyResponse,
   OntologyTerm,
   adoptOntologyType,
   deleteOntologyEntry,
+  diffOntologyReleases,
   getOntology,
+  getOntologyJob,
+  getOntologyRelease,
+  listOntologyReleases,
+  OntologyJobStatus,
   planOntologyChanges,
+  resumeOntologyJob,
   planOntologyRetire,
   retireOntologyEntry,
   resolveOntologyProposal,
   setOntologyStatus,
+  OntologyRollbackReport,
+  OntologyRollbackStep,
+  applyOntologyRollback,
+  planOntologyRollback,
 } from "../api";
-import { applyWithPlan, retireWithPlan } from "../lib/ontologyRetirePlan";
+import { type OntologyPlanResult, applyWithPlan, retireWithPlan } from "../lib/ontologyRetirePlan";
+import { jobProgress, jobStateLabel, jobTitle, jobUnfinished } from "../lib/ontologyJob";
+import {
+  rollbackMatchesText,
+  rollbackPlanRows,
+  rollbackRefusal,
+  rollbackRiskWarning,
+} from "../lib/ontologyRollback";
 
 // The ontology page (/ontology): the tenant ontology's confirm gate and the
 // layered result, one section per tab.
@@ -686,6 +719,624 @@ function OntologyHealthTab({ state }: { state: OntologyResponse }) {
   );
 }
 
+// ─── The rename and re-tag job (RFC GQ P5.6) ─────────────────────────────────
+
+// OntologyJobPanel shows the job that carries a class rename or a concept move
+// through the tenant's stored rows: where it is, and — while it is unfinished — a
+// button that gives it its next slice, as the next rename would. Shown to an operator
+// only (the routes are an operator's); a refusal of the read hides the panel, since
+// the page itself stays readable to whoever may read it.
+function OntologyJobPanel() {
+  const [job, setJob] = useState<OntologyJobStatus | null>(null);
+  const [readFailed, setReadFailed] = useState(false);
+  const [actErr, setActErr] = useState<unknown>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    let live = true;
+    getOntologyJob().then(
+      (r) => {
+        if (live) setJob(r.job);
+      },
+      () => {
+        if (live) setReadFailed(true);
+      },
+    );
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  const resume = async () => {
+    if (!job || busy) return;
+    setBusy(true);
+    setActErr(null);
+    try {
+      setJob((await resumeOntologyJob(job.id)).job);
+    } catch (e) {
+      setActErr(e);
+      // The job may have moved on under another call: show where it is now.
+      getOntologyJob().then((r) => setJob(r.job), () => undefined);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (readFailed || !job) return null;
+  const unfinished = jobUnfinished(job);
+  const progress = jobProgress(job);
+  return (
+    <div className="settings-row ontology-job" aria-label="ontology job">
+      <div>
+        <strong>{unfinished ? "Rename job" : "Last rename job"}</strong>{" "}
+        <span className="settings-muted">{jobStateLabel(job.state)}</span>
+        <div>{jobTitle(job)}</div>
+        {progress && <div className="settings-muted">{progress}</div>}
+        {job.state === "blocked" && job.error && <div className="settings-error">{job.error}</div>}
+        {unfinished && (
+          <div className="settings-help">
+            Until it finishes, every class rename and concept move is refused; rows not yet
+            rewritten still read under the old name. Each rename also carries it on.
+          </div>
+        )}
+        {job.updated_at ? <div className="settings-muted">updated {releaseTime(job.updated_at)}</div> : null}
+        {actErr != null && <ErrorNotice error={actErr} />}
+      </div>
+      {unfinished && (
+        <button type="button" onClick={() => void resume()} disabled={busy}>
+          {busy ? "Resuming…" : "Resume"}
+        </button>
+      )}
+    </div>
+  );
+}
+
+// ─── Releases (RFC GQ P3.7) ──────────────────────────────────────────────────
+
+const RELEASES_TAB: OntologyTab = { id: "releases", label: "releases", warn: false };
+
+// ReleasesError reads a refusal as one: a scope or access-control refusal the way
+// every page shows it (ErrorNotice), and the releases routes' own 403 (`forbidden`,
+// which ErrorNotice does not know) in the same "Not permitted" form, saying why.
+function ReleasesError({ error }: { error: unknown }) {
+  if (!forbiddenKind(error) && releasesRefused(error)) {
+    const message = refusalText(error);
+    return (
+      <div className="acl-denied" role="alert">
+        <div className="acl-denied-head">Not permitted</div>
+        <div>
+          Releases are read by an admin or a tenant operator. A release keeps the
+          ontology&rsquo;s text after an edit or an erasure removed it, so it is not offered to
+          a member.
+        </div>
+        {message && <div className="settings-muted">{message}</div>}
+      </div>
+    );
+  }
+  return <ErrorNotice error={error} />;
+}
+
+// A rollback in the Releases tab (RFC GQ P5.7): the plan shown before anything is
+// written, then what the apply did — or the refusal that stopped it.
+type RollbackState =
+  | { seq: number; plan: OntologyPlanResult; replanned?: boolean }
+  | { seq: number; report: OntologyRollbackReport }
+  | { seq: number; refused: { code: string; message: string }; applied?: OntologyRollbackStep[] };
+
+// RollbackPlanView is the plan of rolling back to a release: every change it makes,
+// what each does to what rests on its entry, a warning when its risk is not none, and
+// the confirm that applies it. The plan wrote nothing.
+function RollbackPlanView({
+  seq,
+  plan,
+  replanned,
+  busy,
+  onApply,
+  onCancel,
+}: {
+  seq: number;
+  plan: OntologyPlanResult;
+  replanned?: boolean;
+  busy: boolean;
+  onApply: () => void;
+  onCancel: () => void;
+}) {
+  const rows = rollbackPlanRows(plan);
+  const warning = rollbackRiskWarning(plan);
+  return (
+    <div className="ontology-rollback" role="region" aria-label="rollback plan">
+      <h4>Roll back to release {seq}: the plan</h4>
+      {replanned && (
+        <p className="ontology-warn" role="status">
+          The ontology changed after the plan you read, so the rollback was not applied. This is
+          the plan as it stands now; read it again before applying.
+        </p>
+      )}
+      <p className="settings-help">
+        Nothing has been written. Applying makes the ontology in force declare what release {seq}{" "}
+        declared, through the same checks as a direct edit, and takes a release of the result.
+      </p>
+      {rows.length === 0 ? (
+        <p className="settings-muted">The ontology already declares what release {seq} declared: nothing to roll back.</p>
+      ) : (
+        <table className="settings-table ontology-rollback-plan">
+          <thead>
+            <tr>
+              <th>change</th>
+              <th>entry</th>
+              <th>risk</th>
+              <th>what rests on it</th>
+              <th>notes</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r, i) => (
+              <tr key={`${r.op}-${r.name}-${i}`}>
+                <td>{r.op}</td>
+                <td>
+                  <code>{r.name}</code> <span className="settings-muted">{r.kind}</span>
+                </td>
+                <td className={r.risk === "none" ? undefined : "ontology-warn"}>{r.risk}</td>
+                <td>
+                  {r.effects.length > 0 ? (
+                    r.effects.map((e) => <div key={e}>{e}</div>)
+                  ) : (
+                    <span className="settings-muted">{r.uncounted ? "not counted" : "nothing"}</span>
+                  )}
+                </td>
+                <td>
+                  {r.notes.map((n) => (
+                    <div className="settings-muted" key={n}>
+                      {n}
+                    </div>
+                  ))}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      {warning && (
+        <p className="ontology-warn" role="alert">
+          {warning}
+        </p>
+      )}
+      {!plan.complete && (
+        <p className="ontology-warn">
+          Not every scope could be counted ({plan.scopes_skipped ?? 0} skipped); the counts may be low.
+        </p>
+      )}
+      {(plan.new_issues ?? []).map((i) => (
+        <p className="ontology-warn" key={i}>
+          After the rollback: {i}
+        </p>
+      ))}
+      <div className="settings-row-actions">
+        {rows.length > 0 && (
+          <button type="button" disabled={busy} onClick={onApply}>
+            {busy ? "Applying…" : `Apply rollback to release ${seq}`}
+          </button>
+        )}{" "}
+        <button type="button" className="ghost-btn" disabled={busy} onClick={onCancel}>
+          cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// RollbackStepList names the writes a rollback made.
+function RollbackStepList({ steps }: { steps: OntologyRollbackStep[] }) {
+  if (steps.length === 0) return <p className="settings-muted">No write was made.</p>;
+  return (
+    <ul className="ontology-rollback-applied">
+      {steps.map((s, i) => (
+        <li key={`${s.entry}-${i}`}>
+          {s.op} <code>{s.name || s.entry}</code>
+          {s.new_id && <span className="settings-muted"> (added back as {s.new_id})</span>}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+// RollbackOutcome is what the apply did, or why it stopped.
+function RollbackOutcome({ state, onClose }: { state: RollbackState; onClose: () => void }) {
+  if ("plan" in state) return null;
+  const close = (
+    <button type="button" className="ghost-btn" onClick={onClose}>
+      close
+    </button>
+  );
+  if ("refused" in state) {
+    const partial = state.refused.code === "partially_applied";
+    return (
+      <div className="ontology-rollback" role="region" aria-label="rollback result">
+        <h4>
+          {partial ? `Rollback to release ${state.seq} stopped part of the way` : `Rollback to release ${state.seq} refused`}{" "}
+          {close}
+        </h4>
+        <p className="settings-error">
+          <code>{state.refused.code}</code>
+          {state.refused.message && <> — {state.refused.message}</>}
+        </p>
+        {partial && (
+          <>
+            <p className="settings-help">
+              Another write changed the ontology while the rollback ran, so it stopped. These writes
+              were applied and stay; roll back to the release again to plan what is left.
+            </p>
+            <RollbackStepList steps={state.applied ?? []} />
+          </>
+        )}
+      </div>
+    );
+  }
+  const rep = state.report;
+  const mismatch = rollbackMatchesText(rep);
+  return (
+    <div className="ontology-rollback" role="region" aria-label="rollback result">
+      <h4>
+        Rolled back to release {rep.release} {close}
+      </h4>
+      <p>
+        {rep.matches ? (
+          <span className="settings-flash">The ontology in force declares exactly what the release did.</span>
+        ) : (
+          <span className="ontology-warn">{mismatch}</span>
+        )}
+      </p>
+      <p className="settings-muted">
+        content version <code>{rep.content_version || "—"}</code>; the release&rsquo;s{" "}
+        <code>{rep.release_content_version || "—"}</code>
+      </p>
+      {rep.rollback_release ? <p>Release {rep.rollback_release} was taken of the rolled-back ontology.</p> : null}
+      {(rep.rename_jobs ?? []).length > 0 && (
+        <p className="settings-help">
+          A class rename started a rename job; it carries the rename through the stored rows, shown
+          above.
+        </p>
+      )}
+      <RollbackStepList steps={rep.applied ?? []} />
+      {[...(rep.warnings ?? []), ...(rep.notes ?? [])].map((n) => (
+        <p className="settings-muted" key={n}>
+          {n}
+        </p>
+      ))}
+    </div>
+  );
+}
+
+// OntologyReleasesTab lists the copies of the ontology the runtime took on each
+// confirm and each applied change, shows one as Markdown, and compares any two (or
+// one with the ontology in force). An operator may roll the ontology back to one:
+// planned first and shown, applied only on confirm with the plan's fingerprint.
+function OntologyReleasesTab({
+  currentVersion,
+  canRollBack,
+  onRolledBack,
+}: {
+  currentVersion?: string;
+  canRollBack: boolean;
+  onRolledBack: () => void;
+}) {
+  const [releases, setReleases] = useState<OntologyRelease[] | null>(null);
+  const [listErr, setListErr] = useState<unknown>(null);
+  const [viewed, setViewed] = useState<GetOntologyReleaseResult | null>(null);
+  const [from, setFrom] = useState<number | null>(null);
+  const [to, setTo] = useState<number | "current">("current");
+  const [diff, setDiff] = useState<DiffOntologyReleasesResult | null>(null);
+  const [actErr, setActErr] = useState<unknown>(null);
+  const [busy, setBusy] = useState(false);
+  const [rollback, setRollback] = useState<RollbackState | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    listOntologyReleases().then(
+      (r) => {
+        if (!live) return;
+        const rs = r.releases ?? [];
+        setReleases(rs);
+        if (rs.length > 0) setFrom(rs[0].seq);
+      },
+      (e) => {
+        if (live) setListErr(e);
+      },
+    );
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  const run = async (call: () => Promise<void>) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await call();
+      setActErr(null);
+    } catch (e) {
+      setActErr(e);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const view = (seq: number) =>
+    void run(async () => {
+      setViewed(await getOntologyRelease(seq));
+    });
+  const compare = (f: number, t: number | "current") =>
+    void run(async () => {
+      setFrom(f);
+      setTo(t);
+      setDiff(await diffOntologyReleases(f, t));
+    });
+  const planRollback = (seq: number) =>
+    void run(async () => {
+      setRollback(null);
+      setRollback({ seq, plan: await planOntologyRollback(seq) });
+    });
+  // A write was made (in whole or in part): the rollback took releases and may have
+  // started a rename job, so the list and the page above it are read again.
+  const afterWrite = async () => {
+    onRolledBack();
+    try {
+      setReleases((await listOntologyReleases()).releases ?? []);
+    } catch {
+      // the outcome is already shown; the list stays as it was
+    }
+  };
+  const applyRollback = () =>
+    void run(async () => {
+      if (!rollback || !("plan" in rollback)) return;
+      const { seq, plan } = rollback;
+      const res = await applyOntologyRollback(seq, plan.fingerprint);
+      if (res.ok) {
+        setRollback({ seq, report: res.data.rollback });
+        await afterWrite();
+        return;
+      }
+      const refused = rollbackRefusal(res.failure);
+      // The ontology moved after the plan: plan again and show it. Never applied on
+      // its own — the operator confirms against the counts that hold now.
+      if (refused.code === "plan_stale" || refused.code === "plan_required") {
+        setRollback({ seq, plan: await planOntologyRollback(seq), replanned: true });
+        return;
+      }
+      const applied = res.failure.body?.applied ?? [];
+      setRollback({ seq, refused, applied });
+      if (applied.length > 0) await afterWrite();
+    });
+
+  if (listErr) return <ReleasesError error={listErr} />;
+  if (releases === null) return <p className="settings-muted">Reading releases…</p>;
+
+  const rows = diff ? diffRows(diff) : [];
+  return (
+    <>
+      <p className="settings-help">
+        A <strong>release</strong> is a copy of the ontology the runtime takes each time it is
+        confirmed and each time an accepted change is applied; before either, a{" "}
+        <em>catch-up</em> release records an edit made since the last one. Every fact, statement
+        and annotation written under the ontology carries the <strong>content version</strong> it
+        was written under, so a release says what that version declared. The newest 50 are kept.
+        Compare two to see each entry that was added, removed or changed — a rename is one changed
+        entry, matched by its chunk.
+        {canRollBack && (
+          <>
+            {" "}
+            <strong>Roll back to this release</strong> plans the changes that make the ontology in
+            force declare what that release declared and shows them; nothing is written until you
+            apply the plan.
+          </>
+        )}
+      </p>
+
+      {releases.length === 0 ? (
+        <p className="settings-muted">
+          No release yet. The first is taken when the ontology is confirmed.
+        </p>
+      ) : (
+        <>
+          <table className="settings-table ontology-releases">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>taken</th>
+                <th>reason</th>
+                <th>content version</th>
+                <th>by</th>
+                <th>entries</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {releases.map((r) => {
+                const prev = previousRelease(releases, r.seq);
+                return (
+                  <tr key={r.seq}>
+                    <td>{r.seq}</td>
+                    <td>{releaseTime(r.created_at)}</td>
+                    <td>{releaseReasonLabel(r.reason)}</td>
+                    <td>
+                      <code>{r.content_version || "—"}</code>
+                      {currentVersion && r.content_version === currentVersion && (
+                        <span className="settings-flash"> in force</span>
+                      )}
+                      {r.redacted && (
+                        <>
+                          {" "}
+                          <span
+                            className="chunk-badge"
+                            title="A subject erasure redacted this release: its copy no longer hashes to the content version it records."
+                          >
+                            redacted
+                          </span>
+                        </>
+                      )}
+                    </td>
+                    <td>{r.actor || <span className="settings-muted">—</span>}</td>
+                    <td>{r.entries}</td>
+                    <td className="settings-row-actions">
+                      <button type="button" className="ghost-btn" disabled={busy} onClick={() => view(r.seq)}>
+                        view
+                      </button>
+                      {prev && (
+                        <button
+                          type="button"
+                          className="ghost-btn"
+                          disabled={busy}
+                          onClick={() => compare(prev.seq, r.seq)}
+                        >
+                          diff from {prev.seq}
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        className="ghost-btn"
+                        disabled={busy}
+                        onClick={() => compare(r.seq, "current")}
+                      >
+                        diff to current
+                      </button>
+                      {canRollBack && (
+                        <button
+                          type="button"
+                          className="ghost-btn"
+                          disabled={busy}
+                          aria-label={`Roll back to release ${r.seq}`}
+                          onClick={() => planRollback(r.seq)}
+                        >
+                          roll back to this release
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+
+          <div className="settings-row">
+            <label>
+              from{" "}
+              <select
+                aria-label="from release"
+                value={from ?? ""}
+                onChange={(e) => setFrom(Number(e.target.value))}
+              >
+                {releases.map((r) => (
+                  <option key={r.seq} value={r.seq}>
+                    release {r.seq}
+                  </option>
+                ))}
+              </select>
+            </label>{" "}
+            <label>
+              to{" "}
+              <select
+                aria-label="to release"
+                value={String(to)}
+                onChange={(e) => setTo(e.target.value === "current" ? "current" : Number(e.target.value))}
+              >
+                <option value="current">the ontology in force</option>
+                {releases.map((r) => (
+                  <option key={r.seq} value={r.seq}>
+                    release {r.seq}
+                  </option>
+                ))}
+              </select>
+            </label>{" "}
+            <button type="button" disabled={busy || from === null} onClick={() => from !== null && compare(from, to)}>
+              Compare
+            </button>
+          </div>
+        </>
+      )}
+
+      {actErr !== null && <ReleasesError error={actErr} />}
+
+      {rollback && "plan" in rollback && (
+        <RollbackPlanView
+          seq={rollback.seq}
+          plan={rollback.plan}
+          replanned={rollback.replanned}
+          busy={busy}
+          onApply={applyRollback}
+          onCancel={() => setRollback(null)}
+        />
+      )}
+      {rollback && <RollbackOutcome state={rollback} onClose={() => setRollback(null)} />}
+
+      {diff && (
+        <div className="ontology-release-diff">
+          <h4>
+            From {diffSideLabel(diff.from)} to {diffSideLabel(diff.to)}: {diffSummary(diff)}
+          </h4>
+          <p className="settings-muted">
+            content version <code>{diff.from.content_version || "—"}</code> →{" "}
+            <code>{diff.to.content_version || "—"}</code>
+          </p>
+          {(diff.issues ?? []).map((i) => (
+            <p className="ontology-warn" key={i}>
+              {i}
+            </p>
+          ))}
+          {rows.length > 0 && (
+            <table className="settings-table ontology-compare">
+              <thead>
+                <tr>
+                  <th>entry</th>
+                  <th>field</th>
+                  <th>before</th>
+                  <th>after</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((row) =>
+                  (row.lines.length > 0 ? row.lines : [{ field: "", before: "", after: "" }]).map((l, i) => (
+                    <tr key={`${row.chunkId}-${i}`} data-chunk={row.chunkId}>
+                      {i === 0 && (
+                        <td rowSpan={Math.max(row.lines.length, 1)}>
+                          <code>{row.name}</code>{" "}
+                          <span className="settings-muted">
+                            {row.kind} · {row.change}
+                          </span>
+                        </td>
+                      )}
+                      <td>{l.field}</td>
+                      <td className="ontology-diff-before">{l.before}</td>
+                      <td className="ontology-diff-after">{l.after}</td>
+                    </tr>
+                  )),
+                )}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+
+      {viewed && (
+        <div className="ontology-release-view">
+          <h4>
+            Release {viewed.release.seq} — {releaseReasonLabel(viewed.release.reason)},{" "}
+            {releaseTime(viewed.release.created_at)}{" "}
+            <button type="button" className="ghost-btn" onClick={() => setViewed(null)}>
+              close
+            </button>
+          </h4>
+          {viewed.plan_summary && (
+            <details className="settings-help">
+              <summary>The plan of the change it applied</summary>
+              <pre className="ontology-evidence">{JSON.stringify(viewed.plan_summary, null, 2)}</pre>
+            </details>
+          )}
+          <pre className="ontology-evidence ontology-release-md">{viewed.export_md}</pre>
+        </div>
+      )}
+    </>
+  );
+}
+
 // OntologySection is the tenant ontology's page.
 //
 // The failure it exists to prevent is not an error message: it is an operator who edits
@@ -707,6 +1358,7 @@ export default function OntologySection() {
   const [state, setState] = useState<OntologyResponse | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [jobRead, setJobRead] = useState(0);
 
   const load = useCallback(async () => {
     try {
@@ -787,7 +1439,9 @@ export default function OntologySection() {
   // the document's status field by hand. Called out explicitly, because this is
   // precisely the state that looks confirmed and behaves as draft.
   const oddStatus = !!state?.status && state.status !== "confirmed" && state.status !== "draft";
-  const tabs = state?.provisioned ? ontologyTabs(state) : [];
+  // Releases (RFC GQ P3.7) is offered to everyone the page is: the server decides who
+  // may read them, and a refusal reads as one when the tab is opened.
+  const tabs = state?.provisioned ? [...ontologyTabs(state), RELEASES_TAB] : [];
   const tab = pickOntologyTab(params.get("section"), tabs);
   const path = state?.path ?? "/memory/ontology";
 
@@ -853,6 +1507,10 @@ export default function OntologySection() {
               {n}
             </p>
           ))}
+
+          {/* Keyed by jobRead: a rollback's class rename starts a job, so the panel
+              mounts again and reads it. */}
+          {decides && <OntologyJobPanel key={jobRead} />}
 
           {oddStatus && (
             <p className="settings-help">
@@ -976,7 +1634,8 @@ export default function OntologySection() {
                 aria-selected={t.id === tab}
                 className={"library-subtab" + (t.id === tab ? " library-subtab-active" : "")}
               >
-                {t.label} <span className="library-subtab-count">{t.count}</span>
+                {t.label}
+                {t.count !== undefined && <> <span className="library-subtab-count">{t.count}</span></>}
                 {t.warn && <span className="ontology-warn"> !</span>}
               </Link>
             ))}
@@ -1013,6 +1672,16 @@ export default function OntologySection() {
             {tab === "instances" && <OntologyInstancesDetail state={state} actions={entryActions} />}
             {tab === "grammars" && <OntologyGrammarsTab state={state} />}
             {tab === "health" && <OntologyHealthTab state={state} />}
+            {tab === "releases" && (
+              <OntologyReleasesTab
+                currentVersion={state.content_version}
+                canRollBack={decides}
+                onRolledBack={() => {
+                  setJobRead((n) => n + 1);
+                  void load();
+                }}
+              />
+            )}
           </div>
 
           <OntologyFormatHelp />
@@ -1102,7 +1771,9 @@ function OntologyFormatHelp() {
       </p>
       <p>
         Changes take effect on the next run once the document is confirmed. Revise the document
-        in place: a replacement document gives every concept a new id.
+        in place: a replacement document gives every concept a new id. Each confirm and each
+        applied change keeps a copy of the ontology as a release, listed and compared under{" "}
+        <em>releases</em>.
       </p>
     </details>
   );

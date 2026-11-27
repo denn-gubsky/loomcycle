@@ -30,7 +30,7 @@ import {
 
 const GLOB_HINT: Record<string, string> = {
   agent: "chat/* or support/**",
-  tool: "Bash, or * for every tool",
+  tool: "Workspace, or * for every tool",
   volume: "shared-ro or scratch-*",
   mcp: "jobs/get* (server/tool)",
   skill: "support/**",

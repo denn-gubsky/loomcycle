@@ -18,9 +18,14 @@ func TestWorkspaceConfig_AbsentIsOffAtTheDefaults(t *testing.T) {
 		DiskQuotaMB: 2048, Copy: WorkspaceCopyConfig{MaxFiles: 2000, MaxBytes: 1 << 30},
 		Checkout: WorkspaceCheckoutConfig{MaxDocuments: 500, MaxBytes: 256 << 20}, Convert: WorkspaceConvertConfig{MemoryLimitMB: 1024},
 		Kernel: WorkspaceKernelConfig{InterruptGraceSeconds: 5}, Checkpoint: WorkspaceCheckpointConfig{MaxPerWorkspace: 8},
-		Egress: WorkspaceEgressConfig{Limits: WorkspaceEgressLimits{RatePerMinute: 600, MaxBytes: 4 << 30}},
-		MCP:    WorkspaceMCPConfig{Ops: []string{"read", "write"}, IdleReleaseS: 3600, MaxLifetimeS: 86400},
-		Expose: WorkspaceExposeConfig{MaxPerWorkspace: 2, MaxConnections: 32, IdleTimeoutS: 900, RequestsPerSecond: 20, BytesPerSecond: 8 << 20}}
+		Template: WorkspaceTemplateConfig{MaxMB: 1024, MaxPerTenant: 20, MaxPerUser: 5},
+		Push:     WorkspacePushConfig{RefPrefixes: []string{"refs/heads/"}, MaxBytes: 64 << 20},
+		Git:      WorkspaceGitConfig{MirrorMaxMB: 4096, MirrorIdleS: 3600},
+		Egress:   WorkspaceEgressConfig{Limits: WorkspaceEgressLimits{RatePerMinute: 600, MaxBytes: 4 << 30}},
+		MCP:      WorkspaceMCPConfig{Ops: []string{"read", "write"}, IdleReleaseS: 3600, MaxLifetimeS: 86400},
+		Expose: WorkspaceExposeConfig{MaxPerWorkspace: 2, MaxConnections: 32, IdleTimeoutS: 900, RequestsPerSecond: 20, BytesPerSecond: 8 << 20,
+			MaxMessageBytes: 16 << 20, SocketLifetimeS: 14400},
+		Durable: WorkspaceDurableConfig{MaxPerUser: 8}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("resolved = %+v, want %+v", got, want)
 	}
@@ -33,8 +38,10 @@ func TestWorkspaceConfig_RemoteKeepsWhatIsWritten(t *testing.T) {
 	cfg, err := loadConversion(t, "conversion:\n  mode: inprocess\nworker_endpoint:\n  listen: 127.0.0.1:7788\n"+
 		"workspace:\n  mode: remote\n  max_per_run: 2\n  max_per_tenant: 10\n  exec:\n    default_timeout_s: 30\n    max_timeout_s: 60\n  lost_after_s: 90\n"+
 		"  disk_quota_mb: 16777216\n  copy:\n    max_files: 50\n    max_bytes: 4096\n  checkout:\n    max_documents: 20\n    max_bytes: 9000\n  convert:\n    memory_limit_mb: 512\n"+
-		"  kernel:\n    interrupt_grace_seconds: 12\n  checkpoint:\n    max_per_workspace: 3\n  mcp:\n    enabled: true\n    ops: [read, exec]\n    idle_release_s: 600\n    max_lifetime_s: 7200\n"+
-		"  expose:\n    enabled: true\n    max_per_workspace: 4\n    max_connections: 8\n    idle_timeout_s: 60\n    requests_per_second: 5\n    bytes_per_second: 1024\n")
+		"  kernel:\n    interrupt_grace_seconds: 12\n  checkpoint:\n    max_per_workspace: 3\n  template:\n    max_mb: 512\n    max_per_tenant: 5\n    max_per_user: 2\n  mcp:\n    enabled: true\n    ops: [read, exec]\n    idle_release_s: 600\n    max_lifetime_s: 7200\n"+
+		"  expose:\n    enabled: true\n    max_per_workspace: 4\n    max_connections: 8\n    idle_timeout_s: 60\n    requests_per_second: 5\n    bytes_per_second: 1024\n"+
+		"    max_message_bytes: 4096\n    socket_lifetime_s: 600\n  durable:\n    enabled: true\n    max_per_user: 3\n"+
+		"  git:\n    mirror_max_mb: 512\n    mirror_idle_s: 60\n")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,9 +49,14 @@ func TestWorkspaceConfig_RemoteKeepsWhatIsWritten(t *testing.T) {
 		DiskQuotaMB: 16 << 20, Copy: WorkspaceCopyConfig{MaxFiles: 50, MaxBytes: 4096},
 		Checkout: WorkspaceCheckoutConfig{MaxDocuments: 20, MaxBytes: 9000}, Convert: WorkspaceConvertConfig{MemoryLimitMB: 512},
 		Kernel: WorkspaceKernelConfig{InterruptGraceSeconds: 12}, Checkpoint: WorkspaceCheckpointConfig{MaxPerWorkspace: 3},
-		Egress: WorkspaceEgressConfig{Limits: WorkspaceEgressLimits{RatePerMinute: 600, MaxBytes: 4 << 30}},
-		MCP:    WorkspaceMCPConfig{Enabled: true, Ops: []string{"read", "exec"}, IdleReleaseS: 600, MaxLifetimeS: 7200},
-		Expose: WorkspaceExposeConfig{Enabled: true, MaxPerWorkspace: 4, MaxConnections: 8, IdleTimeoutS: 60, RequestsPerSecond: 5, BytesPerSecond: 1024}}
+		Template: WorkspaceTemplateConfig{MaxMB: 512, MaxPerTenant: 5, MaxPerUser: 2},
+		Egress:   WorkspaceEgressConfig{Limits: WorkspaceEgressLimits{RatePerMinute: 600, MaxBytes: 4 << 30}},
+		MCP:      WorkspaceMCPConfig{Enabled: true, Ops: []string{"read", "exec"}, IdleReleaseS: 600, MaxLifetimeS: 7200},
+		Expose: WorkspaceExposeConfig{Enabled: true, MaxPerWorkspace: 4, MaxConnections: 8, IdleTimeoutS: 60, RequestsPerSecond: 5, BytesPerSecond: 1024,
+			MaxMessageBytes: 4096, SocketLifetimeS: 600},
+		Push:    WorkspacePushConfig{RefPrefixes: []string{"refs/heads/"}, MaxBytes: 64 << 20},
+		Git:     WorkspaceGitConfig{MirrorMaxMB: 512, MirrorIdleS: 60},
+		Durable: WorkspaceDurableConfig{Enabled: true, MaxPerUser: 3}}
 	if got := cfg.Workspace.Resolved(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("resolved = %+v, want %+v", got, want)
 	}
@@ -78,9 +90,15 @@ func TestWorkspaceConfig_RefusesWhatItCannotServe(t *testing.T) {
 		{"workspace:\n  exec:\n    timeout: 5\n", `unknown key "timeout"`},
 		{"workspace:\n  disk_quota_mb: 16777217\n", "workspace.disk_quota_mb: 16777217 is out of range"},
 		{"workspace:\n  disk_quota_mb: -1\n", "workspace.disk_quota_mb: -1 is out of range"},
+		{"workspace:\n  template:\n    max_per_tenant: 3\n    max_per_user: 4\n", "workspace.template.max_per_user: 4 is out of range"},
+		{"workspace:\n  template:\n    max_per_user: -1\n", "workspace.template.max_per_user: -1 is out of range"},
 		{"workspace:\n  expose:\n    max_per_workspace: 17\n", "workspace.expose.max_per_workspace: 17 is out of range"},
 		{"workspace:\n  expose:\n    bytes_per_second: -1\n", "workspace.expose.bytes_per_second: -1 is out of range"},
+		{"workspace:\n  expose:\n    max_message_bytes: 67108865\n", "workspace.expose.max_message_bytes: 67108865 is out of range"},
+		{"workspace:\n  expose:\n    socket_lifetime_s: 86401\n", "workspace.expose.socket_lifetime_s: 86401 is out of range"},
 		{"workspace:\n  expose:\n    open: true\n", "workspace.expose"},
+		{"workspace:\n  durable:\n    max_per_user: 1025\n", "workspace.durable.max_per_user: 1025"},
+		{"workspace:\n  durable:\n    ttl_days: 3\n", "workspace.durable"},
 		{"workspace:\n  copy:\n    max_files: -1\n", "workspace.copy.max_files: -1 is out of range"},
 		{"workspace:\n  copy:\n    max_bytes: 17592186044417\n", "workspace.copy.max_bytes: 17592186044417 is out of range"},
 		{"workspace:\n  convert:\n    memory_limit_mb: 32\n", "workspace.convert.memory_limit_mb: 32 is out of range"},
@@ -180,5 +198,65 @@ func TestInertWorkspaceGrants_NamesTheAgentsWhoseGrantAllowsNothing(t *testing.T
 	cfg.Workspace.Mode = WorkspaceModeLocal
 	if got := strings.Join(cfg.InertWorkspaceGrants(), ","); got != "zed" {
 		t.Errorf("mode local: inert = %q, want zed", got)
+	}
+}
+
+// max_per_user defaults to 5, or to max_per_tenant when that is lower, so a
+// small tenant bound alone never makes the default invalid.
+func TestWorkspaceTemplateConfig_PerUserDefaultFitsTheTenantBound(t *testing.T) {
+	cfg, err := loadConversion(t, "workspace:\n  template:\n    max_per_tenant: 3\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Workspace.Resolved().Template.MaxPerUser; got != 3 {
+		t.Errorf("max_per_user = %d, want 3", got)
+	}
+}
+
+// RFC GW §11 "Personal workers", D32: with workspace.personal_workers on, a
+// configuration whose worker endpoint is not on loopback is refused, so the
+// core never starts with a user's own machine reachable as a worker from
+// elsewhere. It also needs a mode that accepts workers over the endpoint.
+func TestWorkspaceConfig_PersonalWorkersNeedALoopbackWorkerEndpoint(t *testing.T) {
+	head := "conversion:\n  mode: inprocess\n"
+	for _, tc := range []struct {
+		name, yaml, want string
+	}{
+		{"every interface", head + "worker_endpoint:\n  listen: 0.0.0.0:7788\n  insecure: true\nworkspace:\n  mode: remote\n  personal_workers: true\n", "loopback"},
+		{"no host", head + "worker_endpoint:\n  listen: \":7788\"\n  insecure: true\nworkspace:\n  mode: remote\n  personal_workers: true\n", "loopback"},
+		{"a hostname", head + "worker_endpoint:\n  listen: workers.example:7788\n  insecure: true\nworkspace:\n  mode: local+remote\n  personal_workers: true\n", "loopback"},
+		{"no remote workers", head + "workspace:\n  mode: local\n  personal_workers: true\n", "workspace.personal_workers"},
+		{"workspaces off", head + "workspace:\n  personal_workers: true\n", "workspace.personal_workers"},
+	} {
+		_, err := loadConversion(t, tc.yaml)
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: err = %v, want a refusal naming %q", tc.name, err, tc.want)
+		}
+	}
+	for _, listen := range []string{"127.0.0.1:7788", "[::1]:7788", "localhost:7788"} {
+		cfg, err := loadConversion(t, head+"worker_endpoint:\n  listen: \""+listen+"\"\nworkspace:\n  mode: remote\n  personal_workers: true\n")
+		if err != nil {
+			t.Errorf("%s: %v", listen, err)
+			continue
+		}
+		if !cfg.Workspace.Resolved().PersonalWorkers {
+			t.Errorf("%s: personal_workers not kept", listen)
+		}
+	}
+}
+
+// workspace.git (RFC GW P11): a mirror's cap and idle end, refused out of
+// range and as unknown keys.
+func TestWorkspaceGitConfig_RefusesOutOfRangeAndUnknownKeys(t *testing.T) {
+	for _, body := range []string{
+		"workspace:\n  git:\n    mirror_max_mb: -1\n",
+		"workspace:\n  git:\n    mirror_max_mb: 2000000\n",
+		"workspace:\n  git:\n    mirror_idle_s: -5\n",
+		"workspace:\n  git:\n    mirror_idle_s: 9999999\n",
+		"workspace:\n  git:\n    mirror_mb: 10\n",
+	} {
+		if _, err := loadConversion(t, body); err == nil {
+			t.Errorf("accepted: %q", body)
+		}
 	}
 }

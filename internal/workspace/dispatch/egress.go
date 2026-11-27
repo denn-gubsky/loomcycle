@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -27,6 +28,28 @@ type EgressFunc func(ctx context.Context, row store.WorkspaceRow, req egress.Req
 // SetEgress sets what answers the workers' Egress streams. Called once at
 // boot; until then, and when never called, every request is refused.
 func (d *Dispatcher) SetEgress(f EgressFunc) { d.egress.Store(&f) }
+
+// GitEgressFunc answers one git request a git workspace's supervisor sends
+// (RFC GW §6.1, P11). row is read from the store, never taken from the
+// worker; ticket is the op's, as the stream carried it, and the function
+// decides whether it holds. A *egress.Refusal is answered as an HTTP answer;
+// any other error as a 502.
+type GitEgressFunc func(ctx context.Context, row store.WorkspaceRow, ticket []byte, req egress.GitRequest) (*egress.Response, error)
+
+// SetGitEgress sets what answers git requests on the Egress streams. Called
+// once at boot; until then, and when never called, every one is refused.
+func (d *Dispatcher) SetGitEgress(f GitEgressFunc) { d.git.Store(&f) }
+
+// gitShapes maps the wire's shapes onto the proxy's.
+var gitShapes = map[workspacepb.GitShape]egress.GitShape{
+	workspacepb.GitShape_GIT_SHAPE_ADVERTISE_UPLOAD:  egress.GitAdvertiseUpload,
+	workspacepb.GitShape_GIT_SHAPE_ADVERTISE_RECEIVE: egress.GitAdvertiseReceive,
+	workspacepb.GitShape_GIT_SHAPE_UPLOAD_PACK:       egress.GitUploadPack,
+	workspacepb.GitShape_GIT_SHAPE_RECEIVE_PACK:      egress.GitReceivePack,
+}
+
+// maxGitTicket bounds a ticket a start may carry.
+const maxGitTicket = 64
 
 // Bounds on what an EgressStart may carry. The proxy decides what passes;
 // these keep a worker from making the core hold an unbounded start.
@@ -65,6 +88,11 @@ func (d *Dispatcher) Egress(stream workspacepb.WorkspaceService_EgressServer) (e
 	if err := checkEgressStart(start); err != nil {
 		return err
 	}
+	isGit := start.GetGitShape() != workspacepb.GitShape_GIT_SHAPE_UNSPECIFIED
+	shape, known := gitShapes[start.GetGitShape()]
+	if isGit && (!known || start.GetRoute() != "" || start.GetMethod() != "" || start.GetPath() != "" || len(start.GetTicket()) > maxGitTicket) {
+		return status.Error(codes.InvalidArgument, "a git request names one known shape and its ticket, and no route, method or path")
+	}
 	ctx, cancel := context.WithCancel(stream.Context())
 	defer cancel()
 	d.mu.Lock()
@@ -80,7 +108,18 @@ func (d *Dispatcher) Egress(stream workspacepb.WorkspaceService_EgressServer) (e
 		return status.Error(codes.PermissionDenied, "the worker is no longer attached")
 	default:
 	}
-	row, err := d.egressRow(ctx, w, start.GetWorkspaceId())
+	states := []store.WorkspaceState{store.WorkspaceReady}
+	if isGit {
+		// A worker that predates git requests could not have been sent a
+		// git op: one that makes such a request is refused by name.
+		if w.protocol < workspace.GitProtocolVersion {
+			return status.Errorf(codes.FailedPrecondition, "%s: the worker speaks workspace protocol %d; git requests need %d", workspace.ClassProtocolTooOld, w.protocol, workspace.GitProtocolVersion)
+		}
+		// An open's proof of access fetches while its row is opening; the
+		// op's ticket, checked by the git function, decides.
+		states = append(states, store.WorkspaceOpening)
+	}
+	row, err := d.egressRow(ctx, w, start.GetWorkspaceId(), states...)
 	if err != nil {
 		return err
 	}
@@ -106,11 +145,20 @@ func (d *Dispatcher) Egress(stream workspacepb.WorkspaceService_EgressServer) (e
 		}
 	}
 
-	f := d.egress.Load()
-	if f == nil {
-		return sendEgressText(stream, http.StatusForbidden, "this runtime sends no workspace request out (no egress is configured)")
+	var resp *egress.Response
+	if isGit {
+		g := d.git.Load()
+		if g == nil {
+			return sendEgressText(stream, http.StatusForbidden, "this runtime serves no git workspace")
+		}
+		resp, err = (*g)(ctx, row, start.GetTicket(), egress.GitRequest{Shape: shape, Header: req.Header, Body: req.Body, ContentLength: req.ContentLength})
+	} else {
+		f := d.egress.Load()
+		if f == nil {
+			return sendEgressText(stream, http.StatusForbidden, "this runtime sends no workspace request out (no egress is configured)")
+		}
+		resp, err = (*f)(ctx, row, req)
 	}
-	resp, err := (*f)(ctx, row, req)
 	if err != nil {
 		if ctx.Err() != nil {
 			outcome = "cancelled"
@@ -185,27 +233,31 @@ func checkEgressStart(s *workspacepb.EgressStart) error {
 	return nil
 }
 
-// egressRow is the ready row of workspace id on worker w. A workspace on
-// another worker, of a tenant w does not serve, not ready, or unknown is
-// refused alike, so a worker learns nothing of rows not its own. The worker's
-// rows are bounded by its capacity, so reading them all is cheap.
-func (d *Dispatcher) egressRow(ctx context.Context, w *worker, id string) (store.WorkspaceRow, error) {
+// egressRow is the row of workspace id on worker w, in one of states. A
+// workspace on another worker, of a tenant w does not serve, in another
+// state, or unknown is refused alike, so a worker learns nothing of rows not
+// its own. The worker's rows are bounded by its capacity, so reading them all
+// is cheap.
+func (d *Dispatcher) egressRow(ctx context.Context, w *worker, id string, states ...store.WorkspaceState) (store.WorkspaceRow, error) {
 	st := d.store()
 	if st == nil {
 		return store.WorkspaceRow{}, status.Error(codes.Unavailable, "the runtime is starting")
 	}
-	rows, err := st.WorkspaceListByWorker(ctx, w.id, store.WorkspaceReady)
+	rows, err := st.WorkspaceListByWorker(ctx, w.id, states...)
 	if err != nil {
 		return store.WorkspaceRow{}, status.Error(codes.Unavailable, "the runtime could not read the workspace")
 	}
 	for _, r := range rows {
 		// The query asks for both already; checked again so a store that
 		// ever answered wider cannot hand one worker another's workspace.
-		if r.ID == id && r.WorkerID == w.id && r.State == store.WorkspaceReady && w.servesTenant(r.TenantID) {
+		// A parked durable workspace (RFC GW P12) is ready but held by no
+		// run: whatever is left running in it sends nothing out, git
+		// included.
+		if r.ID == id && r.WorkerID == w.id && slices.Contains(states, r.State) && r.OwnerKind != store.WorkspaceOwnerParked && w.servesUser(r.TenantID, r.UserID) {
 			return r, nil
 		}
 	}
-	return store.WorkspaceRow{}, status.Error(codes.PermissionDenied, "no ready workspace of that id is on this worker")
+	return store.WorkspaceRow{}, status.Error(codes.PermissionDenied, "no workspace of that id that may send requests out is on this worker")
 }
 
 // receiveEgressBody copies the request body's chunks into pw until InputEnd,

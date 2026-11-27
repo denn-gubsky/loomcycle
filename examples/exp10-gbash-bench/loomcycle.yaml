@@ -1,5 +1,8 @@
 # exp10-gbash-bench — RFC AJ GBash Comparative Benchmark
 #
+# It measures what RFC GW P15 removes: the Bash tool and Bashbox are deprecated
+# (docs/MIGRATING-FROM-BASH.md). Kept for comparison only; see README.md.
+#
 # Two code-js agents run identical file-discovery operations on a cloned copy of the
 # loomcycle repository — one using the system Bash tool (subprocess) and one using the
 # new Bashbox tool (pure-Go in-process sandbox, RFC AJ).  Per-operation wall-clock

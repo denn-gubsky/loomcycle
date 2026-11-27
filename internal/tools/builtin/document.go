@@ -124,6 +124,13 @@ type Document struct {
 	// ontologyPlanScopeBudget. A test shortens it.
 	planScopeBudget time.Duration
 
+	// renameJobBudget bounds one slice of the class-rename job; zero is renameJobSlice.
+	// renameJobStop, when set, is asked after each step of the job in each scope (by the
+	// scope's kind: tenant, user, agent) and stops the slice when it answers true, as an
+	// interruption would. A test sets both; nil in production.
+	renameJobBudget time.Duration
+	renameJobStop   func(scope, step string) bool
+
 	// beforeMoveWrite, when set, runs in move_chunk after its checks and before its
 	// write. A test moves the chunk there to prove the write is conditional on the
 	// parent the checks read. Nil in production.
@@ -143,6 +150,16 @@ type Document struct {
 	// before its move. A test writes to the ontology there to prove the move is refused
 	// when the ontology is not exactly what the update left. Nil in production.
 	betweenAcceptWrites func()
+
+	// duringReleaseCopy, when set, runs in an ontology release's copy after every chunk
+	// is read and before the fingerprint is read again. A test edits the ontology there
+	// to prove the copy is taken again. Nil in production.
+	duringReleaseCopy func()
+
+	// afterReleaseBatch, when set, runs after each batch of a release's entries is
+	// written; an error stops the release there. A test cuts a copy off with it to prove
+	// an incomplete release is never listed. Nil in production.
+	afterReleaseBatch func() error
 
 	// onNodeStatsPlan, when set, runs each time a node statistics plan is built,
 	// with whether it is a series read's light plan. A test counts them to prove a
@@ -228,8 +245,9 @@ const documentInputSchema = `{
 		"header":      {"type": "object", "properties": {"domain": {"type": "string"}, "projects": {"type": "array", "items": {"type": "string"}}, "origin": {"type": "string", "enum": ["adopted","declared","generated"]}, "source": {"type": "string"}, "version": {"type": "string"}}, "description": "propose_entity (a new scheme) / import_scheme: the scheme's header — domain (the knowledge domain it serves), projects (the classes whose things it arranges), origin, and for an adopted scheme source and version. Carried as data and written as directives only when an operator accepts. import_scheme: origin is always adopted."},
 		"change":      {"type": "string", "enum": ["edit","retire"], "description": "propose_entity: propose a CHANGE to an entry already in force instead of a new one — edit (a new name, parent, meaning or directives) or retire (no new write may use it; what uses it stays). Pass entry. Inert until an operator accepts it."},
 		"entry":       {"type": "string", "description": "propose_entity with change: the in-force entry (class, relation, scheme, concept or instance) to change or retire — its chunk id from describe_ontology, or its name (a concept's tag) when that names one entry. A section header, the root and a proposal are not entries."},
-		"meaning":     {"type": "string", "description": "propose_entity change=edit: the entry's new meaning; any @ line stays quoted text. Omit to keep it."},
-		"directives":  {"type": "object", "description": "propose_entity change=edit: the entry's COMPLETE new directive set, name to value — a string, true for a flag (symmetric), or a list for one that repeats (alt); {} clears them. Only the directives the entry's section takes; never locked. Carried as data, checked again when an operator accepts."},
+		"meaning":     {"type": "string", "description": "propose_entity change=edit: the entry's new meaning; any @ line stays quoted text. Omit to keep it. Without change, on a class or relation add: the new entry's meaning, which an accept writes as its text in place of the evidence in body."},
+		"signal":      {"type": "string", "enum": ["undeclared_type","undeclared_kind","invalid_ends"], "description": "propose_entity, a class or relation add: the building signal the proposal answers. Carried as data with meaning, directives and evidence."},
+		"directives":  {"type": "object", "description": "propose_entity change=edit: the entry's COMPLETE new directive set, name to value — a string, true for a flag (symmetric), or a list for one that repeats (alt); {} clears them. Only the directives the entry's section takes; never locked. Carried as data, checked again when an operator accepts. Without change, on a class or relation add: the new entry's directives (from a run, a relation's domain and range only)."},
 		"skos_xml":    {"type": "string", "description": "import_scheme: a SKOS concept scheme in RDF/XML (skos:ConceptScheme, skos:Concept, prefLabel, altLabel, notation, definition or scopeNote, broader, narrower, topConceptOf, exactMatch), at most 2 MB. Turtle is not read. Pass this or markdown."},
 		"parent_id":   {"type": "string", "description": "create_chunk: the parent chunk. Omit it to add the chunk under the document's title (the root chunk)."},
 		"new_parent_id": {"type": "string", "description": "move_chunk: the new parent. Empty moves the chunk directly under the document's title (the root chunk)."},
@@ -271,7 +289,7 @@ const documentInputSchema = `{
 		"to": {"type": "integer", "description": "measure: only periods starting before this instant (unix nanos, exclusive)."},
 		"shown_at": {"type": "integer", "description": "measure: read the series as stored at this moment (unix nanos): rows are never overwritten, so a past reading is answerable. Default: the latest."},
 		"compare": {"type": "object", "properties": {"from": {"type": "integer"}, "to": {"type": "integer"}}, "description": "measure share: the baseline range {from, to} (unix nanos). Returns the concepts ordered by the capped log-ratio of their share in from..to against the baseline, largest move first."},
-		"with_summary": {"type": "boolean", "description":"get_document / get_chunk / search / related / graph_recall / documents_summary / query_documents: add each row's annotation as summary {level, brief, abstract?, stale?} — the nearest one at or above the row's chunk. The abstract is added for the target of get_document / get_chunk, the first five documents of a search or related page and the seeds of graph_recall, within summary_chars. A row with no annotation has no summary. A row that is a taxonomy node (a concept or a document class, tenant scope) also carries series — its latest count, share and trend from the built-in series, as describe_ontology with_stats gives it — beside the summary, never in it."},
+		"with_summary": {"type": "boolean", "description":"get_document / get_chunk / search / related / graph_recall / documents_summary / query_documents: add each row's annotation as summary {level, brief, abstract?, stale?} — the nearest one at or above the row's chunk. The abstract is added for the target of get_document / get_chunk, the first five documents of a search or related page and the seeds of graph_recall, within summary_chars. query_chunks: each chunk's OWN annotation only, as summary {level, brief, stale?} — never the abstract, never one from above it. A row with no annotation has no summary. A row that is a taxonomy node (a concept or a document class, tenant scope) also carries series — its latest count, share and trend from the built-in series, as describe_ontology with_stats gives it — beside the summary, never in it."},
 		"summary_chars": {"type": "integer", "description": "with_summary: the most abstract characters a response carries in all (default 2000, at most 8000); rows past it keep their brief only."},
 		"include_color_scheme": {"type": "boolean", "description": "get_document / documents_summary / graph_snapshot: also return each document's display palette (color_scheme). Off by default; you rarely need it."},
 		"body_chars": {"type": "integer", "description": "annotation_inputs: how much of the target's own text to return (default 6000, at most 20000). graph_recall: how much of each chunk's text to return. Omit it and chunks that are not facts (clauses, sections, notes) carry the first 600 characters as body, while facts stay title-only because their title is the claim. 0 = titles only, the cheapest structural walk. N (at most 4000) = up to N characters on every row, facts included. A cut body ends on a word and is marked body_truncated; budget_chars counts body characters too."},
@@ -319,7 +337,7 @@ const documentInputSchema = `{
 		"survivor_id": {"type": "string", "description": "maintain_statement merge: the live statement of the same from_id, to_id, kind and status that keeps the evidence."},
 		"evidence_id": {"type": "string", "description": "maintain_statement stale_evidence / relocate_evidence: the evidence row, by its id from get_edge."},
 		"chunk_id":    {"type": "string", "description": "maintain_statement relocate_evidence: the chunk the evidence's quote is in now."},
-		"evidence":    {"type": "array", "description": "link_chunks / propose_statement: the text that supports the relation. Each item names ONE source — chunk_id (a chunk of this scope), session_id + event_seq (a chat turn), or scope + natural_key (another scope) — and the verbatim quote. A quote that does not occur in its chunk or turn is refused. A chunk quote is from the chunk's body unless part is \"title\": then it is from the chunk's title (a document's name is its root chunk's title), and char_start/char_end count characters of the title.", "items": {"type": "object", "properties": {"chunk_id": {"type": "string"}, "session_id": {"type": "string"}, "event_seq": {"type": "integer"}, "scope": {"type": "string", "enum": ["agent","user","tenant"]}, "natural_key": {"type": "string"}, "quote": {"type": "string"}, "char_start": {"type": "integer"}, "char_end": {"type": "integer"}, "part": {"type": "string", "enum": ["body","title"], "description": "With chunk_id: which text of the chunk the quote is from. Default body."}}, "required": ["quote"]}},
+		"evidence":    {"type": "array", "description": "link_chunks / propose_statement: the text that supports the relation. Each item names ONE source — chunk_id (a chunk of this scope), session_id + event_seq (a chat turn), or scope + natural_key (another scope) — and the verbatim quote. A quote that does not occur in its chunk or turn is refused. A chunk quote is from the chunk's body unless part is \"title\": then it is from the chunk's title (a document's name is its root chunk's title), and char_start/char_end count characters of the title. propose_entity (a class or relation add): up to five quotes, each from a chunk of the tenant scope by chunk_id.", "items": {"type": "object", "properties": {"chunk_id": {"type": "string"}, "session_id": {"type": "string"}, "event_seq": {"type": "integer"}, "scope": {"type": "string", "enum": ["agent","user","tenant"]}, "natural_key": {"type": "string"}, "quote": {"type": "string"}, "char_start": {"type": "integer"}, "char_end": {"type": "integer"}, "part": {"type": "string", "enum": ["body","title"], "description": "With chunk_id: which text of the chunk the quote is from. Default body."}}, "required": ["quote"]}},
 		"include_proposed": {"type": "boolean", "description": "get_edges / memberships / get_document with_memberships (default true) / backlinks (default false) / graph_snapshot (default false): include statements proposed for review and not yet accepted. graph_recall (default false): also follow them."},
 		"after":       {"type": "string", "description": "get_edges / backlinks / list_statements / graph_snapshot / node_stats mode assign: continue a truncated listing — pass the next_cursor from the previous page (list_statements: with the same order; graph_snapshot: page.next_cursor)."},
 		"evidence_document_id": {"type": "string", "description": "list_statements: only statements with an evidence row quoting a chunk of this document."},
@@ -367,7 +385,7 @@ const documentInputSchema = `{
 		"dry_run":     {"type": "boolean", "description": "copy_documents / move_documents: true (the default) checks the whole set and reports what would be copied or moved, refused and left behind, writing nothing; false does it."},
 		"dangling":    {"type": "string", "enum": ["refuse","drop"], "description": "move_documents: a relation between a moved document and one outside the set cannot cross scopes. refuse (the default) refuses the move and lists them; drop moves the set and deletes those relations with the source."},
 		"basis":       {"type": "array", "items": {"type": "string", "enum": ["sha256","title"]}, "description": "find_duplicates: how documents match — sha256 (the same text, whitespace aside) and/or title (the same title once copy markers are stripped, and the same kind of document). Omit for both."},
-		"propose":     {"type": "boolean", "description": "find_duplicates: false (the default) only reports the pairs; true files a duplicate_of proposal from each copy to its original, through propose_statement, skipping a pair that already has one in either direction. node_stats mode misfits: true files a subject proposal (method rule:centroid) from each misfit to the nearer concept, at most limit per call (default 20, at most 100), never one a reviewer rejected or one already proposed or live. node_stats mode split: true files each recurring group as a proposed concept (propose_entity) and each merge as a retire proposal of the smaller concept (propose_entity change=retire), at most limit per call (default 10, at most 50); every filing is inert until an operator accepts it. node_stats mode assign: true files a subject proposal (method rule:assign, confidence the margin) for each ranking whose margin clears its level's threshold, of a document placed under none of the concepts compared at that level, at most limit per call (default 20, at most 100), never one a reviewer rejected or one already proposed or live; nothing is made live."},
+		"propose":     {"type": "boolean", "description": "find_duplicates: false (the default) only reports the pairs; true files a duplicate_of proposal from each copy to its original, through propose_statement, skipping a pair that already has one in either direction. node_stats mode misfits: true files a subject proposal (method rule:centroid) from each misfit to the nearer concept, at most limit per call (default 20, at most 100), never one a reviewer rejected or one already proposed or live. node_stats mode split: true files each recurring group as a proposed concept (propose_entity) and each merge as a retire proposal of the smaller concept (propose_entity change=retire), at most limit per call (default 10, at most 50); every filing is inert until an operator accepts it. node_stats mode assign: true files a subject proposal (method rule:assign, confidence the margin) for each ranking whose margin clears its level's threshold, of a document placed under none of that level's concepts (compared or not), at most limit per call (default 20, at most 100), never one a reviewer rejected or one already proposed or live; nothing is made live."},
 		"expect_count": {"type": "integer", "description": "move_documents: required with dry_run false — counts.documents from the dry run. The move is refused when the set no longer matches."},
 		"exclude_under_path":  {"type": "string", "description": "search / related: never return chunks of documents named at or under this Path-tree path."},
 		"exclude_under_paths": {"type": "array", "items": {"type": "string"}, "description": "search / related: never return chunks of documents named at or under any of these Path-tree paths."},
@@ -451,10 +469,15 @@ type docInput struct {
 	// the entry (chunk id, or name), and for an edit its new meaning and its complete new
 	// directive set, carried as inert data. Directives is a raw object so a flag
 	// (true), a value and a repeated directive (a list) each decode.
+	//
+	// Without change, Meaning, Directives, Evidence and Signal file a class or relation
+	// ADD proposal with structured data (RFC GQ P6.3): Signal names the building
+	// signal it answers.
 	Change     string          `json:"change,omitempty"`
 	Entry      string          `json:"entry,omitempty"`
 	Meaning    *string         `json:"meaning,omitempty"`
 	Directives json.RawMessage `json:"directives,omitempty"`
+	Signal     string          `json:"signal,omitempty"`
 	// SKOSXML is import_scheme's SKOS input in RDF/XML; its outline input is markdown.
 	SKOSXML string `json:"skos_xml,omitempty"`
 	// SourceQuote is the span a fact was derived from (upsert_chunk). Persisted on the
@@ -965,6 +988,12 @@ var docSchemaDDL = []string{
 	// ontology, by id rather than by name (document_ontology_identity.go).
 	documentRolesDDL,
 	documentRolesMarkerDDL,
+	// ontology_releases / ontology_release_entries / ontology_release_bodies: a copy
+	// of the tenant ontology per confirm and applied change (document_ontology_release.go).
+	ontologyReleasesDDL,
+	ontologyReleaseEntriesDDL,
+	ontologyReleaseEntriesBodyDDL,
+	ontologyReleaseBodiesDDL,
 	// chunk_annotations: a brief and an abstract per (chunk, level), beside the
 	// content and never part of it (document_annotations.go).
 	chunkAnnotationsDDL,
@@ -978,6 +1007,12 @@ var docSchemaDDL = []string{
 	// document_measure.go).
 	measurePointsDDL,
 	measurePointsIndexDDL,
+	// ontology_jobs: the class-rename job's row, and subject_key_aliases: the subject
+	// keys it rewrote, each pointing at the key it became (RFC GQ P5.3,
+	// document_ontology_rename_job.go).
+	ontologyJobsDDL,
+	subjectKeyAliasesDDL,
+	subjectKeyAliasesToDDL,
 }
 
 // maxChunkDepth caps the ancestor walk in move_chunk (cycle detection) so a
@@ -1677,7 +1712,13 @@ func (d *Document) provisionTables(ctx context.Context, key sqlmem.ScopeKey) err
 	if err := d.migrateMentionKinds(ctx, key); err != nil {
 		return err
 	}
-	return d.migrateOntologyVersion(ctx, key)
+	if err := d.migrateOntologyVersion(ctx, key); err != nil {
+		return err
+	}
+	if err := d.migrateOntologyContent(ctx, key); err != nil {
+		return err
+	}
+	return d.migrateReleaseRedacted(ctx, key)
 }
 
 // migrateConfidencePrecision widens chunk_memory_meta.confidence from postgres
@@ -2059,6 +2100,18 @@ func (d *Document) writeBodyAs(ctx context.Context, mscope store.MemoryScope, ke
 // document says it came from. This is the one place every body write goes
 // through, which is why the rule lives here.
 func (d *Document) putBody(ctx context.Context, mscope store.MemoryScope, key sqlmem.ScopeKey, chunkID, chunkType, body string, fields json.RawMessage, origin string, stamped map[string]any) error {
+	return d.storeBody(ctx, mscope, key, chunkID, chunkType, body, fields, origin, stamped, true)
+}
+
+// putFieldsKeepIndex is putBody for a write that changes a chunk's fields and not its
+// body: the index text is built from the body and the chunk's place, never from its
+// fields, so the stored vector stays right and no embedding call is made (the class
+// rename job's classification-record step, RFC GQ plan risk 3).
+func (d *Document) putFieldsKeepIndex(ctx context.Context, mscope store.MemoryScope, key sqlmem.ScopeKey, chunkID, chunkType, body string, fields json.RawMessage) error {
+	return d.storeBody(ctx, mscope, key, chunkID, chunkType, body, fields, "", nil, false)
+}
+
+func (d *Document) storeBody(ctx context.Context, mscope store.MemoryScope, key sqlmem.ScopeKey, chunkID, chunkType, body string, fields json.RawMessage, origin string, stamped map[string]any, embed bool) error {
 	scopeID := docMemScopeID(mscope, key)
 	// RFC BL: key chunk bodies on the same tenant the document's dirent + SQL
 	// structure use (direntTenant = the raw RunIdentity tenant), so bodies and
@@ -2131,7 +2184,9 @@ func (d *Document) putBody(ctx context.Context, mscope store.MemoryScope, key sq
 	// unsearchable, but a chunk whose write was rejected because an embedder was
 	// cold is lost work the author has to redo. Authoring must not become
 	// embedder-dependent.
-	d.embedBody(ctx, tenant, mscope, key, bodyKey, chunkID, chunkType, body)
+	if embed {
+		d.embedBody(ctx, tenant, mscope, key, bodyKey, chunkID, chunkType, body)
+	}
 	return nil
 }
 
@@ -3986,9 +4041,59 @@ func (d *Document) updateChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 	}
 	// RFC GQ P2.4: a rename, retire or re-declaration of an entry something rests on
 	// needs a plan's fingerprint; after the locks, so a locked entry answers entry_locked.
-	if refused := d.ontologyUpdatePlanRefusal(ctx, key, mscope, row, in, present); refused != nil {
+	var rename *renameJobStart
+	if refused := d.ontologyUpdatePlanRefusal(ctx, key, mscope, row, in, present, &rename); refused != nil {
 		return *refused, nil
 	}
+	if rename != nil {
+		// A class rename the rename job carries (document_ontology_rename_job.go): the same
+		// write records the old name, so the rows not yet moved read as the class, and
+		// the job row exists before the write, so an interruption leaves it to resume.
+		defer rename.release(ctx, d, key)
+		body := in.Body
+		if _, has := present["body"]; !has {
+			stored, rerr := d.readBody(ctx, mscope, key, in.ID)
+			if rerr != nil {
+				return errFrom("update_chunk: body: "+rerr.Error(), rerr), nil
+			}
+			body = stored.Body
+		}
+		in.Body = withRenamedFrom(body, rename.oldName)
+		if present == nil {
+			present = map[string]json.RawMessage{}
+		}
+		present["body"] = json.RawMessage(`""`)
+		// The job takes an `apply` release when it finishes; the ontology as it stands
+		// before the rename is released first when no release holds it (owner ruling Q2),
+		// so that release's diff is the rename alone. A record, not a gate.
+		if _, _, err := d.CatchUpOntologyRelease(ctx); err != nil {
+			slog.WarnContext(ctx, "ontology: catch_up release before a class rename failed", "tenant", key.Tenant, "chunk_id", in.ID)
+		}
+		if err := d.createRenameJob(ctx, key, rename); err != nil {
+			return errFrom("update_chunk: could not record the rename job, so nothing was changed: "+err.Error(), err), nil
+		}
+		// A failed write leaves the job pending: the next rename resumes it when the new
+		// name reached the ontology and abandons it otherwise (continueOntologyJob).
+		res, err := d.writeChunkUpdate(ctx, key, mscope, row, in, present, retype, retiring, retireSubtree, effValid, effInvalid, hasValidAt, hasInvalidAt)
+		if err != nil || res.IsError {
+			return res, err
+		}
+		return withRenameJob(res, d.startRenameJob(ctx, key, mscope, rename)), nil
+	}
+	// RFC GQ P5.5: a change that moves a concept's tag re-tags what is filed under it.
+	retag, refused := d.ontologyRetagForUpdate(ctx, key, mscope, row, in, present)
+	if refused != nil {
+		return *refused, nil
+	}
+	defer retag.release(ctx, d, key)
+	res, err := d.writeChunkUpdate(ctx, key, mscope, row, in, present, retype, retiring, retireSubtree, effValid, effInvalid, hasValidAt, hasInvalidAt)
+	return d.finishConceptRetag(ctx, key, mscope, retag, res, err)
+}
+
+// writeChunkUpdate is update_chunk's write, once every check has passed.
+func (d *Document) writeChunkUpdate(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, row chunkRow, in docInput,
+	present map[string]json.RawMessage, retype *subjectRetype, retiring bool, retireSubtree []string,
+	effValid, effInvalid *int64, hasValidAt, hasInvalidAt bool) (tools.Result, error) {
 	// Claim the update ATOMICALLY first: the guarded bump only matches if the
 	// revision is still what we read. If a concurrent writer raced us, it
 	// matches 0 rows → conflict, and we bail BEFORE clobbering the body (the
@@ -4352,6 +4457,11 @@ func (d *Document) moveChunk(ctx context.Context, key sqlmem.ScopeKey, in docInp
 			return *refused, nil
 		}
 	}
+	retag, refused := d.ontologyRetagForMove(ctx, key, row, in.NewParentID)
+	if refused != nil {
+		return *refused, nil
+	}
+	defer retag.release(ctx, d, key)
 	pos := 0
 	if in.Position != nil {
 		pos = *in.Position
@@ -4386,7 +4496,8 @@ func (d *Document) moveChunk(ctx context.Context, key sqlmem.ScopeKey, in docInp
 		d.reindexSubtree(ctx, key, store.MemoryScope(key.Scope), row.DocumentID, in.ID)
 	}
 	d.publishChange(ctx, store.MemoryScope(key.Scope), docMemScopeID(store.MemoryScope(key.Scope), key), row.DocumentID, "move_chunk", in.ID)
-	return jsonResult(map[string]any{"ok": true, "id": in.ID, "new_parent_id": in.NewParentID, "position": pos})
+	res, err := jsonResult(map[string]any{"ok": true, "id": in.ID, "new_parent_id": in.NewParentID, "position": pos})
+	return d.finishConceptRetag(ctx, key, store.MemoryScopeTenant, retag, res, err)
 }
 
 // reorderChunk moves a chunk one step up or down among its same-parent siblings

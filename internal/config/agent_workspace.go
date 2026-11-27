@@ -22,8 +22,8 @@ import (
 // and is held to the stricter engine requirement. Not per-run overridable.
 // Authority, not content: not part of content_sha256.
 //
-// Only the keys built so far exist (P1's, P8's share, P4's egress and P9's
-// expose). The keys later phases add (connect, templates) are refused as unknown,
+// Only the keys built so far exist (P1's, P8's share, P4's egress, P9's
+// expose, P6's templates, P12's durable and P13's roots). The key a later phase adds (connect) is refused as unknown,
 // in yaml and in JSON, so no stored grant can name something that does
 // nothing yet.
 type AgentWorkspace struct {
@@ -39,6 +39,23 @@ type AgentWorkspace struct {
 	// user (RFC GW §5.3, §7): model-written active content in front of a
 	// person, so the grant to give sparingly. It needs workspace.expose on.
 	Expose bool `json:"expose,omitempty" yaml:"expose,omitempty"`
+	// Templates lets the agent save and delete workspace templates (RFC GW
+	// §5.5); a tenant-scoped one also needs the tenant value in its
+	// memory_scopes. Opening a workspace from a template needs only Open.
+	Templates bool `json:"templates,omitempty" yaml:"templates,omitempty"`
+	// Connect lets the agent send HTTP requests to the ports a peer
+	// exposed, through a share made with connect (RFC GW §5.2, §7), and
+	// hand connect over in a share of its own.
+	Connect bool `json:"connect,omitempty" yaml:"connect,omitempty"`
+	// Durable lets the agent open a durable workspace, kept past its run
+	// under its user and a name (RFC GW §4.2, P12). It needs
+	// workspace.durable on.
+	Durable bool `json:"durable,omitempty" yaml:"durable,omitempty"`
+	// Roots lets the agent open a workspace on a root: a folder of its
+	// user's own machine, offered by that user's personal worker (RFC GW
+	// §4.5, P13, owner ruling Q1). Such a workspace is the user's real
+	// files, not a copy, so it is a grant of its own beside open.
+	Roots bool `json:"roots,omitempty" yaml:"roots,omitempty"`
 	// Egress names the routes (workspace.egress.routes, or a tenant's) a
 	// workspace this agent opens may reach the network through (RFC GW
 	// §6.3). A sub-agent holds only the names both it and its parent list.

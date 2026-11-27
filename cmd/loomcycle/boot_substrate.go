@@ -172,6 +172,7 @@ func (b *boot) wireAuth() {
 		b.oauthMgr.SetAudit(auditSink)
 		// RFC FB: every Git network operation.
 		b.gitTool.Audit = auditSink
+		b.workspaceTool.GitAudit = auditSink
 		// RFC GW P8: every workspace share, unshare and use through a share.
 		if b.workspaces != nil {
 			b.workspaces.SetAudit(auditSink)
@@ -248,6 +249,7 @@ func (b *boot) wireAuth() {
 		LegacyTokenSet:         srv.LegacyTokenSet,
 		AdminPrincipalDeclared: srv.AdminPrincipalResolved,
 		ConfigTenants:          cfg.PrincipalTenants(),
+		PersonalWorkers:        srv.PersonalWorkersOn,
 	})
 	// RFC L Decision 11: per-replica auth-token resolution cache. Default
 	// 30s TTL; LOOMCYCLE_AUTH_CACHE_TTL_SECONDS=0 disables it (direct

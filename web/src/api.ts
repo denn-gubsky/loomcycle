@@ -207,10 +207,27 @@ export interface ConfigTeamStatus {
   detail?: string;
 }
 
+// One series of loomcycle_deprecated_use_total: how many runs this replica
+// gave a deprecated tool or field since it started.
+export interface DeprecatedUseCount {
+  kind: string;
+  name: string;
+  count: number;
+}
+
+// What a future release removes that this deployment still uses (RFC GW
+// P14): config is the load's lines (what boot and doctor print), runs this
+// replica's run counts, the only place a stored definition's use shows.
+export interface ConfigDeprecations {
+  config: string[];
+  runs: DeprecatedUseCount[];
+}
+
 export interface ConfigTeamsResponse {
   teams: ConfigTeamStatus[];
   reconciled_at?: string; // when this replica wrote the teams; absent on another replica
   reconcile_error?: string;
+  deprecations?: ConfigDeprecations; // absent from an older server
 }
 
 // getConfigTeams reads GET /v1/_config/teams (admin).
@@ -3879,6 +3896,9 @@ export interface OntologyResponse {
   grammars?: OntologyGrammar[];
   /** The ontology root's revision — what facts written now are stamped with. */
   ontology_version?: number;
+  /** RFC GQ P3.1: the first 16 hex of a hash of what the ontology declares now;
+   *  "" when it could not be read whole. A release carries the one it had. */
+  content_version?: string;
   /** Tenant-scope facts by the ontology version they were written under (0 = unknown). */
   fact_versions?: { version: number; count: number }[];
   /** chunks.type values in use in the tenant scope that no class declares. */
@@ -4005,6 +4025,215 @@ export function setOntologyStatus(
     `/v1/_ontology${q}`,
     JSON.stringify({ status }),
   );
+}
+
+// ---- Ontology releases (RFC GQ P3.4: GET /v1/_ontology/releases…) ----
+//
+// The same shapes as @loomcycle/client's OntologyRelease family (adapters/ts
+// types.ts), declared here because the Web UI keeps its own api.ts. An
+// operator's read: a member gets 403 on every one of these routes.
+
+/** The header of one complete release: a copy of the ontology taken when it
+ *  was confirmed, when an accepted change was applied or rolled back, or
+ *  before either when the ontology had moved without one (catch_up). */
+export interface OntologyRelease {
+  seq: number;
+  content_version: string;
+  fingerprint: string;
+  reason: "confirm" | "apply" | "rollback" | "catch_up" | string;
+  /** The user who took it; absent when none was known. */
+  actor?: string;
+  /** Unix nanoseconds (beyond a JS number's exact range: display only). */
+  created_at: number;
+  /** How many chunks of the ontology document it copied. */
+  entries: number;
+  /** A subject erasure changed the release (an entry or its plan summary); its
+   *  content_version stays as recorded, so its copy no longer hashes to it. */
+  redacted?: boolean;
+}
+
+export interface ListOntologyReleasesResult {
+  tenant: string;
+  /** Newest first; at most the newest 50 are kept. */
+  releases: OntologyRelease[] | null;
+}
+
+export interface GetOntologyReleaseResult {
+  tenant: string;
+  release: OntologyRelease;
+  /** The plan summary of the change an `apply` release applied. */
+  plan_summary?: Record<string, unknown>;
+  /** The ontology the release copied, as Markdown. */
+  export_md: string;
+}
+
+/** One side of a diff: a release (`seq`) or the ontology in force (`current`). */
+export interface OntologyDiffSide {
+  seq?: number;
+  current?: boolean;
+  content_version: string;
+  /** The release on this side was changed by a subject erasure. */
+  redacted?: boolean;
+}
+
+/** An entry as one side declares it. `directives` is its parsed declaration
+ *  without name, status, meaning and parent. */
+export interface OntologyEntryState {
+  name: string;
+  parent?: string;
+  parent_name?: string;
+  status?: string;
+  meaning?: string;
+  directives: Record<string, unknown> | null;
+}
+
+export type OntologyEntryChange = "renamed" | "moved" | "kind" | "status" | "meaning" | "directives";
+
+/** One entry that differs, matched by chunk id (a rename is one changed entry). */
+export interface OntologyEntryDiff {
+  chunk_id: string;
+  kind: string;
+  change: "added" | "removed" | "changed" | "erased";
+  changed?: OntologyEntryChange[];
+  before?: OntologyEntryState;
+  after?: OntologyEntryState;
+}
+
+export interface DiffOntologyReleasesResult {
+  tenant: string;
+  from: OntologyDiffSide;
+  to: OntologyDiffSide;
+  changes: OntologyEntryDiff[] | null;
+  /** What a side could not read (e.g. entries under an uncopied proposal). */
+  issues: string[] | null;
+}
+
+export function listOntologyReleases(): Promise<ListOntologyReleasesResult> {
+  return jsonFetch<ListOntologyReleasesResult>("/v1/_ontology/releases");
+}
+
+export function getOntologyRelease(seq: number): Promise<GetOntologyReleaseResult> {
+  return jsonFetch<GetOntologyReleaseResult>(`/v1/_ontology/releases/${encodeURIComponent(String(seq))}`);
+}
+
+/** Diff release `from` against release `to`, or against the ontology in force. */
+export function diffOntologyReleases(from: number, to: number | "current"): Promise<DiffOntologyReleasesResult> {
+  const q = new URLSearchParams({ from: String(from), to: String(to) });
+  return jsonFetch<DiffOntologyReleasesResult>(`/v1/_ontology/releases/diff?${q}`);
+}
+
+// ---- The ontology job (RFC GQ P5.6: GET /v1/_ontology/job, POST …/resume) ----
+//
+// The same shape as @loomcycle/client's OntologyJobStatus. An operator's read
+// and action: a member gets 403.
+
+/** A job carrying a class rename or a concept re-tag through the stored rows
+ *  of the tenant scope and every user and agent scope. */
+export interface OntologyJobStatus {
+  id: string;
+  kind: "class_rename" | "concept_retag" | string;
+  entry: string;
+  /** The old names (a class rename) or the old tags (a re-tag). */
+  from: string[];
+  /** The new name; for a re-tag the new tags joined by ", ". */
+  to: string;
+  to_tags?: string[];
+  state: "pending" | "running" | "blocked" | "done" | "abandoned" | string;
+  step?: string;
+  /** Rows rewritten so far, by step. */
+  done?: Record<string, number>;
+  /** Why a blocked job cannot go on. */
+  error?: string;
+  /** Rows still under an old name in the scope the job is at. */
+  remaining: number;
+  scope?: "tenant" | "user" | "agent" | string;
+  scopes_done?: number;
+  scopes_total?: number;
+  /** Unix nanoseconds (display only). */
+  created_at?: number;
+  updated_at?: number;
+}
+
+export interface OntologyJobResult {
+  tenant: string;
+  /** The unfinished job, else the one updated last; null when there never was one. */
+  job: OntologyJobStatus | null;
+}
+
+/** The tenant's ontology job. Writes nothing. */
+export function getOntologyJob(): Promise<OntologyJobResult> {
+  return jsonFetch<OntologyJobResult>("/v1/_ontology/job");
+}
+
+/** Give the unfinished job one slice of work. `id` is required: the resume is
+ *  refused unless that job is still the unfinished one. */
+export function resumeOntologyJob(id: string): Promise<OntologyJobResult> {
+  return postJSON<OntologyJobResult>("/v1/_ontology/job/resume", JSON.stringify({ id }));
+}
+
+// ---- Ontology rollback (RFC GQ P5.7: POST /v1/_ontology/rollback) ----
+//
+// The same shapes as @loomcycle/client's OntologyRollbackReport family. An
+// operator's action: a member gets 403.
+
+/** One write a rollback made: the op, the entry's chunk id and name. */
+export interface OntologyRollbackStep {
+  op: string;
+  entry: string;
+  name: string;
+  /** The chunk an entry added back was written as (it gets a new id). */
+  new_id?: string;
+}
+
+export interface OntologyRollbackReport {
+  release: number;
+  /** What the release declared, and what the ontology in force declares now. */
+  release_content_version: string;
+  content_version: string;
+  /** Whether the two content versions are equal. */
+  matches: boolean;
+  risk: string;
+  applied: OntologyRollbackStep[];
+  /** The class-rename jobs the rollback's renames started. */
+  rename_jobs?: OntologyJobStatus[];
+  /** The release taken of the ontology the rollback left. */
+  rollback_release?: number;
+  notes?: string[];
+  warnings?: string[];
+}
+
+export interface ApplyOntologyRollbackResult {
+  tenant: string;
+  rollback: OntologyRollbackReport;
+}
+
+/** A rollback the server refused with a 409 or 422: the body carries `code` and
+ *  `error`, plus `fingerprint` (plan_required / plan_stale) or `applied`
+ *  (partially_applied). */
+export interface OntologyRollbackFailure {
+  status: number;
+  body: { code?: string; error?: string; fingerprint?: string; applied?: OntologyRollbackStep[] } | null;
+}
+
+/** Plan rolling the ontology back to release `seq`. Writes nothing. */
+export function planOntologyRollback(seq: number): Promise<OntologyPlanResult> {
+  return planOntologyChanges([{ op: "release", seq }]);
+}
+
+/** Apply the plan of rolling back to release `seq` with that plan's fingerprint. A
+ *  409 or 422 refusal is returned with its body whole (a partial rollback's list of
+ *  writes can run past an error message's length); anything else throws. */
+export async function applyOntologyRollback(
+  seq: number,
+  planFingerprint: string,
+): Promise<{ ok: true; data: ApplyOntologyRollbackResult } | { ok: false; failure: OntologyRollbackFailure }> {
+  const r = await jsonFetchAllowing<ApplyOntologyRollbackResult>("/v1/_ontology/rollback", [409, 422], {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ seq, plan_fingerprint: planFingerprint }),
+  });
+  if (r.ok) return r;
+  return { ok: false, failure: { status: r.status, body: r.body } };
 }
 
 // ---- Ontology subject merge (POST /v1/_ontology/subjects/merge) ----

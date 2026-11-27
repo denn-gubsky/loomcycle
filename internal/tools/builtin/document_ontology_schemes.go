@@ -33,9 +33,9 @@ type SchemeMirrorReport struct {
 // written and the report says what would change.
 //
 // It touches CONCEPT CHUNKS ONLY. A tag an operator or agent put on a document is that
-// document's classification, and the mirror has no say over it — which is also why a
-// concept's rename does not silently reclassify documents: their tags stay until someone
-// re-files them.
+// document's classification, and the mirror has no say over it. A concept's rename or
+// move carries the documents filed under it to the new tag through the re-tag job
+// (document_ontology_retag_job.go), which in turn leaves these chunks to the mirror.
 //
 // "Mirror-shaped" means the first segment is a declared scheme's mirror segment: a
 // concept chunk's other tags are left alone. Idempotent: a second run changes nothing.

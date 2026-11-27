@@ -22,7 +22,7 @@
 
 ---
 
-> 🌳 **Stable and in production.** loomcycle is past v1.0 (currently v1.168) — feature-complete, hardened, and distribution-ready (Homebrew, multi-arch Docker, a Claude Code plugin, TS + Python adapters, a TrueNAS app). **Validated by two months of continuous production operation at JobEmber.ai** under real user load, with multi-replica HA on Postgres. Development since v1.0 has been new primitives plus hardening — see [`REVISIONS.md`](REVISIONS.md) for recent releases and [the releases page](https://github.com/denn-gubsky/loomcycle/releases) for the full history. Apache-2.0. We welcome bug reports, security disclosures, feature contributions, downstream consumers, and forks. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
+> 🌳 **Stable and in production.** loomcycle is past v1.0 (currently v1.170) — feature-complete, hardened, and distribution-ready (Homebrew, multi-arch Docker, a Claude Code plugin, TS + Python adapters, a TrueNAS app). **Validated by two months of continuous production operation at JobEmber.ai** under real user load, with multi-replica HA on Postgres. Development since v1.0 has been new primitives plus hardening — see [`REVISIONS.md`](REVISIONS.md) for recent releases and [the releases page](https://github.com/denn-gubsky/loomcycle/releases) for the full history. Apache-2.0. We welcome bug reports, security disclosures, feature contributions, downstream consumers, and forks. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ---
 
@@ -80,9 +80,11 @@ Same Go binary, same config schema. Operator flips a few env vars to pick the po
 | Posture | Configuration shape | Use case |
 |---|---|---|
 | **True managed sandbox** | `LOOMCYCLE_BASH_ENABLED=0`, no `volumes:` block (sandbox-by-default — agents get no disk access), `LOOMCYCLE_HTTP_HOST_ALLOWLIST` empty, `LOOMCYCLE_HTTP_CALLER_AUTHORITATIVE=1`. Every tool default-deny; agents can only reach what the caller's per-request `allowed_hosts` says. | Shared-server deployments processing untrusted prompts. The runtime survives contact with adversarial input. |
-| **Agentic dev environment** | Bash enabled, a `default` rw `volumes:` entry pointing at your workspace, broad `allowed_hosts`, optional local Ollama for offline work. | Local development. Internal trusted operators. Single-user research workstation. |
+| **Agentic dev environment** | Workspaces on (`workspace.mode: local`, so commands run in a workspace on a worker the runtime starts itself), a `default` rw `volumes:` entry pointing at your workspace, broad `allowed_hosts`, optional local Ollama for offline work. | Local development. Internal trusted operators. Single-user research workstation. |
 
 The trust boundary is **operator / caller**. The operator config is the floor; callers can narrow per-request but never widen. The bearer is the authority. The shared `LOOMCYCLE_AUTH_TOKEN`, or an admin-scoped minted token, drives the whole runtime: treat its holder as fully trusted. A per-principal token or a sign-in session carries only its tenant, subject and scopes (see [`SECURITY.md`](SECURITY.md#scope-and-threat-model)). For true isolation in the sandbox posture, run loomcycle inside a container or VM. `Bash` is restricted (cwd, env scrub, output bounds, timeouts) but it is **not** a kernel-level sandbox.
+
+**Deprecated:** the `Bash` tool, Bashbox, the builder sidecar, the `loomcycle-toolbox` image and the variables that configure them still work, and a future release removes them (RFC GW P15). Agents run commands in a workspace on a workspace worker instead ([`docs/WORKSPACES.md`](docs/WORKSPACES.md)); [`docs/MIGRATING-FROM-BASH.md`](docs/MIGRATING-FROM-BASH.md) maps each to its replacement.
 
 ## Install
 
@@ -212,17 +214,27 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.168.0) lets a person's own file reach the agent: the
-run's owner puts it into the run inbox, under its own name, and a chat bridge
-hands it to a live run as an untrusted block. A new chat can start with the
-person's recent chats with the same agent (`history_preload`), and Calc gains
-matrix powers and exact matrix products. Read the upgrade notes in
-[`REVISIONS.md`](REVISIONS.md).
+The most recent line (v1.170.0) completes git workspaces: a workspace opened
+on a repository can fetch, pull and push its own branch, commit, diff and
+branch through typed ops, and fork with a branch of its own, over capped
+mirrors. The `agent-teams` bundle pushes through it with no token in a
+command. A subject's erasure reaches the kept ontology releases, and
+`File op=render` gains page counters and an inline style. Read the upgrade
+notes in [`REVISIONS.md`](REVISIONS.md).
 
-Before it, v1.167.0 let an external sign-in gate sign a person in as the user
-another gate already made (`same_subject_as`), made Calc's `datefmt` refuse
-tokens it does not know, and kept host paths out of the file tools' success
-lines.
+Before it, v1.169.0 grew workspaces into a place an agent can
+keep working in: a workspace can outlive its run (durable), travel in a
+snapshot, start from a template, serve a page to its user and take updates
+back from it, show the agent a screenshot of that page, open on a git branch
+over the tenant's mirror, and run on a user's own machine (personal workers).
+The `Bash` tool, Bashbox and the sandbox sidecar are deprecated in favour of
+workspaces. The tenant ontology gains releases, rollback and resumable rename
+jobs.
+
+Before that, v1.168.0 let a person's own file reach the agent through the run
+inbox and a chat bridge, let a new chat start with the person's recent chats
+with the same agent (`history_preload`), and gave Calc matrix powers and exact
+matrix products.
 
 Before that, v1.155.0 rendered a Document back into a file: `File op=render`
 writes Markdown, HTML, Word or PDF (typeset by Typst in the conversion

@@ -71,8 +71,57 @@ type WorkspaceConfig struct {
 	// Expose is `workspace.expose`: serving a workspace's port to its user
 	// through the API (RFC GW §5.3). Off unless enabled.
 	Expose WorkspaceExposeConfig `yaml:"expose,omitempty"`
+	// Durable is `workspace.durable`: workspaces kept past their run under
+	// the tenant, the user and a name (RFC GW §4.2, P12). Off unless
+	// enabled.
+	Durable WorkspaceDurableConfig `yaml:"durable,omitempty"`
+	// PersonalWorkers lets a user's own machine attach as a worker of that
+	// user's runs (RFC GW §4.5, D29). Off by default; on only for a local
+	// deployment: the worker endpoint must listen on loopback (D32).
+	PersonalWorkers bool `yaml:"personal_workers,omitempty"`
 	// Checkpoint bounds a workspace's checkpoints (RFC GW §5.4).
 	Checkpoint WorkspaceCheckpointConfig `yaml:"checkpoint,omitempty"`
+	// Template bounds workspace templates (RFC GW §5.5).
+	Template WorkspaceTemplateConfig `yaml:"template,omitempty"`
+	// Push bounds a git workspace's push (RFC GW §6.2, P11).
+	Push WorkspacePushConfig `yaml:"push,omitempty"`
+	// Git bounds git workspaces' mirrors (RFC GW P11).
+	Git WorkspaceGitConfig `yaml:"git,omitempty"`
+}
+
+// WorkspaceGitConfig is `workspace.git` (RFC GW P11, the owner's ruling of
+// 2026-11-26): a worker's mirror of a repository grows with every fetch and
+// outlives the workspaces over it, so it is bounded and collected.
+type WorkspaceGitConfig struct {
+	// MirrorMaxMB caps one mirror: a fetch that would take it past the cap
+	// is refused and leaves it as it was. Default 4096, at most 1 TiB.
+	MirrorMaxMB int64 `yaml:"mirror_max_mb,omitempty"`
+	// MirrorIdleS is how long a mirror no workspace pins is kept after its
+	// last use, on the local worker; a remote worker reads
+	// LOOMCYCLE_WORKSPACE_MIRROR_IDLE_S. Default 3600, at most 30 days.
+	MirrorIdleS int `yaml:"mirror_idle_s,omitempty"`
+}
+
+// Defaults and ceilings of workspace.git.
+const (
+	DefaultWorkspaceMirrorMaxMB = 4096
+	DefaultWorkspaceMirrorIdleS = 3600
+	maxWorkspaceMirrorMB        = 1 << 20
+	MaxWorkspaceMirrorIdleS     = 30 * 24 * 3600
+)
+
+// WorkspaceTemplateConfig is `workspace.template`: the size of one template's
+// archive and how many a tenant holds (RFC GW §5.5).
+type WorkspaceTemplateConfig struct {
+	// MaxMB bounds one template's archive, in MiB. Default 1024.
+	MaxMB int64 `yaml:"max_mb,omitempty"`
+	// MaxPerTenant bounds the templates a tenant holds, user and tenant
+	// ones together. Default 20.
+	MaxPerTenant int `yaml:"max_per_tenant,omitempty"`
+	// MaxPerUser bounds one user's user templates, so one member cannot
+	// fill the tenant's bound alone. Default 5, or max_per_tenant when that
+	// is lower; at most max_per_tenant.
+	MaxPerUser int `yaml:"max_per_user,omitempty"`
 }
 
 // WorkspaceCheckpointConfig is `workspace.checkpoint`. A checkpoint's size
@@ -108,6 +157,24 @@ const (
 	maxWorkspaceMCPSeconds          = 30 * 86400
 )
 
+// WorkspaceDurableConfig is `workspace.durable` (RFC GW P12): a durable
+// workspace outlives its run and keeps a worker's disk, so it is off unless
+// the operator turns it on, and bounded per user.
+type WorkspaceDurableConfig struct {
+	// Enabled lets an agent with the durable grant open one. Off by
+	// default.
+	Enabled bool `yaml:"enabled,omitempty"`
+	// MaxPerUser is how many durable workspaces, pinned or parked, one
+	// user of a tenant may keep.
+	MaxPerUser int `yaml:"max_per_user,omitempty"`
+}
+
+// The durable bound's default and ceiling.
+const (
+	DefaultWorkspaceDurableMaxPerUser = 8
+	maxWorkspaceDurablePerUser        = 1024
+)
+
 // WorkspaceExposeConfig is `workspace.expose`: a workspace's server served
 // to its user at /v1/workspaces/exposures/{id}/… (RFC GW §5.3, P9 plan
 // §3.3). Every bound is per workspace; the connection and rate bounds are
@@ -127,6 +194,12 @@ type WorkspaceExposeConfig struct {
 	// requests started, and response bytes sent.
 	RequestsPerSecond int   `yaml:"requests_per_second,omitempty"`
 	BytesPerSecond    int64 `yaml:"bytes_per_second,omitempty"`
+	// MaxMessageBytes bounds one WebSocket message through a page, each
+	// way (RFC GW §5.3: "operator setting").
+	MaxMessageBytes int64 `yaml:"max_message_bytes,omitempty"`
+	// SocketLifetimeS closes a page's WebSocket this long after it opened,
+	// however busy. A quiet one closes at IdleTimeoutS.
+	SocketLifetimeS int `yaml:"socket_lifetime_s,omitempty"`
 }
 
 // The workspace.expose defaults and bounds.
@@ -136,6 +209,10 @@ const (
 	DefaultWorkspaceExposeIdleTimeoutS    = 900
 	DefaultWorkspaceExposeRequestsPerS    = 20
 	DefaultWorkspaceExposeBytesPerS       = 8 << 20
+	DefaultWorkspaceExposeMessageBytes    = 16 << 20
+	DefaultWorkspaceExposeSocketLifetimeS = 14400
+	maxWorkspaceExposeMessageBytes        = 64 << 20
+	maxWorkspaceExposeSocketLifetimeS     = 86400
 	maxWorkspaceExposePerWorkspace        = 16
 	maxWorkspaceExposeConnections         = 1024
 	maxWorkspaceExposeIdleTimeoutS        = 86400
@@ -212,6 +289,13 @@ const (
 	DefaultWorkspaceCheckoutBytes  = 256 << 20
 	DefaultWorkspaceKernelGraceS   = 5
 	DefaultWorkspaceCheckpoints    = 8
+	DefaultWorkspaceTemplateMaxMB  = 1024
+	DefaultWorkspaceTemplates      = 20
+	DefaultWorkspaceUserTemplates  = 5
+	// maxWorkspaceTemplateMB bounds workspace.template.max_mb (64 GiB), and
+	// maxWorkspaceTemplates workspace.template.max_per_tenant.
+	maxWorkspaceTemplateMB = 64 << 10
+	maxWorkspaceTemplates  = 1000
 	// maxWorkspaceCheckpoints bounds workspace.checkpoint.max_per_workspace.
 	maxWorkspaceCheckpoints = 100
 	// maxWorkspaceKernelGraceS bounds workspace.kernel.interrupt_grace_seconds.
@@ -271,9 +355,28 @@ func (w WorkspaceConfig) Resolved() WorkspaceConfig {
 	if w.Checkpoint.MaxPerWorkspace == 0 {
 		w.Checkpoint.MaxPerWorkspace = DefaultWorkspaceCheckpoints
 	}
+	if w.Template.MaxMB == 0 {
+		w.Template.MaxMB = DefaultWorkspaceTemplateMaxMB
+	}
+	if w.Template.MaxPerTenant == 0 {
+		w.Template.MaxPerTenant = DefaultWorkspaceTemplates
+	}
+	if w.Template.MaxPerUser == 0 {
+		w.Template.MaxPerUser = min(DefaultWorkspaceUserTemplates, w.Template.MaxPerTenant)
+	}
 	w.Egress = w.Egress.Resolved()
+	w.Push = w.Push.Resolved()
+	if w.Git.MirrorMaxMB == 0 {
+		w.Git.MirrorMaxMB = DefaultWorkspaceMirrorMaxMB
+	}
+	if w.Git.MirrorIdleS == 0 {
+		w.Git.MirrorIdleS = DefaultWorkspaceMirrorIdleS
+	}
 	if w.Expose.MaxPerWorkspace == 0 {
 		w.Expose.MaxPerWorkspace = DefaultWorkspaceExposeMaxPerWorkspace
+	}
+	if w.Durable.MaxPerUser == 0 {
+		w.Durable.MaxPerUser = DefaultWorkspaceDurableMaxPerUser
 	}
 	if w.Expose.MaxConnections == 0 {
 		w.Expose.MaxConnections = DefaultWorkspaceExposeMaxConnections
@@ -286,6 +389,12 @@ func (w WorkspaceConfig) Resolved() WorkspaceConfig {
 	}
 	if w.Expose.BytesPerSecond == 0 {
 		w.Expose.BytesPerSecond = DefaultWorkspaceExposeBytesPerS
+	}
+	if w.Expose.MaxMessageBytes == 0 {
+		w.Expose.MaxMessageBytes = DefaultWorkspaceExposeMessageBytes
+	}
+	if w.Expose.SocketLifetimeS == 0 {
+		w.Expose.SocketLifetimeS = DefaultWorkspaceExposeSocketLifetimeS
 	}
 	if len(w.MCP.Ops) == 0 {
 		w.MCP.Ops = []string{WorkspaceOpRead, WorkspaceOpWrite}
@@ -362,6 +471,12 @@ func (c *Config) WorkspaceLocalRoot() string {
 	return filepath.Join(c.Env.DataDir, "workspaces")
 }
 
+// WorkspaceTemplateDir is where the core keeps template archives (RFC GW
+// §5.5): a directory of the data dir.
+func (c *Config) WorkspaceTemplateDir() string {
+	return filepath.Join(c.Env.DataDir, "workspace-templates")
+}
+
 // validateWorkspace refuses a mode it does not know, a remote mode with no
 // worker endpoint, a local block for a mode that starts no local worker, and
 // values out of range. The endpoint's own values are validateConversion's,
@@ -379,6 +494,9 @@ func validateWorkspace(c *Config) error {
 	}
 	if w.RemoteWorkers() && c.ResolvedWorkerEndpoint().Listen == "" {
 		return fmt.Errorf("worker_endpoint.listen: workspace mode %s needs the host:port workers attach to", w.Mode)
+	}
+	if err := validatePersonalWorkers(c); err != nil {
+		return err
 	}
 	if w.MaxPerRun < 0 || w.MaxPerTenant < 0 || w.LostAfterS < 0 || w.Exec.DefaultTimeoutS < 0 || w.Exec.MaxTimeoutS < 0 {
 		return errors.New("workspace: max_per_run, max_per_tenant, lost_after_s and the exec timeouts may not be negative")
@@ -404,8 +522,26 @@ func validateWorkspace(c *Config) error {
 	if g := w.Kernel.InterruptGraceSeconds; g < 0 || g > maxWorkspaceKernelGraceS {
 		return fmt.Errorf("workspace.kernel.interrupt_grace_seconds: %d is out of range (1 to %d)", g, maxWorkspaceKernelGraceS)
 	}
+	if w.Git.MirrorMaxMB < 0 || w.Git.MirrorMaxMB > maxWorkspaceMirrorMB {
+		return fmt.Errorf("workspace.git.mirror_max_mb: %d is out of range (1 to %d, 1 TiB)", w.Git.MirrorMaxMB, maxWorkspaceMirrorMB)
+	}
+	if w.Git.MirrorIdleS < 0 || w.Git.MirrorIdleS > MaxWorkspaceMirrorIdleS {
+		return fmt.Errorf("workspace.git.mirror_idle_s: %d is out of range (1 to %d, 30 days)", w.Git.MirrorIdleS, MaxWorkspaceMirrorIdleS)
+	}
+	if err := validateWorkspacePush(w.Push); err != nil {
+		return err
+	}
 	if c := w.Checkpoint.MaxPerWorkspace; c < 0 || c > maxWorkspaceCheckpoints {
 		return fmt.Errorf("workspace.checkpoint.max_per_workspace: %d is out of range (1 to %d)", c, maxWorkspaceCheckpoints)
+	}
+	if m := w.Template.MaxMB; m < 0 || m > maxWorkspaceTemplateMB {
+		return fmt.Errorf("workspace.template.max_mb: %d is out of range (1 to %d)", m, maxWorkspaceTemplateMB)
+	}
+	if c := w.Template.MaxPerTenant; c < 0 || c > maxWorkspaceTemplates {
+		return fmt.Errorf("workspace.template.max_per_tenant: %d is out of range (1 to %d)", c, maxWorkspaceTemplates)
+	}
+	if u, r := w.Template.MaxPerUser, w.Resolved().Template; u < 0 || u > r.MaxPerTenant {
+		return fmt.Errorf("workspace.template.max_per_user: %d is out of range (1 to max_per_tenant, %d)", u, r.MaxPerTenant)
 	}
 	for _, op := range w.MCP.Ops {
 		switch op {
@@ -413,6 +549,9 @@ func validateWorkspace(c *Config) error {
 		default:
 			return fmt.Errorf("workspace.mcp.ops: %q is not read, write or exec", op)
 		}
+	}
+	if d := w.Durable.MaxPerUser; d < 0 || d > maxWorkspaceDurablePerUser {
+		return fmt.Errorf("workspace.durable.max_per_user: %d is not from 1 to %d", d, maxWorkspaceDurablePerUser)
 	}
 	if err := validateWorkspaceExpose(w.Expose); err != nil {
 		return err
@@ -446,14 +585,91 @@ func validateWorkspace(c *Config) error {
 	return nil
 }
 
+// workspaceGrantWarnings is workspaceWarnings for agent name of c, less the
+// mode-off advisory on a grant an embedded bundle gave and no operator layer
+// changed. Under RFC GW P14 (owner ruling Q4 a) a bundle's agents gain
+// Workspace and keep their old shell tool until P15, so on an install with
+// workspaces off the grant is a prepared path, not an operator's mistake. An
+// agent the operator took the tool from is still advised on.
+func (c *Config) workspaceGrantWarnings(name string, a AgentDef) []string {
+	mode := c.Workspace.Resolved().Mode
+	if mode == WorkspaceModeOff && c.bundledWorkspace[name] && slices.Contains(a.Tools, "Workspace") {
+		return nil
+	}
+	return workspaceWarnings(name, a, mode)
+}
+
+// bundledWorkspaceGrants names the agents whose merged workspace grant is
+// the one the last embedded layer setting it gave. A layer that does not
+// parse here gives none, so its agents keep every advisory.
+func bundledWorkspaceGrants(cfg *Config, layers []Layer) map[string]bool {
+	given := map[string]*AgentWorkspace{}
+	for _, l := range layers {
+		if !l.Embedded || l.Data == nil {
+			continue
+		}
+		var doc struct {
+			Agents map[string]struct {
+				Workspace *AgentWorkspace `yaml:"workspace"`
+			} `yaml:"agents"`
+		}
+		if yaml.Unmarshal(l.Data, &doc) != nil {
+			continue
+		}
+		for name, a := range doc.Agents {
+			if a.Workspace != nil {
+				given[name] = a.Workspace
+			}
+		}
+	}
+	out := map[string]bool{}
+	for name, w := range given {
+		if a, ok := cfg.Agents[name]; ok && reflect.DeepEqual(a.Workspace, w) {
+			out[name] = true
+		}
+	}
+	return out
+}
+
+// bundledGitRemotes names the agents whose git_remote an embedded layer gave
+// and the merged config still holds unchanged, as bundledWorkspaceGrants does
+// for the workspace grant.
+func bundledGitRemotes(cfg *Config, layers []Layer) map[string]bool {
+	given := map[string][]string{}
+	for _, l := range layers {
+		if !l.Embedded || l.Data == nil {
+			continue
+		}
+		var doc struct {
+			Agents map[string]struct {
+				GitRemote []string `yaml:"git_remote"`
+			} `yaml:"agents"`
+		}
+		if yaml.Unmarshal(l.Data, &doc) != nil {
+			continue
+		}
+		for name, a := range doc.Agents {
+			if a.GitRemote != nil {
+				given[name] = a.GitRemote
+			}
+		}
+	}
+	out := map[string]bool{}
+	for name, g := range given {
+		if a, ok := cfg.Agents[name]; ok && slices.Equal(a.GitRemote, g) {
+			out[name] = true
+		}
+	}
+	return out
+}
+
 // InertWorkspaceGrants names, sorted, the agents whose workspace grant
 // reaches nothing: Workspace is not in their tools, or workspace.mode is off.
 // The same agents workspaceWarnings advises on at load.
 func (c *Config) InertWorkspaceGrants() []string {
-	mode := c.Workspace.Resolved().Mode
 	var out []string
 	for name, a := range c.Agents {
-		if len(workspaceWarnings(name, a, mode)) > 0 {
+		if len(c.workspaceGrantWarnings(name, a)) > 0 {
 			out = append(out, name)
 		}
 	}
@@ -480,7 +696,16 @@ func (w *WorkspaceConfig) UnmarshalYAML(n *yaml.Node) error {
 	if err := strictKeys(valueOf(n, "kernel"), "workspace.kernel", nil, reflect.TypeOf(WorkspaceKernelConfig{})); err != nil {
 		return err
 	}
+	if err := strictKeys(valueOf(n, "push"), "workspace.push", nil, reflect.TypeOf(WorkspacePushConfig{})); err != nil {
+		return err
+	}
+	if err := strictKeys(valueOf(n, "git"), "workspace.git", nil, reflect.TypeOf(WorkspaceGitConfig{})); err != nil {
+		return err
+	}
 	if err := strictKeys(valueOf(n, "checkpoint"), "workspace.checkpoint", nil, reflect.TypeOf(WorkspaceCheckpointConfig{})); err != nil {
+		return err
+	}
+	if err := strictKeys(valueOf(n, "template"), "workspace.template", nil, reflect.TypeOf(WorkspaceTemplateConfig{})); err != nil {
 		return err
 	}
 	if err := strictKeys(valueOf(n, "mcp"), "workspace.mcp", nil, reflect.TypeOf(WorkspaceMCPConfig{})); err != nil {
@@ -489,12 +714,35 @@ func (w *WorkspaceConfig) UnmarshalYAML(n *yaml.Node) error {
 	if err := strictKeys(valueOf(n, "expose"), "workspace.expose", nil, reflect.TypeOf(WorkspaceExposeConfig{})); err != nil {
 		return err
 	}
+	if err := strictKeys(valueOf(n, "durable"), "workspace.durable", nil, reflect.TypeOf(WorkspaceDurableConfig{})); err != nil {
+		return err
+	}
 	type plain WorkspaceConfig
 	return n.Decode((*plain)(w))
 }
 
 // validateWorkspaceExpose refuses a workspace.expose bound out of range. Zero
 // is the default.
+// validatePersonalWorkers holds workspace.personal_workers to a local
+// deployment (RFC GW §4.5, D29, D32): a personal worker attaches over the
+// worker endpoint, so the mode must accept workers there, and the endpoint
+// must listen on loopback, so the worker and the core are one machine. It is
+// checked, not assumed: a configuration that breaks it does not start.
+func validatePersonalWorkers(c *Config) error {
+	w := c.Workspace
+	if !w.PersonalWorkers {
+		return nil
+	}
+	if !w.RemoteWorkers() {
+		return fmt.Errorf("workspace.personal_workers: a personal worker attaches over the worker endpoint, so workspace.mode must be %s or %s (it is %q)",
+			WorkspaceModeRemote, WorkspaceModeLocalRemote, w.Mode)
+	}
+	if l := c.ResolvedWorkerEndpoint().Listen; !IsLoopbackListenAddr(l) {
+		return fmt.Errorf("workspace.personal_workers: worker_endpoint.listen %q must be a loopback address (127.0.0.1, ::1 or localhost): a personal worker is for a local deployment only", l)
+	}
+	return nil
+}
+
 func validateWorkspaceExpose(e WorkspaceExposeConfig) error {
 	for _, b := range []struct {
 		name   string
@@ -505,6 +753,8 @@ func validateWorkspaceExpose(e WorkspaceExposeConfig) error {
 		{"idle_timeout_s", int64(e.IdleTimeoutS), maxWorkspaceExposeIdleTimeoutS},
 		{"requests_per_second", int64(e.RequestsPerSecond), maxWorkspaceExposeRequestsPerS},
 		{"bytes_per_second", e.BytesPerSecond, maxWorkspaceExposeBytesPerS},
+		{"max_message_bytes", e.MaxMessageBytes, maxWorkspaceExposeMessageBytes},
+		{"socket_lifetime_s", int64(e.SocketLifetimeS), maxWorkspaceExposeSocketLifetimeS},
 	} {
 		if b.v < 0 || b.v > b.max {
 			return fmt.Errorf("workspace.expose.%s: %d is out of range (1 to %d)", b.name, b.v, b.max)

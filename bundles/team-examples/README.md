@@ -14,7 +14,7 @@ LOOMCYCLE_PRESETS=base,agent-teams,team-examples
   - software: `sdlc/architect`, `sdlc/coder`, `sdlc/reviewer`
   - marketing: `marketing/writer`, `marketing/editor`
 - Two **teams**, under the `teams:` key (RFC GS):
-  - **`sdlc`** — a software team (architecture → implementation → review ⇄ implementation → PR) that uses the software workspace (ephemeral `work` volume + `git`/`gh` via Bashbox; see the `agent-teams` `team/repo` skill + its operator prerequisites).
+  - **`sdlc`** — a software team (architecture → implementation → review ⇄ implementation → PR) that uses the software workspace (ephemeral `work` volume + `git`/`gh` via Bashbox; see the `agent-teams` `team/repo` skill + its operator prerequisites). `sdlc/coder` and `sdlc/reviewer` build and test in a workspace (RFC GW) when `workspace.mode` is on, the reviewer reads the diff with the `Git` tool, and both keep `Bashbox` as the fallback until RFC GW P15 removes it.
   - **`marketing`** — a Documents-only team (draft → edit ⇄ draft → published) with **no volume/repo/PR** — the Document task board is the deliverable.
 - A **`team/examples`** skill: how to drive the two teams and how to fork them.
 

@@ -37,6 +37,7 @@ var memberTools = map[string]string{
 	"ack_channel":            "resolveChannelScope",
 	"peek_team_channel":      "teamChannelKeyspace: own subject",
 	"release_team_channel":   "teamChannelKeyspace: own subject",
+	"workspace":              "Workspace twin: owner is the session's (tenant, subject); a template's scope is the subject's own user or the tenant (tenant writes need a tenant-operator token)",
 }
 
 var memberAddressingProps = map[string]bool{

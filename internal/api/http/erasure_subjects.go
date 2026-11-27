@@ -36,12 +36,21 @@ func (s *Server) wireErasureSubjects(svc *erasure.Service) {
 		return toErasureSubjects(cleared), err
 	}
 	svc.AnnounceErased = func(ctx context.Context, tenant string, subjects []erasure.BoundSubject) string {
-		out := make([]builtin.SubjectBinding, 0, len(subjects))
-		for _, b := range subjects {
-			out = append(out, builtin.SubjectBinding{DocumentID: b.DocumentID, RootChunkID: b.RootChunkID, NaturalKey: b.NaturalKey})
-		}
-		return s.ontologyDocument().AnnounceTenantSubjectsErased(dctx(ctx, tenant), out)
+		return s.ontologyDocument().AnnounceTenantSubjectsErased(dctx(ctx, tenant), toSubjectBindings(subjects))
 	}
+	svc.ReleaseCopies = func(ctx context.Context, tenant string, subjects []erasure.BoundSubject, dryRun bool) (erasure.ReleaseRedaction, error) {
+		r, err := s.ontologyDocument().EraseSubjectsFromReleases(dctx(ctx, tenant), toSubjectBindings(subjects), dryRun)
+		return erasure.ReleaseRedaction{Entries: r.Entries, Releases: r.Releases, InForce: r.InForce,
+			Summaries: r.Summaries}, err
+	}
+}
+
+func toSubjectBindings(in []erasure.BoundSubject) []builtin.SubjectBinding {
+	out := make([]builtin.SubjectBinding, 0, len(in))
+	for _, b := range in {
+		out = append(out, builtin.SubjectBinding{DocumentID: b.DocumentID, RootChunkID: b.RootChunkID, NaturalKey: b.NaturalKey})
+	}
+	return out
 }
 
 func toErasureSubjects(in []builtin.SubjectBinding) []erasure.BoundSubject {

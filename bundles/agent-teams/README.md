@@ -26,13 +26,30 @@ select `base` (or your own config) alongside it to supply a `middle` tier. Run
 
 ### Software teams only (repo/PR)
 
-For a team whose deliverable is a code change (the `team/repo` skill), also set:
-`git`+`gh` on the host image,
+For a team whose deliverable is a code change (the `team/repo` skill), the
+orchestrator works on a git workspace (RFC GW P11, P14): it opens the
+repository, its handlers edit it through a share, and it commits and pushes the
+workspace's own branch. Set:
+`workspace.mode` on (a worker with git), the forge's host in
+`LOOMCYCLE_GIT_SOURCE_HOSTS` and `LOOMCYCLE_GIT_PUSH_HOSTS`, and a stored
+credential for the repository (`$cred:<name>`). `team/orchestrator` holds
+`git_remote: [fetch, push]`. To open the pull request through the forge's API,
+add an egress route with a credential (e.g. `github-api`) to the orchestrator's
+workspace grant; without one it reports the pushed branch. Marketing/accounting/research
+teams need none of this — the workspace is domain-pluggable (Documents, SQL
+Memory, or external SQL/Excel in a workspace or through an MCP tool).
+
+Where workspaces are off, `team/repo` falls back to the old path until RFC GW
+P15 removes it: `git`+`gh` on the host image,
 `LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS=git,gh`,
 `LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV=GITHUB_TOKEN` (+ `GITHUB_TOKEN` in the host
-env), and a volume marked `dynamic_root: true`. Marketing/accounting/research
-teams need none of this — the workspace is domain-pluggable (Documents, SQL
-Memory, or external SQL/Excel via Bashbox/MCP).
+env), and a volume marked `dynamic_root: true`.
+
+`team/orchestrator` also holds `Workspace` and a workspace grant (read, write,
+exec, open; RFC GW P14): it runs a data team's scripts in a workspace, and the
+handlers it spawns open their own workspaces under it. It keeps `Bashbox` until
+RFC GW P15 removes it, as `team/repo`'s fallback on installs without workspaces
+(`workspace.mode`).
 
 ## What's inside
 

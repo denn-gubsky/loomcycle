@@ -1482,7 +1482,17 @@ const (
 	OntologyPlanProposal = "proposal"
 	// OntologyPlanAdd is the op a plan reports for an add proposal: accepting
 	// it puts a new entry in force, which nothing stored rests on (risk none).
+	// Asked directly, with Seq and Entry, it plans adding back an entry of
+	// release Seq that the ontology no longer holds (RFC GQ P5.7).
 	OntologyPlanAdd = "add"
+	// OntologyPlanUnretire plans clearing a retired entry's status: it is
+	// offered for new writes again (risk none).
+	OntologyPlanUnretire = "unretire"
+	// OntologyPlanRelease plans rolling the ontology back to release Seq: the
+	// direct changes that make the ontology in force declare what the release
+	// declared, each carrying Release (RFC GQ P5.7, D8). It is the request's
+	// only change.
+	OntologyPlanRelease = "release"
 )
 
 // OntologyPlanMaxRequestBytes bounds one plan request on every transport, measured
@@ -1517,7 +1527,9 @@ const (
 // of the tenant ontology by its chunk id. Name is a rename's new name, Parent a
 // move's new parent (an entry of the same section, or the section itself), Body
 // an edit's new body. ID is, for op proposal only, an open proposal's chunk id;
-// such a change carries no other field.
+// such a change carries no other field. Seq is a release's sequence number:
+// for op release (its only field) and op add (with Entry, a chunk id of that
+// release).
 type OntologyChange struct {
 	Op     string `json:"op"`
 	Entry  string `json:"entry"`
@@ -1525,6 +1537,7 @@ type OntologyChange struct {
 	Parent string `json:"parent,omitempty"`
 	Body   string `json:"body,omitempty"`
 	ID     string `json:"id,omitempty"`
+	Seq    int64  `json:"seq,omitempty"`
 }
 
 // PlanOntologyRequest asks what a set of changes would do to the tenant
@@ -1572,6 +1585,165 @@ type OntologyPlannedChange struct {
 	// Proposal is the proposal's chunk id when the change is one accepting it
 	// makes (op proposal); absent for a direct change.
 	Proposal string `json:"proposal,omitempty"`
+	// Release is the release a rollback plans toward (op release): every change
+	// it expands to carries it. Absent for any other change.
+	Release int64 `json:"release,omitempty"`
+	// Job is what the ontology job the change would start would do (RFC GQ P5):
+	// the class-rename job for a rename of a class something rests on, the
+	// concept re-tag job for a change that moves a concept's or scheme's tag
+	// (Job.Kind says which); absent for every other change.
+	Job *OntologyRenameJobPlan `json:"job,omitempty"`
+}
+
+// OntologyRenameJobPlan is the ontology job a change would start: the rows
+// each step rewrites, whether it can run now, and — for a class rename — the
+// stored keys that would collide under the new name. Blocked says why the
+// rename is refused (rename_job_pending); Collisions refuse it too
+// (rename_identity_collision). Kind is class_rename or concept_retag; a
+// concept_retag block carries TagMoves and never collisions.
+type OntologyRenameJobPlan struct {
+	Steps      []OntologyRenameJobStep   `json:"steps"`
+	Runnable   bool                      `json:"runnable"`
+	Blocked    []string                  `json:"blocked,omitempty"`
+	Collisions []OntologyRenameCollision `json:"collisions,omitempty"`
+	// CollisionsTotal counts every collision; Collisions lists the first five, of
+	// the tenant scope only. CollisionsOtherScopes is the part of the total in
+	// user and agent scopes, counted and never listed.
+	CollisionsTotal       int `json:"collisions_total"`
+	CollisionsOtherScopes int `json:"collisions_other_scopes,omitempty"`
+	// ScopesNotCounted is the user and agent scopes the plan could not count.
+	ScopesNotCounted int `json:"scopes_not_counted"`
+	// Running is the unfinished rename job of the tenant, when one exists: a
+	// second rename waits for it.
+	Running *OntologyJobStatus `json:"running,omitempty"`
+	Notes   []string           `json:"notes,omitempty"`
+	// Kind is the job's kind: class_rename or concept_retag.
+	Kind string `json:"kind,omitempty"`
+	// TagMoves (concept_retag) are the tags the change moves, the topmost only:
+	// every tag equal to From, or under it, becomes To with the same rest.
+	TagMoves []OntologyTagMove `json:"tag_moves,omitempty"`
+}
+
+// OntologyTagMove is one tag a concept re-tag job moves.
+type OntologyTagMove struct {
+	From string `json:"from"`
+	To   string `json:"to"`
+}
+
+// OntologyRenameJobStep is one step of the rename job: the stored rows under
+// the old name, in the tenant scope and in user and agent scopes.
+type OntologyRenameJobStep struct {
+	Name        string `json:"name"`
+	TenantScope int    `json:"tenant_scope"`
+	OtherScopes int    `json:"other_scopes,omitempty"`
+}
+
+// OntologyRenameCollision is a stored key that the rename would turn into a
+// key another row already holds: Column is identity_key or natural_key, Key
+// the key as stored, Into the key it would become, Holder the row holding it.
+type OntologyRenameCollision struct {
+	Column string `json:"column"`
+	Key    string `json:"key"`
+	Into   string `json:"into"`
+	Holder string `json:"holder"`
+}
+
+// OntologyJobStatus is a job carrying an ontology change through stored rows:
+// its state (running, done, blocked, abandoned), the step it is at, and the
+// rows each step has rewritten.
+type OntologyJobStatus struct {
+	ID    string         `json:"id"`
+	Kind  string         `json:"kind"`
+	Entry string         `json:"entry"`
+	From  []string       `json:"from"`
+	To    string         `json:"to"`
+	State string         `json:"state"`
+	Step  string         `json:"step,omitempty"`
+	Done  map[string]int `json:"done,omitempty"`
+	Error string         `json:"error,omitempty"`
+	// Remain is the rows still under an old name in the scope the job is at.
+	Remain int `json:"remaining"`
+	// Scope is the kind of scope the job is at (tenant, user, agent); ScopesDone
+	// the scopes it has finished, the tenant scope first.
+	Scope      string `json:"scope,omitempty"`
+	ScopesDone int    `json:"scopes_done,omitempty"`
+	// ToTags is a concept re-tag's new tags, index-aligned with From (the old
+	// ones); To then joins them for reading.
+	ToTags []string `json:"to_tags,omitempty"`
+	// ScopesTotal is the scopes the job walks (the tenant scope and every user and
+	// agent scope of the tenant), and CreatedAt / UpdatedAt the job row's times (unix
+	// nanoseconds). Set by the status read and the resume (GetOntologyJob,
+	// ResumeOntologyJob); absent from the job an ontology write answers with.
+	ScopesTotal int   `json:"scopes_total,omitempty"`
+	CreatedAt   int64 `json:"created_at,omitempty"`
+	UpdatedAt   int64 `json:"updated_at,omitempty"`
+}
+
+// GetOntologyJobRequest reads a tenant's ontology job. Tenant: only an admin may
+// name one; for anyone else it is the caller's own tenant.
+type GetOntologyJobRequest struct {
+	Tenant string `json:"tenant,omitempty"`
+}
+
+// ResumeOntologyJobRequest gives the tenant's unfinished ontology job one slice of
+// work. ID is required and must be that job's id: a resume aimed at a job that has
+// since finished is refused rather than carrying on another one. An empty ID is
+// ErrOntologyJobIDRequired.
+type ResumeOntologyJobRequest struct {
+	Tenant string `json:"tenant,omitempty"`
+	ID     string `json:"id,omitempty"`
+}
+
+// OntologyJobResult is a tenant's ontology job: the unfinished one when there is
+// one, else the one updated last. Job is nil when the tenant never had one (a status
+// read only; a resume without an unfinished job is refused).
+type OntologyJobResult struct {
+	Tenant string             `json:"tenant"`
+	Job    *OntologyJobStatus `json:"job"`
+}
+
+// ApplyOntologyRollbackRequest applies the plan of rolling the tenant ontology back
+// to release Seq (RFC GQ P5.7): PlanFingerprint is the fingerprint of the plan of
+// {op: release, seq}, which the rollback computes again and refuses unless it is
+// the same. Tenant: only an admin may name one.
+type ApplyOntologyRollbackRequest struct {
+	Tenant          string `json:"tenant,omitempty"`
+	Seq             int64  `json:"seq"`
+	PlanFingerprint string `json:"plan_fingerprint"`
+}
+
+// OntologyRollbackStep is one write a rollback made: the op, the entry's chunk id
+// and name.
+type OntologyRollbackStep struct {
+	Op    string `json:"op"`
+	Entry string `json:"entry"`
+	Name  string `json:"name"`
+	// NewID is the chunk an entry added back was written as (ruling Q6).
+	NewID string `json:"new_id,omitempty"`
+}
+
+// OntologyRollbackReport says what rolling the ontology back to a release did.
+type OntologyRollbackReport struct {
+	Release int64 `json:"release"`
+	// ReleaseContentVersion is what the release declared; ContentVersion what the
+	// ontology in force declares after the rollback. Matches is their equality.
+	ReleaseContentVersion string                 `json:"release_content_version"`
+	ContentVersion        string                 `json:"content_version"`
+	Matches               bool                   `json:"matches"`
+	Risk                  string                 `json:"risk"`
+	Applied               []OntologyRollbackStep `json:"applied"`
+	// RenameJobs are the class-rename jobs the rollback's renames started.
+	RenameJobs []OntologyJobStatus `json:"rename_jobs,omitempty"`
+	// RollbackRelease is the release taken of the ontology the rollback left.
+	RollbackRelease int64    `json:"rollback_release,omitempty"`
+	Notes           []string `json:"notes,omitempty"`
+	Warnings        []string `json:"warnings,omitempty"`
+}
+
+// ApplyOntologyRollbackResult is an applied rollback.
+type ApplyOntologyRollbackResult struct {
+	Tenant   string                 `json:"tenant"`
+	Rollback OntologyRollbackReport `json:"rollback"`
 }
 
 // PlanOntologyResult is a plan. It wrote nothing. Fingerprint identifies the
@@ -1596,6 +1768,135 @@ type PlanOntologyResult struct {
 	// proposal, a review rule or a reorder). "" when the ontology could not be read
 	// whole.
 	ContentVersion string `json:"content_version"`
+}
+
+// OntologyRelease is the header of one complete release of the tenant
+// ontology (RFC GQ P3): a copy taken when it was confirmed (confirm), when an
+// accepted change was applied (apply) or rolled back (rollback), or before
+// either when the ontology had moved without one (catch_up).
+type OntologyRelease struct {
+	Seq int64 `json:"seq"`
+	// ContentVersion is what the ontology declared then, as stamped on the rows
+	// written under it; Fingerprint the plan fingerprint it had.
+	ContentVersion string `json:"content_version"`
+	Fingerprint    string `json:"fingerprint"`
+	Reason         string `json:"reason"`
+	// Actor is the user who took it, "" when none was known.
+	Actor     string `json:"actor,omitempty"`
+	CreatedAt int64  `json:"created_at"` // unix nanoseconds
+	// Entries is how many chunks of the ontology document it copied.
+	Entries int `json:"entries"`
+	// Redacted: a subject erasure changed the release (an entry or its plan
+	// summary). ContentVersion stays as recorded, so the copy no longer hashes to it.
+	Redacted bool `json:"redacted,omitempty"`
+}
+
+// ListOntologyReleasesRequest lists a tenant's releases. Tenant: only an admin
+// may name one; for anyone else it is the caller's own tenant.
+type ListOntologyReleasesRequest struct {
+	Tenant string `json:"tenant,omitempty"`
+}
+
+// ListOntologyReleasesResult is every complete release kept (the newest 50),
+// newest first.
+type ListOntologyReleasesResult struct {
+	Tenant   string            `json:"tenant"`
+	Releases []OntologyRelease `json:"releases"`
+}
+
+// GetOntologyReleaseRequest reads one release by its sequence number.
+type GetOntologyReleaseRequest struct {
+	Tenant string `json:"tenant,omitempty"`
+	Seq    int64  `json:"seq"`
+}
+
+// GetOntologyReleaseResult is one release: its header, the plan summary of the
+// change it applied (an apply release; absent otherwise) and the ontology it
+// copied, rendered as Markdown.
+type GetOntologyReleaseResult struct {
+	Tenant      string          `json:"tenant"`
+	Release     OntologyRelease `json:"release"`
+	PlanSummary json.RawMessage `json:"plan_summary,omitempty"`
+	ExportMD    string          `json:"export_md"`
+}
+
+// DiffOntologyReleasesRequest compares two releases, or a release with the
+// ontology in force: From is a release's sequence number, To another's, or 0
+// for the ontology as it stands now.
+type DiffOntologyReleasesRequest struct {
+	Tenant string `json:"tenant,omitempty"`
+	From   int64  `json:"from"`
+	To     int64  `json:"to,omitempty"`
+}
+
+// One entry's change in a diff (OntologyEntryDiff.Change).
+const (
+	OntologyDiffAdded   = "added"
+	OntologyDiffRemoved = "removed"
+	OntologyDiffChanged = "changed"
+	// OntologyDiffErased: a subject erasure redacted the entry from a release on
+	// either side, so it carries no state and is not compared.
+	OntologyDiffErased = "erased"
+)
+
+// What changed about an entry present on both sides (OntologyEntryDiff.Changed).
+const (
+	OntologyDiffRenamed    = "renamed"
+	OntologyDiffMoved      = "moved"
+	OntologyDiffKind       = "kind"
+	OntologyDiffStatus     = "status"
+	OntologyDiffMeaning    = "meaning"
+	OntologyDiffDirectives = "directives"
+)
+
+// OntologyDiffSide names one side of a diff: a release, or the ontology in
+// force (Current).
+type OntologyDiffSide struct {
+	Seq            int64  `json:"seq,omitempty"`
+	Current        bool   `json:"current,omitempty"`
+	ContentVersion string `json:"content_version"`
+	// Redacted: the release on this side was changed by a subject erasure.
+	Redacted bool `json:"redacted,omitempty"`
+}
+
+// OntologyEntryState is an entry as one side declares it. Parent is the chunk
+// of the entry it sits under (its superclass, parent kind, broader concept or
+// scheme, parent instance; a grammar's class), "" at the top of its section;
+// ParentName that entry's name. Directives is the entry's parsed declaration
+// without its name, status, meaning and parent, as JSON.
+type OntologyEntryState struct {
+	Name       string          `json:"name"`
+	Parent     string          `json:"parent,omitempty"`
+	ParentName string          `json:"parent_name,omitempty"`
+	Status     string          `json:"status,omitempty"`
+	Meaning    string          `json:"meaning,omitempty"`
+	Directives json.RawMessage `json:"directives"`
+}
+
+// OntologyEntryDiff is one entry that differs between the two sides, by its
+// chunk id: a rename keeps the chunk, so it is one changed entry, never an add
+// and a remove. Kind is class, relation, scheme, concept, instance or grammar
+// (on the To side when present). Before is absent for an added entry, After for
+// a removed one; Changed lists what differs on a changed one.
+type OntologyEntryDiff struct {
+	ChunkID string              `json:"chunk_id"`
+	Kind    string              `json:"kind"`
+	Change  string              `json:"change"`
+	Changed []string            `json:"changed,omitempty"`
+	Before  *OntologyEntryState `json:"before,omitempty"`
+	After   *OntologyEntryState `json:"after,omitempty"`
+}
+
+// DiffOntologyReleasesResult is every in-force entry that differs between From
+// and To, ordered by kind, then name, then chunk id. Proposals, the Review
+// section, section headers and sibling order are not compared, as the content
+// version does not count them. Issues notes what a side could not read.
+type DiffOntologyReleasesResult struct {
+	Tenant  string              `json:"tenant"`
+	From    OntologyDiffSide    `json:"from"`
+	To      OntologyDiffSide    `json:"to"`
+	Changes []OntologyEntryDiff `json:"changes"`
+	Issues  []string            `json:"issues"`
 }
 
 // ReviewQueueFilter narrows the review queue (ListReviewQueue) and selects

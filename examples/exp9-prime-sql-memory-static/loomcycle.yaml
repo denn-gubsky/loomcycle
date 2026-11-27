@@ -6,7 +6,7 @@
 #
 # Pipeline:
 #   exp9-static-coder  (code-js)
-#     └─ Bash: python3 ../primes.py 500           → 95 primes
+#     └─ Workspace: python3 primes.py 500          → 95 primes
 #     └─ Memory sql_exec scope=user: CREATE TABLE primes
 #     └─ Memory sql_exec scope=user: INSERT OR IGNORE INTO primes VALUES (...)
 #     └─ Memory sql_query scope=user: SELECT COUNT(*) FROM primes
@@ -15,7 +15,7 @@
 #   exp9-static-validator  (code-js)
 #     └─ Channel subscribe: exp9-primes-done (retry loop, 30 s × 12 = ~6 min)
 #     └─ Memory sql_query scope=user: SELECT n FROM primes ORDER BY n
-#     └─ JS trial division (isPrime — no Bash needed)
+#     └─ JS trial division (isPrime — no workspace needed)
 #     └─ Memory sql_exec scope=user: CREATE TABLE prime_check
 #     └─ Memory sql_exec scope=user: INSERT OR REPLACE INTO prime_check
 #     └─ Memory sql_query scope=user: SELECT COUNT(*) … WHERE valid=0
@@ -35,6 +35,13 @@ volumes:
     mode: rw
     default: true
 
+# Commands run in a workspace on the local worker the runtime starts itself
+# (RFC GW). Local mode runs them as your own user with no isolation: use it on
+# your own machine only. The Bash tool this example used is deprecated (RFC GW
+# P15 removes it); docs/MIGRATING-FROM-BASH.md maps it to workspaces.
+workspace:
+  mode: local
+
 channels:
   exp9-primes-done:
     description: "Coder signals when the primes table is populated. Validator subscribes."
@@ -48,7 +55,8 @@ agents:
   exp9-static-coder:
     provider: code-js
     run_timeout_seconds: 60
-    tools: [Bash, Memory, Channel]
+    tools: [Read, Workspace, File, Memory, Channel]
+    workspace: {ops: [read, write, exec], open: true}
     sql_scopes: [user]
     memory_scopes: [user]
     volumes: [default]
@@ -56,8 +64,11 @@ agents:
       publish: [exp9-primes-done]
     code: |
       function run(input) {
-        // Step 1 — generate primes via Python stdio
-        var raw = Bash({ command: 'python3 ../primes.py 500' });
+        // Step 1 — generate primes via Python stdio, in a workspace: copy
+        // primes.py in from the default volume and run it there.
+        Workspace({ op: 'open', name: 'py' });
+        File({ op: 'copy', from: 'volume:default:primes.py', to: 'workspace:py:primes.py' });
+        var raw = JSON.parse(Workspace({ op: 'exec', name: 'py', command: 'python3 primes.py 500' })).output;
         var primes = raw.trim().split('\n')
           .map(function(s) { return parseInt(s, 10); })
           .filter(function(n) { return !isNaN(n) && n > 0; });
@@ -141,7 +152,7 @@ agents:
         var qr     = Memory.sql_query({ scope: 'user', statement: 'SELECT n FROM primes ORDER BY n' });
         var primes = qr.rows.map(function(row) { return row[0]; });
 
-        // Step 3 — trial division in JS (no Bash needed)
+        // Step 3 — trial division in JS (no workspace needed)
         var invalid = primes.filter(function(n) { return !isPrime(n); });
 
         // Step 4 — create validation result table

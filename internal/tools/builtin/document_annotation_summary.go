@@ -16,6 +16,10 @@ package builtin
 // chunk is in the same document. A stale record is shown marked stale; a missing
 // one is absent, never made up from the body.
 //
+// query_chunks, a document's chunk list, takes with_summary too, but differs:
+// each chunk carries its OWN record's brief, never an ancestor's and never the
+// abstract (attachOwnBriefs, RFC HA).
+//
 // Without with_summary nothing here changes the answer, with one exception the
 // design asks for: documents_summary and graph_snapshot carry a document's brief
 // as plain metadata whenever it has one, so a tree or a map can label documents
@@ -50,13 +54,14 @@ const (
 var summaryOps = map[string]bool{
 	"get_document": true, "get_chunk": true, "search": true, "related": true,
 	"graph_recall": true, "documents_summary": true, "query_documents": true,
+	"query_chunks": true,
 }
 
 // validateSummaryInput refuses a with_summary the op does not take and a bad
 // summary_chars, before the op runs.
 func validateSummaryInput(in docInput) *tools.Result {
 	if in.WithSummary && !summaryOps[in.Op] {
-		r := errValidation(in.Op+": with_summary is taken by get_document, get_chunk, search, related, graph_recall, documents_summary and query_documents",
+		r := errValidation(in.Op+": with_summary is taken by get_document, get_chunk, search, related, graph_recall, documents_summary, query_documents and query_chunks",
 			"Omit with_summary on this op.")
 		return &r
 	}
@@ -237,6 +242,8 @@ func summaryRows(op string, body map[string]any) []summaryRow {
 		}
 	case "documents_summary", "query_documents":
 		list("documents", "root_chunk_id", never)
+	case "query_chunks":
+		list("chunks", "id", never)
 	case "search":
 		list("chunks", "chunk_id", firstDocs())
 	case "related":
@@ -254,6 +261,9 @@ func (d *Document) attachSummaries(ctx context.Context, key sqlmem.ScopeKey, msc
 	rows := summaryRows(in.Op, body)
 	if len(rows) == 0 {
 		return false
+	}
+	if in.Op == "query_chunks" {
+		return d.attachOwnBriefs(ctx, key, mscope, rows)
 	}
 	ids := make([]string, 0, len(rows))
 	for _, r := range rows {
@@ -335,6 +345,45 @@ func (d *Document) attachSummaries(ctx context.Context, key sqlmem.ScopeKey, msc
 				}
 			}
 		}
+	}
+	return changed
+}
+
+// attachOwnBriefs is with_summary on query_chunks, a document's chunk list
+// (RFC HA): each chunk's OWN record only — a section's branch record, the root's
+// document record — never the nearest one above, so an outline marks which rows
+// are annotated. Brief only, never the abstract, so a list of a thousand chunks
+// stays small; stale is marked as on every other read, within the same bound.
+func (d *Document) attachOwnBriefs(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, rows []summaryRow) bool {
+	ids := make([]string, 0, len(rows))
+	for _, r := range rows {
+		ids = append(ids, r.chunkID)
+	}
+	recs, err := d.annotationRecordsFor(ctx, key, ids, annotationLevelBranch, annotationLevelDocument)
+	if err != nil || len(recs) == 0 {
+		return false
+	}
+	s := d.newAnnotationScope(key, mscope)
+	checks := 0
+	changed := false
+	for _, r := range rows {
+		level := annotationLevelBranch
+		if parent, _ := r.m["parent_id"].(string); parent == "" {
+			level = annotationLevelDocument
+		}
+		rec, ok := recs[r.chunkID][level]
+		if !ok {
+			continue
+		}
+		sm := map[string]any{"level": rec.Level, "brief": rec.Brief}
+		if checks < maxSummaryStaleChecks {
+			checks++
+			if stale, err := s.stale(ctx, rec); err == nil && stale {
+				sm["stale"] = true
+			}
+		}
+		r.m[r.field] = sm
+		changed = true
 	}
 	return changed
 }

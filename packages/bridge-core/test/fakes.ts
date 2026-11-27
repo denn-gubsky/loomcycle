@@ -136,6 +136,13 @@ export class FakeLoomcycle {
    *  the way loomcycle sanitises one, to [A-Za-z0-9._-]. */
   inbox?: FakeInbox;
 
+  /** The pending interrupt ids of each run, as listRunInterrupts answers. */
+  pendingInterrupts: Record<string, string[]> = {};
+  /** Set false to give a client without the restart calls (an older one). */
+  restartCalls = true;
+  /** Each streamRunByID re-attach, by run id, with the events the test feeds. */
+  readonly reattaches: Array<{ runId: string; events: EventChannel<AgentEvent> }> = [];
+
   client = (token: string): RunClient & AdminClient & Partial<VoiceClient> & Partial<FileClient> => {
     const rec = (method: string, args: unknown[]) => {
       this.calls.push({ method, token, args });
@@ -192,9 +199,25 @@ export class FakeLoomcycle {
           },
         }
       : {};
+    const restart: Pick<RunClient, "listRunInterrupts" | "streamRunByID"> = this.restartCalls
+      ? {
+          listRunInterrupts: async (runId, opts) => {
+            rec("listRunInterrupts", [runId, opts]);
+            const ids = this.pendingInterrupts[runId] ?? [];
+            return { interrupts: ids.map((interrupt_id) => ({ interrupt_id, status: "pending" })) };
+          },
+          streamRunByID: (runId, opts) => {
+            rec("streamRunByID", [runId, opts]);
+            const events = new EventChannel<AgentEvent>();
+            this.reattaches.push({ runId, events });
+            return events;
+          },
+        }
+      : {};
     return {
       ...voice,
       ...files,
+      ...restart,
       runStreaming: (opts) => start("start", opts),
       continueSession: (opts) => start("continue", opts),
       sendRunInput: async (runId, text) => {

@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
+import type { CardAction } from "./cards.js";
 import type { Scope } from "./identity.js";
 
 /** `TRef` is the platform's reply reference, kept as plain JSON. */
@@ -32,6 +33,20 @@ export interface ConversationRecord<TRef = unknown> {
   /** When replies are spoken here, set by /voice (RFC GA). Unset: the
    *  bridge's BRIDGE_VOICE_REPLY. */
   voice?: "mirror" | "always" | "never";
+  /** The question the run waits on, so its card still works after a bridge
+   *  restart (RFC HG §4.3). Ids, options and the drawn buttons only: no
+   *  token and no answer. Absent in a record written before it. */
+  question?: StoredQuestion;
+}
+
+/** An open question as the conversation record keeps it. */
+export interface StoredQuestion {
+  runId: string;
+  interruptId: string;
+  options: string[];
+  allowOther: boolean;
+  /** The actions behind the card's buttons, by button id. */
+  buttons: Record<string, CardAction>;
 }
 
 export interface ConversationStore<TRef = unknown> {

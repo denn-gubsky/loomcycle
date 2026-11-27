@@ -273,13 +273,9 @@ func xhtmlHead(lang, title, css string) string {
 func (h *htmlWriter) page(p epubPage, opts Options, lang string) {
 	d := h.d
 	h.s(xhtmlHead(lang, p.title, "../style.css"))
-	if l := d.Style.header(); l != "" {
-		h.s(`<p class="style-header">` + h.esc(l) + "</p>\n")
-	}
+	h.webLine("style-header", false, h.esc)
 	end := func() {
-		if l := d.Style.footer(); l != "" {
-			h.s(`<p class="style-footer">` + h.esc(l) + "</p>\n")
-		}
+		h.webLine("style-footer", true, h.esc)
 		h.s("</body>\n</html>\n")
 	}
 	if p.sec != nil {

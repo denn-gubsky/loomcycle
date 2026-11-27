@@ -63,7 +63,7 @@ var handlersByName = map[string]toolHandler{
 	// A tenant's own trace export (telemetry.go).
 	"telemetry": handleTelemetry,
 	// Operator actions on the tenant ontology: merge_subjects, bind_principal,
-	// plan (ontology.go).
+	// plan, rollback, releases, release_diff, job, resume_job (ontology.go).
 	"ontology": handleOntology,
 	// The statement review queue, bulk rulings and their undo (review.go).
 	"review":    handleReview,

@@ -26,6 +26,7 @@ const (
 	minMarginMM, maxMarginMM         = 10.0, 50.0
 	minLogoMM, maxLogoMM             = 10.0, 80.0
 	maxStyleLine                     = 120
+	maxDateLine                      = 40
 	maxStyleJSON                     = 16 << 10
 )
 
@@ -38,8 +39,8 @@ type Style struct {
 	HeadScale   float64     `json:"heading_scale,omitempty"`
 	Colors      StyleColors `json:"colors,omitempty"`
 	Page        StylePage   `json:"page,omitempty"`
-	Header      string      `json:"header,omitempty"`
-	Footer      string      `json:"footer,omitempty"`
+	Header      PageLine    `json:"header,omitzero"`
+	Footer      PageLine    `json:"footer,omitzero"`
 	PageNumbers *bool       `json:"page_numbers,omitempty"`
 	LogoWidthMM float64     `json:"logo_width_mm,omitempty"`
 	// Logo is the picture above the title: an image of the Doc, by name.
@@ -48,6 +49,11 @@ type Style struct {
 	// Source names the style document and its revision, so a changed
 	// style changes what a render is made of (the render log's reuse).
 	Source string `json:"source,omitempty"`
+	// Date is what {date} prints in a header or footer (RFC HB D3): the
+	// call's own date line, else the render day. Set by the core only when
+	// a line uses it, never by the JSON, so a render on another day is a
+	// new render only when its page text shows the day.
+	Date string `json:"date,omitempty"`
 }
 
 // StyleColors are a style's colours, each #rrggbb.
@@ -93,8 +99,8 @@ func ParseStyle(body string) (*Style, error) {
 	if dec.More() {
 		return nil, fmt.Errorf("%w: more than one JSON value", ErrBadStyle)
 	}
-	if s.Logo != "" || s.Source != "" {
-		return nil, fmt.Errorf("%w: logo and source are not keys of a style (the logo is the document's first picture)", ErrBadStyle)
+	if s.Logo != "" || s.Source != "" || s.Date != "" {
+		return nil, fmt.Errorf("%w: logo, source and date are not keys of a style (the logo is the document's first picture; {date} prints the render day or the call's page_text date)", ErrBadStyle)
 	}
 	if err := s.check(); err != nil {
 		return nil, err
@@ -104,6 +110,9 @@ func ParseStyle(body string) (*Style, error) {
 
 // styleJSONError is a decoder error as the field it is about.
 func styleJSONError(err error) string {
+	if errors.Is(err, errPageLine) {
+		return "header and footer must each be one line or {left, center, right}"
+	}
 	var te *json.UnmarshalTypeError
 	if errors.As(err, &te) && te.Field != "" {
 		return fmt.Sprintf("%s: not a %s", te.Field, te.Type)
@@ -114,6 +123,10 @@ func styleJSONError(err error) string {
 	}
 	return "not JSON: " + msg
 }
+
+// Check holds every value to its range, as ParseStyle does; the core holds
+// a call's page text to it (RFC HB D3).
+func (s *Style) Check() error { return s.check() }
 
 // check holds every value to its range; it is also what a worker holds a
 // bundled style to.
@@ -146,10 +159,13 @@ func (s *Style) check() error {
 	if s.Page.MarginMM != 0 && (s.Page.MarginMM < minMarginMM || s.Page.MarginMM > maxMarginMM) {
 		return bad("page.margin_mm", fmt.Sprintf("between %g and %g", minMarginMM, maxMarginMM))
 	}
-	for name, l := range map[string]string{"header": s.Header, "footer": s.Footer} {
-		if !styleLineOK(l) {
-			return bad(name, fmt.Sprintf("one line of at most %d characters, without control characters", maxStyleLine))
+	for name, l := range map[string]PageLine{"header": s.Header, "footer": s.Footer} {
+		if err := l.check(); err != nil {
+			return bad(name, err.Error())
 		}
+	}
+	if !styleLineOK(s.Date) || utf8.RuneCountInString(s.Date) > maxDateLine {
+		return bad("date", fmt.Sprintf("one line of at most %d characters", maxDateLine))
 	}
 	if s.LogoWidthMM != 0 && (s.LogoWidthMM < minLogoMM || s.LogoWidthMM > maxLogoMM) {
 		return bad("logo_width_mm", fmt.Sprintf("between %g and %g", minLogoMM, maxLogoMM))
@@ -244,19 +260,21 @@ func (s *Style) PageSize(opt string) string {
 	return "a4"
 }
 
-// header and footer are the style's lines, "" without a style.
+// header and footer are the style's one-line form, "" without a style.
+// A writer reads them only when the style's page text is plain
+// (pageTextPlain); otherwise it reads pageSlots.
 func (s *Style) header() string {
 	if s == nil {
 		return ""
 	}
-	return s.Header
+	return s.Header.Left
 }
 
 func (s *Style) footer() string {
 	if s == nil {
 		return ""
 	}
-	return s.Footer
+	return s.Footer.Left
 }
 
 // logo is the style's picture, when the Doc holds it as one it can show.
@@ -292,6 +310,9 @@ func (s *Style) cssOverrides(scope string) string {
 	fmt.Fprintf(&b, "h1{font-size:%.3gem}h2{font-size:%.3gem}h3{font-size:%.3gem}h4,h5,h6{font-size:%.3gem}\n", 2*k, 1.5*k, 1.25*k, 1.05*k)
 	fmt.Fprintf(&b, "a{color:%s}\n", s.linkColor())
 	b.WriteString(".style-header,.style-footer{color:#5b5b5b;font-size:.8em;margin:0 0 1.5em}.style-footer{margin:2em 0 0;border-top:1px solid #d6d3d1;padding-top:.5em}\n")
+	if !s.pageTextPlain() {
+		b.WriteString(".style-slots{display:flex;gap:1em}.style-slots span{flex:1}.style-slots span:nth-child(2){text-align:center}.style-slots span:nth-child(3){text-align:right}\n")
+	}
 	fmt.Fprintf(&b, "img.logo{width:%gmm;max-width:100%%;height:auto;display:block;margin:0 0 1em}\n", s.logoMM())
 	return b.String()
 }

@@ -18,7 +18,9 @@
 #
 # Two domains on purpose: the SDLC team exercises the software workspace (ephemeral
 # volume + git/gh via Bashbox — see the agent-teams `team/repo` skill + its
-# operator prereqs); the marketing team proves the domain-general design with NO
+# operator prereqs; sdlc/coder and sdlc/reviewer build and test in a workspace
+# when workspace.mode is on, and fall back to Bashbox until RFC GW P15 removes
+# it); the marketing team proves the domain-general design with NO
 # volume/repo/PR — its deliverable is the Document task board itself.
 #
 # The handler agents are meant to be SPAWNED BY the orchestrator (which creates the
@@ -47,24 +49,50 @@ agents:
     tier: middle
     max_tokens: 16384
     effort: medium
-    tools: [Read, Write, Edit, Grep, Glob, Bashbox, Context]
+    # Workspace runs the build and tests on a workspace worker (RFC GW). Bashbox
+    # stays until the release that removes it (RFC GW P15), for installs that
+    # have not turned workspaces on (workspace.mode).
+    tools: [Read, Write, Edit, Grep, Glob, Workspace, File, Bashbox, Context]
+    workspace: {ops: [read, write, exec], open: true}
     system_prompt: |
       You are the CODER on a software team. Implement the approved design in the
-      repo checked out in the `work` volume: edit files with Write/Edit, and use
-      Bashbox (volume="work") to build/test/format. Make the SMALLEST change that
-      satisfies the task; match the surrounding code's style. When done, summarize
-      what you changed (files + one line each) — the reviewer reads it next. Do not
-      commit or push; the orchestrator opens the PR.
+      repo checked out in the `work` volume: edit files there with Write/Edit
+      (volume="work"). Make the SMALLEST change that satisfies the task; match the
+      surrounding code's style.
+
+      To build, test or format, use a workspace:
+      1. `Workspace op=open name="build"`.
+      2. Copy the checkout in once: `File op=copy from="volume:work:."
+         to="workspace:build:repo"`. If it is refused for its size
+         (`copy_limit`), copy only the folders the build needs.
+      3. `Workspace op=exec name="build" cwd="repo" command="<the build or test command>"`.
+      After each further edit in `work`, copy each changed file in again before
+      the next run (`File op=copy from="volume:work:<path>"
+      to="workspace:build:repo/<path>" overwrite=true`). The `work` volume is the
+      team's tree: never edit only the workspace copy.
+      If `Workspace op=open` is refused because this install runs no workspaces,
+      use Bashbox (volume="work") for the command instead.
+
+      When done, summarize what you changed (files + one line each) — the
+      reviewer reads it next. Do not commit or push; the orchestrator opens the PR.
 
   sdlc/reviewer:
     tier: middle
     max_tokens: 8192
     effort: high
-    tools: [Read, Grep, Glob, Bashbox, Context]
+    # Git reads the diff; Workspace runs the tests on a workspace worker (RFC GW).
+    # Bashbox stays until RFC GW P15, for installs without workspaces.
+    tools: [Read, Grep, Glob, Git, Workspace, File, Bashbox, Context]
+    workspace: {ops: [read, write, exec], open: true}
     system_prompt: |
       You are the REVIEWER on a software team. Review the coder's change in the
-      `work` volume: read the diff (Bashbox volume="work": `git diff`), check
-      correctness, tests, and style. Return a verdict the orchestrator routes on:
+      `work` volume: read the diff with `Git op=diff volume="work"`, then check
+      correctness, tests, and style. To run the tests, open a workspace
+      (`Workspace op=open name="review"`), copy the checkout in (`File op=copy
+      from="volume:work:." to="workspace:review:repo"`) and run them with
+      `Workspace op=exec name="review" cwd="repo"`. If this install runs no workspaces, use Bashbox
+      (volume="work") instead.
+      Return a verdict the orchestrator routes on:
       "approve" (advance to PR) or "pushback: <specific, actionable reasons>" (back
       to the coder). Be concrete — name files + lines. Do not edit code yourself.
 

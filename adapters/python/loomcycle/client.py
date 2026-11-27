@@ -1254,7 +1254,13 @@ class LoomcycleClient:
         resolve / ls / stat / mkdir / mv / rm. Address resources by
         human-readable paths (e.g. ``/docs/launch``). Scope (agent/user/
         tenant) + tenant are resolved server-side from the authenticated
-        principal, never the wire. Mirror of :meth:`agent_def`."""
+        principal, never the wire. Mirror of :meth:`agent_def`.
+
+        A one-level ``ls`` takes ``with_counts`` (each folder entry gains
+        ``documents``: the documents the caller may read under it, exact to
+        10,000, then ``documents_capped``) and the filters ``name_contains`` /
+        ``type`` (with subtypes) / ``status``, echoed back as ``filters``
+        (RFC HA)."""
         return await self._dispatch_substrate("Path", input)
 
     async def document(self, input: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -2162,7 +2168,7 @@ class LoomcycleClient:
         }
 
     async def plan_ontology(
-        self, changes: Sequence[Mapping[str, str]], *, tenant: str = ""
+        self, changes: Sequence[Mapping[str, Any]], *, tenant: str = ""
     ) -> Mapping[str, Any]:
         """Say what changes to the tenant ontology's entries would do before
         any is made; writes nothing. Mirrors ``POST /v1/_ontology/plan``.
@@ -2172,15 +2178,29 @@ class LoomcycleClient:
         ``edit`` (needs ``body``) or ``delete``, each ``entry`` a chunk id of
         the ontology; or ``{"op": "proposal", "id": <chunk id>}``, an open
         proposal, planned as the direct changes accepting it makes (an add
-        proposal as op ``add``, risk ``none``), together with the rest.
+        proposal as op ``add``, risk ``none``), together with the rest;
+        ``{"op": "unretire", "entry"}``; ``{"op": "add", "seq", "entry"}``
+        (an entry of release *seq* added back); or ``{"op": "release",
+        "seq"}``, the request's only change, which plans rolling the ontology
+        back to release *seq* (apply it with :meth:`rollback_ontology`).
 
         Returns ``{tenant, fingerprint, content_version, changes, issues,
         new_issues, scopes_counted, scopes_skipped, complete}``
         (``content_version`` names what the ontology in force declares now; it
         moves only when an in-force entry does); each change is ``{op,
-        entry, risk, counts, subtree, notes, proposal}`` with ``entry``
+        entry, risk, counts, subtree, notes, proposal, job}`` with ``entry``
         ``{chunk_id, name, section, kind}``, ``proposal`` the proposal's chunk
-        id ("" for a direct change), and each count ``{n, effect,
+        id ("" for a direct change), ``job`` the block of the ontology job
+        the change would start — the class-rename job for a rename of a
+        class something rests on, the concept re-tag job for a concept
+        rename or move or a scheme rename that moves a tag (``{kind, steps,
+        runnable, blocked, collisions, collisions_total,
+        collisions_other_scopes, scopes_not_counted, running, notes,
+        tag_moves}``, ``kind`` ``class_rename`` or ``concept_retag``,
+        ``tag_moves`` ``[{from, to}]`` for a re-tag, ``running`` the
+        unfinished job as :meth:`get_ontology_job` shapes it or ``None``)
+        and ``None`` for every other change, ``release`` the release a rollback plans toward
+        (0 for any other change), and each count ``{n, effect,
         tenant_scope, other_scopes, by_status, sample}`` — the same shape as
         the HTTP route's JSON, with absent strings, lists and maps empty.
 
@@ -2199,6 +2219,7 @@ class LoomcycleClient:
                     parent=c.get("parent", ""),
                     body=c.get("body", ""),
                     id=c.get("id", ""),
+                    seq=int(c.get("seq", 0)),
                 )
                 for c in changes
             ],
@@ -2234,6 +2255,8 @@ class LoomcycleClient:
                     "subtree": [entry(s) for s in c.subtree],
                     "notes": list(c.notes),
                     "proposal": c.proposal,
+                    "job": _rename_job_plan(c.job) if c.HasField("job") else None,
+                    "release": c.release,
                 }
                 for c in resp.changes
             ],
@@ -2242,6 +2265,238 @@ class LoomcycleClient:
             "scopes_counted": resp.scopes_counted,
             "scopes_skipped": resp.scopes_skipped,
             "complete": resp.complete,
+        }
+
+    async def rollback_ontology(
+        self, seq: int, plan_fingerprint: str, *, tenant: str = ""
+    ) -> Mapping[str, Any]:
+        """Roll the tenant ontology back to release *seq*: apply the plan of
+        ``{"op": "release", "seq": seq}`` (:meth:`plan_ontology`), which the
+        server computes again and refuses unless *plan_fingerprint* is still
+        its fingerprint. The writes go through the ontology's own guards; a
+        write by anyone else stops the rollback. Never automatic. Mirrors
+        ``POST /v1/_ontology/rollback`` over the ``ApplyOntologyRollback``
+        RPC.
+
+        Returns ``{tenant, rollback}``, ``rollback`` ``{release,
+        release_content_version, content_version, matches, risk, applied,
+        rename_jobs, rollback_release, notes, warnings}``: ``applied`` the
+        writes made (``{op, entry, name, new_id}``), ``rename_jobs`` the
+        class-rename jobs its renames started (as :meth:`get_ontology_job`
+        shapes a job), ``matches`` whether the ontology in force now
+        declares the release's content version.
+
+        For an admin or a tenant operator only. A refusal raises with the
+        code on ``.reason``: ``plan_required`` / ``plan_stale`` (the error's
+        ``.fingerprint`` is the ontology's current one), ``partially_applied``
+        (``.applied`` lists the writes made), ``rename_job_pending``,
+        ``entry_locked``, ``invalid_request``, ``entry_not_found``,
+        ``forbidden``, ``unavailable``."""
+        req = pb.ApplyOntologyRollbackRequest(tenant=tenant, seq=seq, plan_fingerprint=plan_fingerprint)
+        try:
+            resp = await self._stub.ApplyOntologyRollback(req, metadata=self._auth_metadata())
+        except grpc.aio.AioRpcError as e:
+            info = _error_info(e)
+            try:
+                _raise_from_grpc(e)
+            except LoomcycleError as le:
+                # What HTTP's 409 body carries beside the code rides the
+                # ErrorInfo's metadata (internal/api/grpc/ontology_rollback.go).
+                meta = info[1] if info is not None else {}
+                le.fingerprint = meta.get("fingerprint", "")  # type: ignore[attr-defined]
+                le.applied = json.loads(meta["applied"]) if meta.get("applied") else []  # type: ignore[attr-defined]
+                raise
+        r = resp.rollback
+        return {
+            "tenant": resp.tenant,
+            "rollback": {
+                "release": r.release,
+                "release_content_version": r.release_content_version,
+                "content_version": r.content_version,
+                "matches": r.matches,
+                "risk": r.risk,
+                "applied": [
+                    {"op": a.op, "entry": a.entry, "name": a.name, "new_id": a.new_id} for a in r.applied
+                ],
+                "rename_jobs": [_ontology_job(j) for j in r.rename_jobs],
+                "rollback_release": r.rollback_release,
+                "notes": list(r.notes),
+                "warnings": list(r.warnings),
+            },
+        }
+
+    async def list_ontology_releases(self, *, tenant: str = "") -> Mapping[str, Any]:
+        """List the tenant ontology's releases — the copies taken when it
+        was confirmed and on each applied or rolled-back change, the newest
+        50 kept — newest first. Writes nothing. Mirrors
+        ``GET /v1/_ontology/releases`` over the ``ListOntologyReleases`` RPC.
+
+        Returns ``{tenant, releases}``, each release ``{seq,
+        content_version, fingerprint, reason, actor, created_at, entries,
+        redacted}`` (``redacted`` True once a subject erasure changed the
+        release; its content_version stays as recorded) (``reason`` is ``confirm``, ``apply``, ``rollback`` or ``catch_up``;
+        ``actor`` "" when none was known; ``created_at`` in unix
+        nanoseconds).
+
+        There is no RPC to read one release with its Markdown export: that
+        is ``GET /v1/_ontology/releases/{seq}`` on HTTP only.
+
+        For an admin or a tenant operator only; *tenant* is honored only for
+        an admin token. A refusal raises the error class its gRPC code maps
+        to, with the code (``forbidden``, ``unavailable``) on its
+        ``.reason``."""
+        req = pb.ListOntologyReleasesRequest(tenant=tenant)
+        try:
+            resp = await self._stub.ListOntologyReleases(req, metadata=self._auth_metadata())
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+        return {
+            "tenant": resp.tenant,
+            "releases": [
+                {
+                    "seq": r.seq,
+                    "content_version": r.content_version,
+                    "fingerprint": r.fingerprint,
+                    "reason": r.reason,
+                    "actor": r.actor,
+                    "created_at": r.created_at,
+                    "entries": r.entries,
+                    "redacted": r.redacted,
+                }
+                for r in resp.releases
+            ],
+        }
+
+    async def diff_ontology_releases(
+        self, from_seq: int, to_seq: int = 0, *, tenant: str = ""
+    ) -> Mapping[str, Any]:
+        """Compare two releases of the tenant ontology, or a release with
+        the ontology in force, entry by entry. Writes nothing. Mirrors
+        ``GET /v1/_ontology/releases/diff`` over the ``DiffOntologyReleases``
+        RPC.
+
+        *from_seq* is a release's sequence number; *to_seq* another's, or 0
+        (the default) for the ontology as it stands now (HTTP's
+        ``to=current``).
+
+        Returns ``{tenant, from, to, changes, issues}``: each side ``{seq,
+        current, content_version, redacted}``; each change ``{chunk_id, kind,
+        change, changed, before, after}`` with ``change`` ``added``,
+        ``removed``, ``changed`` or ``erased`` (a subject erasure redacted
+        the entry; no before or after), ``changed`` listing ``renamed``, ``moved``, ``kind``,
+        ``status``, ``meaning``, ``directives``, and ``before`` / ``after``
+        ``{name, parent, parent_name, status, meaning, directives}`` or
+        ``None`` (absent for an added entry, resp. a removed one).
+        ``directives`` is the decoded JSON, as HTTP returns it. A rename is
+        one changed entry, never an add and a remove.
+
+        For an admin or a tenant operator only; *tenant* is honored only for
+        an admin token. A refusal raises the error class its gRPC code maps
+        to, with the code (``invalid_request``, ``forbidden``,
+        ``release_not_found``, ``unavailable``) on its ``.reason``."""
+        # "from" is a Python keyword, so the field is set through kwargs.
+        req = pb.DiffOntologyReleasesRequest(tenant=tenant, to=to_seq, **{"from": from_seq})
+        try:
+            resp = await self._stub.DiffOntologyReleases(req, metadata=self._auth_metadata())
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+
+        def side(s: Any) -> Mapping[str, Any]:
+            return {
+                "seq": s.seq,
+                "current": s.current,
+                "content_version": s.content_version,
+                "redacted": s.redacted,
+            }
+
+        def state(d: Any, name: str) -> Mapping[str, Any] | None:
+            if not d.HasField(name):
+                return None
+            e = getattr(d, name)
+            return {
+                "name": e.name,
+                "parent": e.parent,
+                "parent_name": e.parent_name,
+                "status": e.status,
+                "meaning": e.meaning,
+                "directives": json.loads(e.directives_json) if e.directives_json else None,
+            }
+
+        return {
+            "tenant": resp.tenant,
+            "from": side(getattr(resp, "from")),
+            "to": side(resp.to),
+            "changes": [
+                {
+                    "chunk_id": d.chunk_id,
+                    "kind": d.kind,
+                    "change": d.change,
+                    "changed": list(d.changed),
+                    "before": state(d, "before"),
+                    "after": state(d, "after"),
+                }
+                for d in resp.changes
+            ],
+            "issues": list(resp.issues),
+        }
+
+    async def get_ontology_job(self, *, tenant: str = "") -> Mapping[str, Any]:
+        """Read the tenant's ontology job — the class rename or concept
+        re-tag carrying a change through the stored rows of the tenant scope
+        and every user and agent scope: the unfinished one, else the one
+        updated last. Writes nothing. Mirrors ``GET /v1/_ontology/job`` over
+        the ``GetOntologyJob`` RPC.
+
+        Returns ``{tenant, job}``; ``job`` is ``None`` when the tenant never
+        had one, else ``{id, kind, entry, from, to, to_tags, state, step,
+        done, error, remaining, scope, scopes_done, scopes_total, created_at,
+        updated_at}`` (``kind`` ``class_rename`` or ``concept_retag``;
+        ``state`` ``pending``, ``running``, ``blocked``, ``done`` or
+        ``abandoned``; ``done`` the rows rewritten per step; ``remaining``
+        the rows still under an old name in the scope it is at; the times
+        in unix nanoseconds) — HTTP's JSON shape, absent strings and lists
+        empty.
+
+        For an admin or a tenant operator only; *tenant* is honored only for
+        an admin token. A refusal raises the error class its gRPC code maps
+        to, with the code (``forbidden``, ``unavailable``) on its
+        ``.reason``."""
+        req = pb.GetOntologyJobRequest(tenant=tenant)
+        try:
+            resp = await self._stub.GetOntologyJob(req, metadata=self._auth_metadata())
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+        return {
+            "tenant": resp.tenant,
+            "job": _ontology_job(resp.job) if resp.HasField("job") else None,
+        }
+
+    async def resume_ontology_job(self, *, id: str, tenant: str = "") -> Mapping[str, Any]:
+        """Give the tenant's unfinished ontology job one slice of work
+        (about 20 seconds) under the ontology rename lease, from the scope
+        and step it is at, as the next class rename or concept move would; a
+        job whose change never reached the ontology is marked ``abandoned``.
+        Mirrors ``POST /v1/_ontology/job/resume`` over the
+        ``ResumeOntologyJob`` RPC.
+
+        *id* (from :meth:`get_ontology_job`) is required: the resume is
+        refused unless that job is still the unfinished one, so a resume aimed
+        at a job that has since finished cannot carry on a newer one (an empty
+        id is refused ``invalid_request``). Returns ``{tenant, job}`` as
+        :meth:`get_ontology_job` does, the job as the slice left it; call
+        again while it is unfinished.
+
+        Operator only, as :meth:`get_ontology_job`. A refusal raises with the
+        code (``job_not_found``, ``job_busy``, ``invalid_request``,
+        ``forbidden``, ``unavailable``) on its ``.reason``."""
+        req = pb.ResumeOntologyJobRequest(tenant=tenant, id=id)
+        try:
+            resp = await self._stub.ResumeOntologyJob(req, metadata=self._auth_metadata())
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+        return {
+            "tenant": resp.tenant,
+            "job": _ontology_job(resp.job) if resp.HasField("job") else None,
         }
 
     async def list_review_queue(
@@ -3839,6 +4094,53 @@ def _raise_calc_from_grpc(err: grpc.aio.AioRpcError) -> "None":
             retryable=meta.get("is_retryable") == "true",
         ) from err
     _raise_from_grpc(err)
+
+
+def _ontology_job(j: "pb.OntologyJobStatus") -> Mapping[str, Any]:
+    """An ontology job as HTTP's JSON shapes it (``remaining`` for the
+    rows still under an old name)."""
+    return {
+        "id": j.id,
+        "kind": j.kind,
+        "entry": j.entry,
+        "from": list(getattr(j, "from")),
+        "to": j.to,
+        "to_tags": list(j.to_tags),
+        "state": j.state,
+        "step": j.step,
+        "done": dict(j.done),
+        "error": j.error,
+        "remaining": j.remaining,
+        "scope": j.scope,
+        "scopes_done": j.scopes_done,
+        "scopes_total": j.scopes_total,
+        "created_at": j.created_at,
+        "updated_at": j.updated_at,
+    }
+
+
+def _rename_job_plan(p: "pb.OntologyRenameJobPlan") -> Mapping[str, Any]:
+    """A planned change's job block, as HTTP's ``job``: a class rename's
+    (``kind`` ``class_rename``) or a concept re-tag's (``concept_retag``,
+    with ``tag_moves``)."""
+    return {
+        "steps": [
+            {"name": s.name, "tenant_scope": s.tenant_scope, "other_scopes": s.other_scopes} for s in p.steps
+        ],
+        "runnable": p.runnable,
+        "blocked": list(p.blocked),
+        "collisions": [
+            {"column": c.column, "key": c.key, "into": c.into, "holder": c.holder} for c in p.collisions
+        ],
+        "collisions_total": p.collisions_total,
+        "collisions_other_scopes": p.collisions_other_scopes,
+        "scopes_not_counted": p.scopes_not_counted,
+        "running": _ontology_job(p.running) if p.HasField("running") else None,
+        "notes": list(p.notes),
+        "kind": p.kind,
+        # "from" is a Python keyword, so the field is read through getattr.
+        "tag_moves": [{"from": getattr(m, "from"), "to": m.to} for m in p.tag_moves],
+    }
 
 
 def _retention_override_entry(o: "pb.RetentionOverrideEntry") -> Mapping[str, Any]:

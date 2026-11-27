@@ -184,6 +184,9 @@ func capture(ctx context.Context, s store.Store, opts CaptureOptions) (*store.Sn
 	if err := captureVolumeDefs(ctx, s, &envelope.Sections.VolumeDefs); err != nil {
 		return nil, nil, nil, err
 	}
+	if err := captureWorkspaces(ctx, s, &envelope.Sections.Workspaces); err != nil {
+		return nil, nil, nil, err
+	}
 	if err := captureMemorySources(ctx, s, &envelope.Sections); err != nil {
 		return nil, nil, nil, err
 	}

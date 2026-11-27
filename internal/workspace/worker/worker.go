@@ -35,6 +35,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/denn-gubsky/loomcycle/internal/convert"
+	"github.com/denn-gubsky/loomcycle/internal/gitsource"
 	"github.com/denn-gubsky/loomcycle/internal/safego"
 	"github.com/denn-gubsky/loomcycle/internal/workerlink"
 	"github.com/denn-gubsky/loomcycle/internal/workspace"
@@ -62,6 +63,10 @@ const (
 
 // Options configure a workspace worker.
 type Options struct {
+	// MirrorIdle is how long a git mirror no workspace pins is kept after
+	// its last use (workspace.git.mirror_idle_s,
+	// LOOMCYCLE_WORKSPACE_MIRROR_IDLE_S); zero keeps them all.
+	MirrorIdle time.Duration
 	// Target is the dispatchers to attach to (workerlink.ParseTargets).
 	Target string
 	// Token is an operator token holding only workers:attach.
@@ -86,6 +91,9 @@ type Options struct {
 	// GW P4 plan O13). Not a boundary: the port takes a per-workspace
 	// secret, which this user's own processes can read (engine.Host).
 	HostEgress bool
+	// browser is whether the container engine's session image carries the
+	// browser, probed at the start; it adds the browser label.
+	browser bool
 	// hostEgress is the handler a host workspace's port serves, set by
 	// wireEgress.
 	hostEgress func(workspace string) http.Handler
@@ -99,6 +107,12 @@ type Options struct {
 	// Commands, when not empty, are the programs an exec may start with
 	// (LOOMCYCLE_WORKSPACE_COMMANDS); see engine.Host.Commands.
 	Commands []string
+	// Personal makes this a user's own worker (RFC GW §4.5): it offers
+	// Roots, directories of the user's machine named at its start, on the
+	// host engine. Its token must be a personal worker token of that user.
+	Personal bool
+	// Roots are the directories a personal worker offers, by name.
+	Roots []Root
 	// Labels are the conversion labels (conversion/wire.Label*) of the
 	// helpers this worker's conversion child has, reported at attach: what
 	// a workspace's file can be converted to here (RFC GW D34). A worker
@@ -181,6 +195,21 @@ func Run(ctx context.Context, opt Options) error {
 		return fmt.Errorf("workspace worker: making the root: %w", err)
 	}
 	opt.Root = root
+	switch {
+	case opt.Personal && opt.Engine != workspace.EngineHost:
+		return errors.New("workspace worker: a personal worker runs on the host engine (RFC GW §4.5)")
+	case opt.Personal && len(opt.Roots) == 0:
+		return errors.New("workspace worker: a personal worker needs at least one --root name=path")
+	case !opt.Personal && len(opt.Roots) > 0:
+		return errors.New("workspace worker: --root is for a personal worker (--personal)")
+	}
+	if opt.Personal {
+		roots, err := checkRoots(root, opt.Roots)
+		if err != nil {
+			return fmt.Errorf("workspace worker: %w", err)
+		}
+		opt.Roots = roots
+	}
 	targets, err := workerlink.ParseTargets(opt.Target)
 	if err != nil {
 		return err
@@ -196,6 +225,18 @@ func Run(ctx context.Context, opt Options) error {
 	// (RFC GW §6.3); self is set below, before any session can start.
 	var self *worker
 	wireEgress(&opt, &self)
+	// A git workspace's session sees its mirror's objects read-only (RFC GW
+	// §4.2): the container engine asks which mirror when it makes one.
+	opt.Container.MirrorKeyFor = func(id string) string {
+		if self == nil {
+			return ""
+		}
+		return self.MirrorKeyOf(id)
+	}
+	// go-git's HTTP clients go through gitsource's dispatcher, which takes
+	// each operation's transport from its context: here, the op's Egress
+	// streams to the core.
+	gitsource.InstallTransport()
 	eng, err := newEngine(ctx, &opt, log)
 	if err != nil {
 		return err
@@ -213,12 +254,25 @@ func Run(ctx context.Context, opt Options) error {
 	if opt.Convert == nil {
 		opt.Labels = nil
 	}
+	// After the conversion labels, which the line above may clear: the
+	// browser is the session image's, not the conversion child's.
+	if opt.browser {
+		opt.Labels = append(opt.Labels, workspace.LabelBrowser)
+		log.Info("the session image carries a browser; this worker takes screenshots")
+	}
 	// The checkpoint mechanism is the disk's, probed once and reported as a
 	// label (RFC GW §5.4).
 	mech := probeMechanism(root)
-	opt.Labels = append(opt.Labels, workspace.CheckpointLabelPrefix+mech)
+	opt.Labels = append(opt.Labels, workspace.CheckpointLabelPrefix+mech, workspace.GitLabel)
 	log.Info("checkpoints are recorded by this mechanism", "mechanism", mech)
 	w := &worker{opt: opt, log: log, engine: eng, mech: mech}
+	if opt.Personal {
+		w.opt.Labels = append(w.opt.Labels, w.rootLabels()...)
+		if err := w.loadBindings(); err != nil {
+			return fmt.Errorf("workspace worker: reading the roots' bindings: %w", err)
+		}
+		log.Warn("a personal worker: agents of this user reach these directories, and by absolute path beyond them, with this user's rights", "roots", len(opt.Roots))
+	}
 	self = w
 	// The kernels die with the worker; the next cell after it comes back
 	// says kernel_restarted (RFC GW §5.7). A host worker writes the drivers
@@ -233,6 +287,7 @@ func Run(ctx context.Context, opt Options) error {
 	// The servers die with the worker, before the engine closes.
 	defer w.servers.Close()
 	w.cleanWork()
+	w.runMirrorSweep(ctx)
 	return workerlink.Serve(ctx, targets, workerlink.Options{
 		TLS: opt.TLS, Insecure: opt.Insecure, Resolve: opt.Resolve, ResolveEvery: opt.ResolveEvery,
 		Name: "workspace.worker", Logger: log,
@@ -268,6 +323,13 @@ func newEngine(ctx context.Context, opt *Options, log *slog.Logger) (engine.Engi
 	}
 	if opt.Toolchains == nil {
 		opt.Toolchains = tc
+	}
+	// A failed probe is no browser: the worker then never offers a
+	// screenshot (fail closed), and says why.
+	if ok, err := c.ProbeBrowser(ctx); err != nil {
+		log.Warn("cannot tell whether the session image carries a browser; this worker takes no screenshot", "err", err)
+	} else {
+		opt.browser = ok
 	}
 	if err := c.Reconcile(ctx); err != nil {
 		return nil, fmt.Errorf("workspace worker: %w", err)
@@ -310,6 +372,9 @@ type worker struct {
 	servers servers
 	// mu serialises open's capacity check with the directory it makes.
 	mu sync.Mutex
+	// mirrorMu guards mirrorLocks, one lock per mirror (git.go).
+	mirrorMu    sync.Mutex
+	mirrorLocks map[string]chan struct{}
 	// quotas is each workspace's disk count and write lock.
 	quotas quotas
 	// extra counts the one-op streams OpenStreams opened and still open.
@@ -320,6 +385,18 @@ type worker struct {
 	// mech is the checkpoint mechanism probed at start (RFC GW §5.4);
 	// empty copies.
 	mech string
+	// rootMu guards bound, the workspace ids bound to a root on a personal
+	// worker (RFC GW §4.5), id → root name.
+	rootMu sync.Mutex
+	bound  map[string]string
+	// tplMu serialises the template cache: a copy out of it, a tree put
+	// into it, and an eviction (RFC GW §5.5).
+	tplMu sync.Mutex
+	// shots holds the workspaces a screenshot is being taken of: one
+	// browser per workspace at a time (P10 plan §10).
+	shots sync.Map
+	// shotTimeout is one shot's bound; zero is workspace.ScreenshotTimeout.
+	shotTimeout time.Duration
 }
 
 func (w *worker) outgoing(ctx context.Context) context.Context {
@@ -338,7 +415,8 @@ func (w *worker) held() ([]string, error) {
 			out = append(out, e.Name())
 		}
 	}
-	return out, nil
+	// A workspace bound to a root on a personal worker is held too.
+	return append(out, w.boundIDs()...), nil
 }
 
 // refused reports whether a status from the core says retrying cannot help.
@@ -481,6 +559,15 @@ func (w *worker) removeAll(ids []string, log *slog.Logger) []string {
 		if !workspace.ValidID(id) {
 			continue
 		}
+		if _, ok := w.boundRoot(id); ok {
+			// A root is the user's own: only its binding goes.
+			if a := w.removeBound(context.Background(), id); a.class != "" {
+				log.Warn("cannot unbind a root workspace the dispatcher released", "workspace_id", id, "err", a.detail)
+				continue
+			}
+			gone = append(gone, id)
+			continue
+		}
 		w.kernels.Drop(id)
 		w.servers.Drop(id)
 		// The session first, so nothing still running writes into the
@@ -489,7 +576,7 @@ func (w *worker) removeAll(ids []string, log *slog.Logger) []string {
 			log.Warn("cannot end the session of a workspace the dispatcher released", "workspace_id", id, "err", err)
 			continue
 		}
-		if err := os.RemoveAll(filepath.Join(w.opt.Root, id)); err != nil {
+		if err := w.removeOwnDir(id); err != nil {
 			log.Warn("cannot remove a workspace the dispatcher released", "workspace_id", id, "err", err)
 			continue
 		}

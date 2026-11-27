@@ -43,7 +43,7 @@ Run loomcycle with authentication on and a persistent store. Then:
 
 ### 2. Microsoft Entra and Azure Bot
 
-1. Register a **single-tenant** app in Microsoft Entra ID and create a client secret.
+1. Register a **single-tenant** app in Microsoft Entra ID and create a client secret. With files or voice on, also upload a certificate (or use a managed identity): from 2027-03-01 a client secret cannot download files ([The file token](#the-file-token-from-2027-03-01)).
 2. Create an **Azure Bot** resource using that app. Set its messaging endpoint to `https://<bridge-host>/api/messages` and enable the **Microsoft Teams** channel.
 
 ### 3. Run the bridge
@@ -79,6 +79,8 @@ Configuration is by environment:
 | `BRIDGE_FILES` | `1` puts documents attached in a 1:1 chat into the agent's run inbox ([Documents](#documents)); `BRIDGE_FILES_*` there | unset (off) |
 | `BRIDGE_VOICE` | `1` transcribes audio files attached in a 1:1 chat ([Recordings](#recordings)) | unset (off) |
 | `TEAMS_BRIDGE_FILE_HOSTS` | Comma list of host suffixes an attached file may be downloaded from | `.sharepoint.com` |
+| `TEAMS_BRIDGE_DUMP_ACTIVITIES` | `1` logs every inbound activity, redacted ([What Teams sent](#what-teams-sent)) | unset (off) |
+| `TEAMS_BRIDGE_FILES_GRAPH`, `TEAMS_BRIDGE_APP_ID`, `TEAMS_BRIDGE_GRAPH_CONNECTION`, `TEAMS_BRIDGE_NO_FILE_HINT` | Files Teams sends no link for, read through Graph, and the reply when none came ([the Graph fallback](#when-teams-sends-no-file-the-graph-fallback)) | `off` |
 
 With `BRIDGE_STORE=memory`, a restart forgets which loomcycle session each Teams conversation was in, and the next message starts a fresh one. Use `file:<path>` (one instance) or your own `ConversationStore` (several).
 
@@ -133,6 +135,7 @@ As a gate the bridge also tells loomcycle about groups and leavers. Every person
 - **A shared chat runs as itself, never as one of its members.** A group chat, or a channel, is its own loomcycle user (`teams-conv-<hash>`), with its own memory and history. Anyone in it may talk to the agent, so no single person's private data or tools are reachable from it. A channel's threads share the channel's identity; each thread is its own run.
 - Every message reaches the agent labelled with the speaker's name, so it knows who is talking.
 - The person who started the conversation answers the agent's question and review cards, and only they can `/new` or `/stop`.
+- A question card lists its options numbered (up to 20), with a button for each of the first six, then Decline. The owner can also reply with a number or an option's text, or their own answer when the question allows one, and with `BRIDGE_STORE=file:<path>` an open question still answers after a restart. See [Questions](../bridge-core#questions).
 - Teams sends the bot channel messages only when it is @mentioned.
 
 ## Files and recordings
@@ -199,23 +202,126 @@ Formats taken: `m4a`, `mp4`, `mp3`, `wav`, `ogg`, `webm` and `flac`, the ones lo
 
 ### Downloads
 
-Teams gives the bot a pre-authorised link to each attached file that works for only a few minutes, so the bridge fetches it at once, the same way for documents and recordings:
+Teams gives the bot a link to each attached file that works for only a few minutes, so the bridge fetches it at once, the same way for documents and recordings:
 
-- **No credential is sent:** no bot token and no header of the bridge's own.
+- **A credential only where the link needs one.** Until 2027-03-01 every link carries a `tempauth` query and works without a token: the bridge sends no credential and no header of its own. A link without `tempauth` (every link from 2027-03-01) is fetched with the bot's own file token ([below](#the-file-token-from-2027-03-01)), for that link's host only, and only after the host passed `TEAMS_BRIDGE_FILE_HOSTS` and the link proved to be in a OneDrive personal site (a host whose first label ends in `-my`, such as `contoso-my.sharepoint.com`, and a path under `/personal/`). Any other link without `tempauth`, a team site's included, is refused with reason `host` before a token is asked for. The token goes with the first request alone: every redirect is followed without it.
 - **Only from SharePoint hosts:** the link, and every redirect it takes, must be `https` on a host ending in one of `TEAMS_BRIDGE_FILE_HOSTS` (default `.sharepoint.com`, which covers OneDrive's `<tenant>-my.sharepoint.com`). Add a sovereign cloud's suffix (`.sharepoint.us`, `.sharepoint.de`, `.sharepoint.cn`) if your tenant uses one. Anything else is refused.
 - **Capped while reading:** Teams states no size up front, so the download stops once it passes `BRIDGE_FILES_MAX_BYTES` for a document (default 20 MiB) or `BRIDGE_VOICE_MAX_BYTES` for a recording (default 8 MB). `BRIDGE_VOICE_MAX_SECONDS` cannot apply, since Teams gives no length either; loomcycle's own limit on the minutes one transcription may take still does.
 - A sign-in page or an error status instead of the file is refused.
 
-When a download is refused, the person hears "I couldn't download that file. Please send it again." (for a recording, "I couldn't download that voice message. Please try again or type it.") and the bridge logs `teams file download refused` with the reason (`host`, `redirect`, `status`, `type` or `size`), the host or HTTP status where there is one, and never the link.
+When a download is refused, the person hears "I couldn't download that file. Please send it again." (for a recording, "I couldn't download that voice message. Please try again or type it.") and the bridge logs `teams file download refused` with the reason (`host`, `redirect`, `status`, `type`, `size` or `token`), the host or HTTP status where there is one, and never the link or a token. Reason `token` means a link without `tempauth` and no file token: `cause` is `none` (no certificate, managed identity or federated credential configured), `status` (the token endpoint refused, with its `status`), `response` or `failed`.
 
 Not yet checked against a live tenant (RFC GA P0): the exact host Teams' `downloadUrl` uses, whether it redirects, and how long it lives. If files are refused with reason `host` or `redirect`, the logged host tells you what to add to `TEAMS_BRIDGE_FILE_HOSTS`.
+
+### The file token from 2027-03-01
+
+Microsoft ("Send and receive files", updated 2026-11-20): until March 1, 2027, file URLs have a `tempauth` query parameter and work without a token. From then on a bot sends its own access token with every file download, requested for `https://<the URL's host>/.default` with the bot's app id, and **a token acquired with a client secret gets HTTP 401**. It must come from a certificate, a federated identity credential or a managed identity (RFC HF §3.7).
+
+The bridge takes the file token from the first of:
+
+| Credential | Configure | Notes |
+|---|---|---|
+| Certificate | `CLIENT_CERTIFICATE_PATH`: a PEM file holding the certificate uploaded to the bot's Entra app (**Certificates & secrets → Certificates**) and its unencrypted RSA private key. Needs `CLIENT_ID` and `TENANT_ID`. | Used for file downloads only; the bot's own traffic keeps `CLIENT_SECRET` if one is set. Keep the file readable by the bridge alone (mode 0600, a mounted secret). |
+| Managed identity or federated credential | No `CLIENT_SECRET`; `CLIENT_ID` (and `TENANT_ID`); for a federated credential also `MANAGED_IDENTITY_CLIENT_ID` (`system`, or a user-assigned identity's client id), the Teams SDK's own variable. | The SDK then uses it for everything, the bot's own traffic included, so it suits a bot hosted in Azure. |
+
+With only `CLIENT_SECRET`, there is no file token, and with files or voice on the bridge warns at start: `files and recordings will fail from 2027-03-01: configure a certificate or federated credential (RFC HF)`. Until then links carry `tempauth` and keep working.
+
+**The manifest permission, from 2027-01-15.** Teams then expects a bot that downloads files to declare the resource-specific permission `File.ReadSelected.User`, and refuses it in a manifest before that date, so `appPackage/manifest.json` does not carry it yet. On or after 2027-01-15, add this top-level key to the manifest, raise its `version`, and upload the app package again:
+
+```json
+"authorization": {
+  "permissions": {
+    "resourceSpecific": [{ "name": "File.ReadSelected.User", "type": "Application" }]
+  }
+}
+```
+
+### What Teams sent
+
+When a person attaches a file and the agent never gets it, look at what Teams delivered:
+
+- **Always:** a message whose attachments hold no file the bot can download (only `application/vnd.microsoft.teams.file.download.info` is one) logs `teams message carried no file` with the conversation, its type, the attachment count and their content types. It is logged when the message has no text, or has an attachment other than the `text/html` body Teams adds to a formatted message. No names, links or content.
+- **`TEAMS_BRIDGE_DUMP_ACTIVITIES=1`:** every inbound activity that passes the Bot Connector check, of any type (a `messageUpdate` or an `invoke` too, not only messages), is logged as `teams activity` with the whole activity. Every URL keeps its host and path and loses its query and fragment (a `downloadUrl`'s query is a credential while it lives), fields named like a credential (`token`, `secret`, `authorization`, `tempauth`, ...) are replaced, and strings over 2000 characters are cut. What people write, their names and file names are kept: turn it on to look, then off. The bridge warns at start while it is on.
+
+Use the dump rather than `LOG_LEVEL=debug`: at debug level the Teams SDK logs whole activity bodies unredacted, and for a working file that includes the `downloadUrl` with its credential.
+
+### When Teams sends no file: the Graph fallback
+
+On some tenants Teams delivers a file attached in a 1:1 chat as a message with an empty `text/html` attachment (or only the caption) and no `file.download.info` at all, so the bot has no link to fetch (RFC HF). The file is still in the sender's OneDrive, and the bridge can read the message through Microsoft Graph to find it. It is off by default; `BRIDGE_FILES=1` is needed for any of it.
+
+| Variable | Meaning | Default |
+|---|---|---|
+| `TEAMS_BRIDGE_FILES_GRAPH` | `off`, `app` (app-only Graph, below) or `delegated` (each person signs in once, [below](#delegated-mode-each-person-signs-in-once)) | `off` |
+| `TEAMS_BRIDGE_APP_ID` | The Teams app's manifest `id`, a GUID: how the bridge finds the person's chat with the bot in Graph | `CLIENT_ID` (the shipped manifest's `id` is `BOT_ID`) |
+| `TEAMS_BRIDGE_GRAPH_CONNECTION` | Delegated mode: the name of the OAuth connection setting on the Azure Bot. Required there; the bridge refuses to start without it | unset |
+| `TEAMS_BRIDGE_NO_FILE_HINT` | Added to the reply when a message looked like a file and none came, e.g. where else to send it | unset |
+
+**With Graph off**, a message with no text and only an empty `text/html` attachment gets one reply: "I didn't receive a file. Teams didn't pass it to me." followed by `TEAMS_BRIDGE_NO_FILE_HINT` when set. The `teams message carried no file` log line stays.
+
+**With `TEAMS_BRIDGE_FILES_GRAPH=app`**, every 1:1 message that came without `file.download.info` is looked up in Graph before it reaches the agent, with or without text, since a caption leaves no trace of the file. The lookup waits at most 5 seconds; a failure or a timeout logs `teams graph lookup failed` with a reason (`token`, `chat`, `sender`, `status` with the HTTP status, `timeout`) and the text goes on alone. For each message the bridge:
+
+1. finds the person's chat with the bot once per conversation (kept in memory): the app installed for the person, filtered by `TEAMS_BRIDGE_APP_ID`, then its `chat`, which must be a one-on-one chat;
+2. reads the message by the activity's id, re-reading briefly while Graph does not have it yet;
+3. refuses a message whose Graph sender is not the activity's sender;
+4. takes its `reference` attachments (name and OneDrive link) as files, which then go through `BRIDGE_FILES_TYPES`, the byte check and the size cap exactly as attached files do, with the text in the same message;
+5. before downloading anything, reads the file's metadata through Graph's `shares` endpoint and the sender's own OneDrive (`/users/{id}/drive`, once per sender), and takes the file **only when it is in the sender's own OneDrive**, where Teams keeps a file attached from a device ("Microsoft Teams Chat Files");
+6. downloads it by item (`/drives/{drive}/items/{item}/content`) with the app's Graph token, and follows Graph's redirect to SharePoint with **no** credential, only to a host in `TEAMS_BRIDGE_FILE_HOSTS` (the file's OneDrive link must be on one too). The Graph token goes to the Graph host only (`graph.microsoft.com`, or a sovereign cloud's, from the Teams SDK's cloud setting).
+
+A message that still yields no file and looked like one gets the reply above.
+
+**Why the OneDrive check.** The app token can read every file in the tenant, and a person can post a chat message through Graph themselves with a link to any file, one they cannot open included. Without the check the bot would fetch that file for them. So in app mode a file attached from SharePoint or a team site (anything outside the sender's own OneDrive) is refused: the person hears "I couldn't download that file. Please send it again." and the bridge logs `teams file download refused` with reason `not_sender_drive`, no name or link. Delegated mode keeps the same check, although there Graph already limits the person to files they can read.
+
+**What app-only mode needs.** Application permissions on the bot's Entra app, with admin consent. They are **tenant-wide**: the bot's app can then read every chat message and every file in the tenant, not only those sent to the bot. Grant them only where your tenant's policy accepts that. Delegated mode, where each person signs in once and the bot reaches only their own chat and files, is the narrower choice. Prefer it where your tenant's policy allows it.
+
+| For | Application permission |
+|---|---|
+| Reading the message | `Chat.Read.All` |
+| Finding the person's chat with the bot | `TeamsAppInstallation.ReadForUser.All` |
+| The file's metadata, the sender's OneDrive id, and the download | `Files.ReadWrite.All` (the `shares` endpoint lists no read-only permission; `/users/{id}/drive` takes `Files.Read.All` or above, so it is covered) |
+
+The token is the Teams SDK's app Graph token (client credentials of `CLIENT_ID`), asked for the activity's tenant.
+
+**Not yet verified on a live tenant (RFC HF P0):** the chat lookup through the installed app (and that the filter on the manifest id matches it), that a Teams activity id is the Graph message id, the shape of a file in a Graph chat message (`contentType: "reference"` with `contentUrl` and `name`), that a file attached from a device sits in the sender's own OneDrive drive, the content redirect, and whether narrower permissions (`Chat.Read.WhereInstalled`, `Files.Read.All`) suffice. Until then treat app mode as a preview, and use the dump and the log lines above to see what happens.
+
+#### Delegated mode: each person signs in once
+
+With `TEAMS_BRIDGE_FILES_GRAPH=delegated` the lookup is the same as in app mode (steps 1 to 6 above, the OneDrive check included), but every Graph call carries **the sender's own token**. Graph then limits it to that person's own chats and files. The bridge stores no user token. The Bot Framework token service keeps it, and the bridge asks the service for it (through the Teams SDK, by the person's Bot Framework id, on `TEAMS_BRIDGE_GRAPH_CONNECTION`) for each lookup and each download. It is never logged and never put in a run.
+
+**Setup.**
+
+1. **Delegated permissions** on the bot's Entra app (*API permissions → Microsoft Graph → Delegated*), with admin consent so nobody is asked to consent on their own:
+
+   | For | Delegated permission |
+   |---|---|
+   | Reading the message | `Chat.Read` |
+   | Finding the person's chat with the bot | `TeamsAppInstallation.ReadForUser` |
+   | The file's metadata, the person's OneDrive id, and the download | `Files.ReadWrite` (the `shares` endpoint lists no read-only scope) |
+
+2. **SSO resource.** Under *Expose an API*, set the Application ID URI to `api://botid-<bot id>` (`<bot id>` is `CLIENT_ID`). Add a scope (`access_as_user`), and add the Teams clients as authorized client applications (`1fec8e78-bce4-4aaf-ab1b-5451cc387264` for desktop and mobile, `5e3ce6c0-2b1f-4285-8d4b-75ee78787346` for the web). Under *Authentication*, add the redirect URI `https://token.botframework.com/.auth/web/redirect`.
+3. **OAuth connection** on the Azure Bot (*Configuration → Add OAuth Connection Settings*): service provider *Azure Active Directory v2*, the bot's own client id and a secret of it, tenant id = your tenant, scopes `Chat.Read TeamsAppInstallation.ReadForUser Files.ReadWrite offline_access openid profile`, and **Token Exchange URL** = `api://botid-<bot id>`, exactly the Application ID URI. Set its name as `TEAMS_BRIDGE_GRAPH_CONNECTION`. (A client secret on the connection is the token service's business, not the bridge's. The 2027-03-01 change only concerns the bridge's own file token.)
+4. **App package.** The shipped `manifest.json` carries `webApplicationInfo` (`id` = `${{BOT_ID}}`, `resource` = `api://botid-${{BOT_ID}}`) and `token.botframework.com` in `validDomains`. Teams reads them only when the bot sends a sign-in card, so the other modes are unaffected. Re-upload the package after updating.
+
+**What the person sees.** The first time a lookup needs their token and the token service has none, they get one card: "To take files you attach, sign in once." With SSO Teams usually completes it silently. Otherwise they press *Sign in*. Every 1:1 message without `file.download.info` is looked up (a caption leaves no trace of a file), so the card comes on a person's **first message** with delegated mode on, a plain one too. What happens to that message depends on its shape:
+
+- **A message with text** goes to the agent at once, as it would with Graph off, and the card comes beside it. It is not held. So **a file sent with a caption before you sign in has to be sent again** once you have signed in.
+- **A message shaped like a file** (no text, only an empty `text/html`) waits for the sign-in, in the bridge's memory, for 10 minutes after the card is sent. Once the sign-in completes (`signin/tokenExchange` or `signin/verifyState`) the message is looked up and goes to the agent as any other, with its files. A later file-like message replaces the waiting one.
+
+While a card is outstanding (10 minutes) no second card is sent, whatever the person writes. A sign-in that comes after a waiting file-like message expired, or after a restart, gets "Please attach the file again." Only 1:1 messages are ever held. Group chats and channels are never looked up.
+
+`/signout` in a 1:1 chat signs the person out of the connection, drops a waiting message, and answers in one line. The next message brings the card again. In a group chat `/signout` goes to the agent as any text does. The core's `/help` does not list it.
+
+If the token service fails or does not answer within the lookup's 5 seconds, the bridge logs `teams graph lookup failed` with reason `token` (and the status) and the text goes on alone.
+
+**Not yet verified on a live tenant (RFC HF P0):** on top of the app-mode items above, the SSO exchange with the manifest's resource, that the delegated scopes above are enough for the installed-app and chat reads, and that the token service keys the token by the Bot Framework user id the invoke carries.
 
 ## Security
 
 - **Inbound:** the Teams SDK validates the Bot Connector's signature on every request. The bridge always sets the SDK's unauthenticated mode explicitly from `BRIDGE_DEV`, so a stray `DANGEROUSLY_ALLOW_UNAUTHENTICATED_REQUESTS` cannot turn validation off.
 - **Tenant fence:** activities from Entra tenants not in `TEAMS_BRIDGE_ALLOWED_TENANTS` get one refusal and never reach loomcycle.
 - **Least privilege:** the bridge's own token never runs agents. A user's token is limited to one agent, every per-run override except `interactive` is locked, it is rate-limited, and it expires.
-- **Attached files** (files or voice on): fetched with no credential, from `TEAMS_BRIDGE_FILE_HOSTS` only, redirects included, and held in memory for one request. A document is put into the person's own run with the person's own token; the agent gets its inbox ref, never its bytes or link.
+- **Attached files** (files or voice on): fetched from `TEAMS_BRIDGE_FILE_HOSTS` only, redirects included, and held in memory for one request. A link with `tempauth` goes with no credential; one without goes with the bot's file token, acquired only after its host passed the list, scoped to that host, sent on the first request only (never across a redirect), and never logged. The file token never comes from a client secret.
+- **What the file token can reach** is whatever SharePoint permissions the bot's Entra app holds, so a link Teams did not really send (a crafted `file.download.info`) must not be able to turn the bot into a reader of other files. Two limits apply. First, the bridge sends the token only to a OneDrive personal-site link (`<tenant>-my.<suffix>/personal/...`), so a team-site file never gets it. Second, grant the app only the `File.ReadSelected.User` resource-specific permission (files people shared with the bot, [from 2027-01-15](#the-file-token-from-2027-03-01)) and **no SharePoint API application role** (`Sites.Read.All`, `Sites.ReadWrite.All` and the like, under *SharePoint* in the app's API permissions). The file token is issued for SharePoint itself, so it carries only those roles: the Microsoft Graph permissions the [Graph fallback](#when-teams-sends-no-file-the-graph-fallback) needs (`Files.ReadWrite.All` under *Microsoft Graph*) are not in it. The bridge does not check whose OneDrive a link names: it is the permission that keeps another person's files, never shared with the bot, out of reach. Inbound activities are Bot Connector-signed, which is what makes a crafted attachment hard to deliver in the first place. A document is put into the person's own run with the person's own token; the agent gets its inbox ref, never its bytes or link.
+- **Graph fallback** (`TEAMS_BRIDGE_FILES_GRAPH=app`): tenant-wide application permissions, so grant them knowingly. The Graph token is sent to the Graph host only and never logged or passed to a run; a lookup runs only for a 1:1 message that passed the Bot Connector check and the tenant fence, only a message from that same sender is read further, and only a file in that sender's own OneDrive is downloaded. Graph responses are never logged or dumped. In delegated mode the token is the sender's own, from the Bot Framework token service each time. The bridge keeps no copy, and a message waiting for a sign-in (in memory, at most 1,000, at most 10 minutes) carries no token. Only the same person, in the same conversation, completing a sign-in releases it.
 - **Nothing at rest:** tokens are kept in memory. Logs carry conversation and run ids, never tokens, message text or agent output.
 - **Output:** tool inputs and outputs are never sent to Teams; while the agent works, Teams sees the tool's name only.
 

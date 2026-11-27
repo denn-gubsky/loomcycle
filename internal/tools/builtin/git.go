@@ -19,6 +19,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/fsops"
 	"github.com/denn-gubsky/loomcycle/internal/gitsource"
 	"github.com/denn-gubsky/loomcycle/internal/gitsource/gitrepo"
+	"github.com/denn-gubsky/loomcycle/internal/gitsource/rootbilly"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/go-git/go-billy/v5"
 )
@@ -381,7 +382,7 @@ func (g *Git) repoDirUnlocked(ctx context.Context, in gitInput, needWrite, creat
 		return nil, "", gitRefusal("invalid_argument", err.Error()), false
 	}
 	if create {
-		top, err := newVolumeBilly(vfs, "")
+		top, err := rootbilly.New(vfs, "")
 		if err == nil {
 			err = top.MkdirAll(filepath.ToSlash(rel), 0o755)
 		}
@@ -401,7 +402,7 @@ func (g *Git) openRepo(ctx context.Context, in gitInput, needWrite, isInit bool)
 		return nil, func() {}, res
 	}
 	done := release
-	wt, err := newVolumeBilly(vfs, rel)
+	wt, err := rootbilly.New(vfs, rel)
 	if err != nil {
 		done()
 		return nil, func() {}, gitRefusal("invalid_argument", err.Error())
@@ -781,7 +782,13 @@ func gitSignOrLocalRefusal(err error) tools.Result {
 // signature is who the tool commits as: the operator's identity, else the
 // agent's name at an address that can never be delivered.
 func (g *Git) signature(ctx context.Context) gitrepo.Signature {
-	name, email := g.AuthorName, g.AuthorEmail
+	return commitSignature(ctx, g.AuthorName, g.AuthorEmail)
+}
+
+// commitSignature is who a commit an agent makes is by: the operator's name
+// and address (LOOMCYCLE_GIT_AUTHOR_NAME / _EMAIL), else the agent's name
+// and an address under .invalid. Never the model's choice.
+func commitSignature(ctx context.Context, name, email string) gitrepo.Signature {
 	agent := tools.AgentName(ctx)
 	if agent == "" {
 		agent = "loomcycle"
@@ -884,7 +891,7 @@ func (g *Git) network(ctx context.Context, in gitInput, kind gitOpKind) tools.Re
 		}
 		defer release()
 		var err error
-		if wt, err = newVolumeBilly(vfs, rel); err != nil {
+		if wt, err = rootbilly.New(vfs, rel); err != nil {
 			return deny("invalid_argument", err.Error())
 		}
 		if in.Op == "clone" {
@@ -959,18 +966,9 @@ func (g *Git) network(ctx context.Context, in gitInput, kind gitOpKind) tools.Re
 		if kind == gitPush {
 			resolve = g.PushCredential
 		}
-		if resolve == nil {
-			return deny("credential_unresolvable", "")
-		}
-		username, token, err = resolve(ctx, in.Credential, rawURL)
-		switch {
-		case errors.Is(err, ErrGitCredentialURLNotAllowed):
-			return deny("credential_url_not_allowed", "")
-		case errors.Is(err, errGitCredentialIsAppConfig):
-			return deny("credential_unresolvable", errGitCredentialIsAppConfig.Error())
-		case err != nil:
-			slog.WarnContext(ctx, "git: credential for a host could not be resolved", "host", host, "err", err)
-			return deny("credential_unresolvable", "")
+		var class, detail string
+		if username, token, class, detail = resolveGitCredential(ctx, resolve, in.Credential, rawURL, host); class != "" {
+			return deny(class, detail)
 		}
 	}
 
@@ -1141,6 +1139,27 @@ func (g *Git) record(ev audit.Event) {
 	if err := g.Audit.Record(ev); err != nil {
 		slog.Error("git: audit record failed", "err", err)
 	}
+}
+
+// resolveGitCredential resolves ref for rawURL, for this run only, or
+// answers the refusal's class and detail. The resolver's rules hold: a
+// credential must be restricted to URLs covering rawURL, and a GitHub App
+// config is never sent as a token.
+func resolveGitCredential(ctx context.Context, resolve GitCredentialFunc, ref, rawURL, host string) (username, token, class, detail string) {
+	if resolve == nil {
+		return "", "", "credential_unresolvable", ""
+	}
+	username, token, err := resolve(ctx, ref, rawURL)
+	switch {
+	case errors.Is(err, ErrGitCredentialURLNotAllowed):
+		return "", "", "credential_url_not_allowed", ""
+	case errors.Is(err, errGitCredentialIsAppConfig):
+		return "", "", "credential_unresolvable", errGitCredentialIsAppConfig.Error()
+	case err != nil:
+		slog.WarnContext(ctx, "git: credential for a host could not be resolved", "host", host, "err", err)
+		return "", "", "credential_unresolvable", ""
+	}
+	return username, token, "", ""
 }
 
 // gitACLResource is the git:<host>/<path> instance a network op asks about,

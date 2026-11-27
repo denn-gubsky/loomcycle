@@ -1,4 +1,11 @@
 # embedded bundle: sandbox
+#
+# DEPRECATED (RFC GW §9): a future release (RFC GW P15) removes this bundle, the
+# builder sidecar and its mcp__sandbox__* tools. Select `dev-workspace` instead:
+# the same dev/exec envelope, run in a workspace on a workspace worker. Boot and
+# `loomcycle doctor` warn while this bundle is selected; docs/MIGRATING-FROM-BASH.md
+# ("The builder sidecar") maps it across.
+#
 # The isolated code-execution sandbox WIRING — the mcp__sandbox__* tools served by
 # the builder sidecar — plus a caller-facing skill for delegating code execution to
 # the deterministic `dev/exec` agent.

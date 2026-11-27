@@ -67,7 +67,9 @@ func (w *worker) serveOne(ctx context.Context, client workspacepb.WorkspaceServi
 	}
 	done := watchEnd(sctx, cancel, stream)
 	if a.class == "" {
-		a = w.run(sctx, start, input)
+		// A git op reaches the forge on the connection it came on: its
+		// ticket lives on that core replica (RFC GW P11 plan §3.3).
+		a = w.run(withOpClient(sctx, client), start, input)
 	}
 	return finish(ctx, stream, a, done)
 }
@@ -161,12 +163,28 @@ func (w *worker) run(ctx context.Context, start *workspacepb.OpStart, input []by
 	if !workspace.ValidID(id) {
 		return refuse(workspace.ClassInvalid, "malformed workspace id")
 	}
-	// The id holds no separator, so dir is a direct child of the root.
-	dir := filepath.Join(w.opt.Root, id)
+	// The id holds no separator, so dir is a direct child of the root, or
+	// the root it is bound to on a personal worker (RFC GW §4.5).
+	dir := w.wsDir(id)
 	switch start.GetOp() {
 	case workspace.OpOpen:
-		return w.open(id, dir, start.GetArgs())
+		return hidePaths(w.open(id, dir, start.GetArgs()), false, dir, w.opt.Root)
+	case workspace.OpGitFetch:
+		return w.gitFetch(ctx, id, start.GetArgs())
+	case workspace.OpGitOpen:
+		return hidePaths(w.gitOpen(ctx, id, dir, start.GetArgs()), false, dir, w.opt.Root)
+	case workspace.OpGitFetchWorkspace, workspace.OpGitPull:
+		return hidePaths(w.gitSync(ctx, id, dir, start.GetArgs(), start.GetOp() == workspace.OpGitPull), false, dir, w.opt.Root)
+	case workspace.OpGitAdopt:
+		return hidePaths(w.gitAdopt(id, dir, start.GetArgs()), false, dir, w.opt.Root)
+	case workspace.OpGitLocal:
+		return hidePaths(w.gitLocal(id, dir, start.GetArgs()), false, dir, w.opt.Root)
+	case workspace.OpGitPush:
+		return hidePaths(w.gitPush(ctx, id, dir, start.GetArgs()), false, dir, w.opt.Root)
 	case workspace.OpRemove:
+		if _, ok := w.boundRoot(id); ok {
+			return w.removeBound(ctx, id)
+		}
 		// Its kernels and servers first: each is a process working in the
 		// folder.
 		w.kernels.Drop(id)
@@ -174,8 +192,13 @@ func (w *worker) run(ctx context.Context, start *workspacepb.OpStart, input []by
 		if err := w.engine.Forget(ctx, id); err != nil {
 			return refuse(workspace.ClassFailed, "ending the workspace's session: %v", err)
 		}
-		if err := os.RemoveAll(dir); err != nil {
+		if err := w.removeOwnDir(id); err != nil {
 			return refuse(workspace.ClassFailed, "removing the workspace: %v", err)
+		}
+		// A git workspace's pins go with it, so its mirror keeps nothing
+		// for it (RFC GW §4.2).
+		if err := w.dropGit(id); err != nil {
+			return refuse(workspace.ClassFailed, "removing the workspace's pins: %v", err)
 		}
 		// Its checkpoints go with it (RFC GW §5.4).
 		if err := w.dropCheckpoints(id); err != nil {
@@ -183,10 +206,38 @@ func (w *worker) run(ctx context.Context, start *workspacepb.OpStart, input []by
 		}
 		w.dropQuota(id)
 		return answer{}
+	case workspace.OpPark:
+		// A durable workspace no run holds (RFC GW P12 plan §3.3): what runs
+		// in it ends, as at a removal, and the directory stays. The update
+		// address its servers posted to goes with them (servers.Drop).
+		if _, _, a := w.workspaceDir(id); a.class != "" {
+			return a
+		}
+		w.kernels.Drop(id)
+		w.servers.Drop(id)
+		if err := w.engine.Forget(ctx, id); err != nil {
+			return refuse(workspace.ClassFailed, "ending the workspace's session: %v", err)
+		}
+		return answer{}
 	case workspace.OpFork:
-		return hidePaths(w.forkOp(ctx, id, dir, start.GetArgs()), false, dir, w.opt.Root)
+		if bad := w.onRoot(id, start.GetOp()); bad != nil {
+			return *bad
+		}
+		own := filepath.Join(w.opt.Root, id)
+		return hidePaths(w.forkOp(ctx, id, own, start.GetArgs()), false, own, w.opt.Root)
+	case workspace.OpTemplateOpen:
+		if bad := w.onRoot(id, start.GetOp()); bad != nil {
+			return *bad
+		}
+		own := filepath.Join(w.opt.Root, id)
+		return hidePaths(w.templateOpenOp(ctx, id, own, start.GetArgs()), false, own, w.opt.Root)
 	case workspace.OpCheckpoint, workspace.OpCheckpoints, workspace.OpDeleteCheckpoint, workspace.OpRestore:
-		dir, real, a := w.workspaceDir(id)
+		if bad := w.onRoot(id, start.GetOp()); bad != nil {
+			return *bad
+		}
+		// The id's own folder, never wsDir: a bind landing after onRoot
+		// must not have a restore swap out the user's root.
+		dir, real, a := w.workspaceDirAt(id, filepath.Join(w.opt.Root, id))
 		if a.class == "" {
 			a = w.checkpointOps(ctx, id, dir, real, start.GetOp(), start.GetArgs())
 		}
@@ -200,7 +251,7 @@ func (w *worker) run(ctx context.Context, start *workspacepb.OpStart, input []by
 		out, _ := json.Marshal(workspace.StatusAnswer{Exists: exists})
 		return answer{output: out}
 	case workspace.OpExec, workspace.OpRead, workspace.OpWrite, workspace.OpEdit, workspace.OpGlob, workspace.OpGrep:
-		return w.inWorkspace(ctx, dir, start.GetOp(), start.GetArgs(), input)
+		return w.inWorkspaceOf(ctx, id, dir, start.GetOp(), start.GetArgs(), input)
 	case workspace.OpRunCell, workspace.OpResetKernel:
 		dir, real, a := w.workspaceDir(id)
 		if a.class == "" {
@@ -213,13 +264,21 @@ func (w *worker) run(ctx context.Context, start *workspacepb.OpStart, input []by
 		// A kernel that failed to start reports its stderr, which can name
 		// the drivers' folder in the worker's root.
 		return hidePaths(a, false, real, dir, w.opt.Root)
-	case workspace.OpServerStart, workspace.OpServerStop, workspace.OpServerLogs:
+	case workspace.OpServerStart, workspace.OpServerStop, workspace.OpServerLogs, workspace.OpAwait:
 		dir, real, a := w.workspaceDir(id)
 		if a.class == "" {
 			a = w.serverOp(ctx, id, real, start.GetOp(), start.GetArgs())
 		}
 		// A server's output is returned as it is; only a refusal's detail
 		// is the runtime's text.
+		return hidePaths(a, false, real, dir, w.opt.Root)
+	case workspace.OpScreenshot:
+		dir, real, a := w.workspaceDir(id)
+		if a.class == "" {
+			a = w.screenshotOp(ctx, id, real, start.GetArgs())
+		}
+		// A failed load's detail is the browser's log, which may name the
+		// session's folders; the picture itself is returned as it is.
 		return hidePaths(a, false, real, dir, w.opt.Root)
 	case workspace.OpMDSplice:
 		dir, real, a := w.workspaceDir(id)
@@ -249,6 +308,14 @@ func (w *worker) open(id, dir string, raw []byte) answer {
 			return a
 		}
 	}
+	if in.Root != "" {
+		return w.openRoot(id, in.Root)
+	}
+	if name, ok := w.boundRoot(id); ok {
+		// Its directory is the root's: an open of the id's own must not
+		// find it there and set a quota on the user's folder.
+		return refuse(workspace.ClassExists, "the workspace is bound to root %q", name)
+	}
 	if in.DiskQuotaBytes < 0 || in.DiskQuotaBytes > workspace.MaxDiskQuotaBytes {
 		return refuse(workspace.ClassInvalid, "disk_quota_bytes must be from 1 to %d", int64(workspace.MaxDiskQuotaBytes))
 	}
@@ -274,6 +341,42 @@ func (w *worker) open(id, dir string, raw []byte) answer {
 		_ = os.Remove(dir)
 		return a
 	}
+	return answer{}
+}
+
+// openRoot binds workspace id to the user's root name (RFC GW §4.5): the
+// workspace is that directory. Nothing is made, and no quota is recorded: a
+// root has none. The capacity holds as for any open.
+func (w *worker) openRoot(id, name string) answer {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if _, ok := w.boundRoot(id); !ok {
+		if st, err := os.Lstat(filepath.Join(w.opt.Root, id)); err == nil && st.IsDir() {
+			return refuse(workspace.ClassExists, "the workspace already has a directory of its own")
+		}
+		held, err := w.held()
+		if err != nil {
+			return refuse(workspace.ClassFailed, "listing the workspaces: %v", err)
+		}
+		if len(held) >= w.opt.Capacity {
+			return refuse(workspace.ClassAtCapacity, "this worker holds %d workspaces, its capacity", len(held))
+		}
+	}
+	return w.bindRoot(id, name)
+}
+
+// removeBound ends a root workspace: what runs in it stops, and the binding
+// goes. The directory is the user's and is never removed.
+func (w *worker) removeBound(ctx context.Context, id string) answer {
+	w.kernels.Drop(id)
+	w.servers.Drop(id)
+	if err := w.engine.Forget(ctx, id); err != nil {
+		return refuse(workspace.ClassFailed, "ending the workspace's session: %v", err)
+	}
+	if err := w.unbind(id); err != nil {
+		return refuse(workspace.ClassFailed, "forgetting the root's binding: %v", err)
+	}
+	w.dropQuota(id)
 	return answer{}
 }
 

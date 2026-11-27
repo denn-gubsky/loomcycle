@@ -50,10 +50,20 @@ func (m *Manager) DeleteCheckpoint(ctx context.Context, r store.WorkspaceRow, ch
 func (m *Manager) Restore(ctx context.Context, r store.WorkspaceRow, checkpoint string) (workspace.RestoreAnswer, error) {
 	var out workspace.RestoreAnswer
 	err := m.checkpointOp(ctx, r, workspace.OpRestore, workspace.CheckpointRef{Checkpoint: checkpoint}, &out)
+	if err == nil && r.Kind == store.WorkspaceKindGit && r.Git != nil {
+		// The git directory went back with the files: pin what its
+		// tracking refs name again (P11 plan G8).
+		err = m.gitAdopt(ctx, r, false)
+	}
 	return out, err
 }
 
 func (m *Manager) checkpointOp(ctx context.Context, r store.WorkspaceRow, op string, args, out any) error {
+	// A root is the user's own folder: never copied into a checkpoint nor
+	// replaced by one (RFC GW §4.5). The worker refuses too.
+	if r.Root != "" {
+		return ErrRootRefused
+	}
 	req := dispatch.Request{Op: op, MaxOutput: maxCheckpointAnswer}
 	if args != nil {
 		b, err := json.Marshal(args)
@@ -79,6 +89,12 @@ func (m *Manager) checkpointOp(ctx context.Context, r store.WorkspaceRow, op str
 // against max_per_run and max_per_tenant. It has no shares and no checkout
 // records of its own (D-P6-7, D-P6-8), and no checkpoints.
 func (m *Manager) Fork(ctx context.Context, o Owner, src store.WorkspaceRow, as, checkpoint string) (store.WorkspaceRow, workspace.ForkAnswer, error) {
+	return m.ForkBranch(ctx, o, src, as, checkpoint, "")
+}
+
+// ForkBranch is Fork, with branch as a git fork's own branch ("" for one
+// named for it; see gitForkBranch).
+func (m *Manager) ForkBranch(ctx context.Context, o Owner, src store.WorkspaceRow, as, checkpoint, branch string) (store.WorkspaceRow, workspace.ForkAnswer, error) {
 	var out workspace.ForkAnswer
 	if !ValidName(as) {
 		return store.WorkspaceRow{}, out, fmt.Errorf("%w: as: 1 to %d letters, digits, '.', '-' or '_', starting with a letter or digit", ErrInvalidName, MaxNameLen)
@@ -92,7 +108,7 @@ func (m *Manager) Fork(ctx context.Context, o Owner, src store.WorkspaceRow, as,
 	}
 	// A fork may send requests out through the routes its source may: the
 	// same owner opened the source within its grant (RFC GW §6.3).
-	return m.fork(ctx, o, src, as, checkpoint, src.Egress, forkInRun)
+	return m.fork(ctx, o, src, as, checkpoint, branch, src.Egress, forkInRun)
 }
 
 // The paths a fork is made by, as its audit line names them.
@@ -105,8 +121,27 @@ const (
 // present files), with egress for its routes, and writes its audit line
 // (D-P6-22) once the copy is ready. The caller has checked that src is the
 // source owner's and that dst may hold the copy; path names the caller.
-func (m *Manager) fork(ctx context.Context, dst Owner, src store.WorkspaceRow, as, checkpoint string, egress []string, path string) (store.WorkspaceRow, workspace.ForkAnswer, error) {
+func (m *Manager) fork(ctx context.Context, dst Owner, src store.WorkspaceRow, as, checkpoint, branch string, egress []string, path string) (store.WorkspaceRow, workspace.ForkAnswer, error) {
 	var out workspace.ForkAnswer
+	// Every fork, in a run and at spawn: a root is never copied (RFC GW
+	// §4.5). The worker refuses too.
+	if src.Root != "" {
+		return store.WorkspaceRow{}, out, ErrRootRefused
+	}
+	// A git fork is a git workspace of its own: its own branch, checked by
+	// the open's rules before anything is copied, and its own pins.
+	var git *store.WorkspaceGit
+	if src.Kind == store.WorkspaceKindGit {
+		if src.Git == nil {
+			return store.WorkspaceRow{}, out, fmt.Errorf("%w: %q has no repository record", ErrInvalidGitOpen, src.Name)
+		}
+		if err := m.checkForkBranch(*src.Git, branch); err != nil {
+			return store.WorkspaceRow{}, out, err
+		}
+		g := *src.Git
+		g.Branch = branch
+		git = &g
+	}
 	if src.State != store.WorkspaceReady {
 		return store.WorkspaceRow{}, out, fmt.Errorf("%w: %q is %s", ErrNotReady, src.Name, src.State)
 	}
@@ -119,13 +154,17 @@ func (m *Manager) fork(ctx context.Context, dst Owner, src store.WorkspaceRow, a
 	if err != nil {
 		return store.WorkspaceRow{}, out, err
 	}
-	row, err := m.makeOn(ctx, dst, as, egress, src.WorkerID, src.Engine, func(id string) error {
-		res, err := m.disp.Do(ctx, src.WorkerID, dispatch.Request{TenantID: dst.TenantID, WorkspaceID: id, Op: workspace.OpFork, Args: args, MaxOutput: maxCheckpointAnswer})
+	// A fork is a new ephemeral workspace, whatever its source's lifetime.
+	row, err := m.makeOn(ctx, dst, as, store.WorkspaceLifetimeEphemeral, "", egress, src.WorkerID, src.Engine, git, func(r *store.WorkspaceRow) error {
+		res, err := m.disp.Do(ctx, src.WorkerID, dispatch.Request{TenantID: dst.TenantID, UserID: dst.UserID, WorkspaceID: r.ID, Op: workspace.OpFork, Args: args, MaxOutput: maxCheckpointAnswer})
 		if err != nil {
 			return err
 		}
 		if json.Unmarshal(res.Output, &out) != nil {
 			return &dispatch.OpError{Class: workspace.ClassProtocol, Detail: "the worker's answer to fork is not JSON"}
+		}
+		if git != nil {
+			return m.adoptGitFork(ctx, r)
 		}
 		return nil
 	})

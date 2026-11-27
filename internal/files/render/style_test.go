@@ -175,7 +175,7 @@ func TestStyle_BundleCarriesItAndRefusesAForgedOne(t *testing.T) {
 	}
 	for name, forge := range map[string]func(s *Style){
 		"colour":  func(s *Style) { s.Colors.Text = `red;}body{x` },
-		"header":  func(s *Style) { s.Header = "a\nb" },
+		"header":  func(s *Style) { s.Header = PageLine{Left: "a\nb"} },
 		"logo":    func(s *Style) { s.Logo = "../../etc/passwd" },
 		"version": func(s *Style) { s.Version = 2 },
 	} {

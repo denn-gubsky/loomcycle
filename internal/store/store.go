@@ -1846,6 +1846,7 @@ type Store interface {
 	DirentStore
 	EphemeralVolumeStore
 	WorkspaceStore
+	WorkspaceTemplateStore
 	WorkspaceExposureStore
 	ScheduleDefStore
 	ScheduleRunStateStore
@@ -2802,6 +2803,11 @@ type SnapshotReadStore interface {
 	// every tenant's, ordered by (tenant_id, name). The capture reads only
 	// the mode from each definition; the stored path never travels.
 	SnapshotReadVolumeDefs(ctx context.Context) ([]VolumeDefRow, error)
+
+	// SnapshotReadWorkspaces returns every workspace row, every tenant's,
+	// ordered by (tenant_id, id). The capture keeps the run-owned and
+	// parked rows that are ready or lost (RFC GW P12); files never travel.
+	SnapshotReadWorkspaces(ctx context.Context) ([]WorkspaceRow, error)
 
 	// SnapshotReadMemory returns every memory row across all scopes and
 	// tenants, tagged with tenant_id + scope + scope_id. Ordered by

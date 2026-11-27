@@ -19,7 +19,8 @@ import (
 // once) and so is served by serveStream, which never holds them whole:
 // serveOne would read all of the input first and collect all of the output.
 func streamOp(op string) bool {
-	return op == workspace.OpGet || op == workspace.OpPut || op == workspace.OpTunnel || isConvertOp(op)
+	return op == workspace.OpGet || op == workspace.OpPut || op == workspace.OpTunnel || isConvertOp(op) ||
+		op == workspace.OpTemplatePack || op == workspace.OpTemplatePut
 }
 
 // serveStream runs a get or a put on its stream. A put reads its input
@@ -28,6 +29,13 @@ func streamOp(op string) bool {
 // does.
 func (w *worker) serveStream(ctx, sctx context.Context, cancel context.CancelFunc, stream workspacepb.WorkspaceService_OpClient, start *workspacepb.OpStart) error {
 	id := start.GetWorkspaceId()
+	if start.GetOp() == workspace.OpTemplatePut {
+		// Sent with the id of a workspace not made yet: the cache is the
+		// worker's, not a workspace's.
+		a := w.templatePutOp(sctx, start, stream)
+		done := watchEnd(sctx, cancel, stream)
+		return finish(ctx, stream, hidePaths(a, false, w.opt.Root), done)
+	}
 	dir, real, a := w.workspaceDir(id)
 	if a.class == "" && start.GetOp() == workspace.OpTunnel {
 		t, done := w.tunnelOp(sctx, cancel, id, real, start, stream)
@@ -45,7 +53,10 @@ func (w *worker) serveStream(ctx, sctx context.Context, cancel context.CancelFun
 	if a.class == "" && isConvertOp(start.GetOp()) {
 		a = w.convertOp(sctx, id, real, start, stream)
 	}
-	return finish(ctx, stream, hidePaths(a, false, real, dir), done)
+	if a.class == "" && start.GetOp() == workspace.OpTemplatePack {
+		a = w.templatePackOp(sctx, id, dir, real, start.GetArgs(), stream)
+	}
+	return finish(ctx, stream, hidePaths(a, false, real, dir, w.opt.Root), done)
 }
 
 // workspaceDir is workspace id's directory and its real path, or a refusal.
@@ -53,8 +64,16 @@ func (w *worker) workspaceDir(id string) (dir, real string, a answer) {
 	if !workspace.ValidID(id) {
 		return "", "", refuse(workspace.ClassInvalid, "malformed workspace id")
 	}
-	// The id holds no separator, so dir is a direct child of the root.
-	dir = filepath.Join(w.opt.Root, id)
+	// The id holds no separator, so dir is a direct child of the root, or
+	// the root id is bound to on a personal worker.
+	return w.workspaceDirAt(id, w.wsDir(id))
+}
+
+// workspaceDirAt is workspaceDir at a folder the caller chose for id.
+func (w *worker) workspaceDirAt(id, dir string) (_, real string, a answer) {
+	if !workspace.ValidID(id) {
+		return "", "", refuse(workspace.ClassInvalid, "malformed workspace id")
+	}
 	st, err := os.Lstat(dir)
 	if err != nil || !st.IsDir() {
 		return "", "", refuse(workspace.ClassNotFound, "the workspace is not on this worker")

@@ -33,6 +33,7 @@ func TestUnits_RegistryShape(t *testing.T) {
 		"sandbox":        "bundle",
 		"doc-colorizer":  "bundle",
 		"dev-exec":       "bundle",
+		"dev-workspace":  "bundle",
 		"knowledge-base": "bundle",
 		"skybits-sync":   "bundle",
 	}

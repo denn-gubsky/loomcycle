@@ -43,8 +43,15 @@ func (s WorkspaceState) IsValid() bool {
 // durable ones (P12); the store does not restrict the values, so those phases
 // need no store change for them.
 const (
-	WorkspaceKindGeneral       = "general"
+	WorkspaceKindGeneral = "general"
+	// WorkspaceKindGit is a git working tree over a mirror (RFC GW §4.2,
+	// P11); its row carries Git.
+	WorkspaceKindGit           = "git"
 	WorkspaceLifetimeEphemeral = "ephemeral"
+	// WorkspaceLifetimeDurable (RFC GW §4.2, P12): kept under the tenant,
+	// the user and the name past its run; unique on those three among
+	// durable rows.
+	WorkspaceLifetimeDurable = "durable"
 )
 
 // WorkspaceRow is one workspace on one worker (RFC GW §4.2, §8). The row is
@@ -86,16 +93,58 @@ type WorkspaceRow struct {
 	// Egress are the names of the routes the workspace may send requests
 	// out through (RFC GW §6.3), fixed at open. Never nil on a row read
 	// back: none is an empty list, and an empty list is no way out.
-	Egress    []string
+	Egress []string
+	// Root is the name of the user's folder a personal worker offers, for a
+	// workspace that is that folder (RFC GW §4.5, P13); empty for every
+	// other workspace. A root workspace has a user and is not durable.
+	Root string
+	// Git is a git workspace's repository (RFC GW §4.2, P11): what the
+	// supervisor is told of its remote and branch, never read back from the
+	// workspace. nil for every other workspace.
+	Git       *WorkspaceGit
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
 
-// The owner kinds of a workspace (RFC GW D35).
+// WorkspaceGit is a git workspace's repository, as the core holds it. It
+// names a credential, never holds one.
+type WorkspaceGit struct {
+	// URL is the repository: https, a host, no user, query or fragment.
+	URL string `json:"url"`
+	// Branch is the workspace's own branch, the one ref a push may move.
+	Branch string `json:"branch"`
+	// BaseRef is the ref the workspace was opened from; Base the commit it
+	// resolved to in the mirror.
+	BaseRef string `json:"base_ref,omitempty"`
+	Base    string `json:"base,omitempty"`
+	// DefaultBranch is the forge's default branch as the core read it from
+	// the forge's own advertisement; "" until read.
+	DefaultBranch string `json:"default_branch,omitempty"`
+	// Credential is the credential reference the workspace's git ops use
+	// ("$cred:<name>" or "$ghapp:<name>"); "" for none.
+	Credential string `json:"credential,omitempty"`
+	// Mirror is the worker's mirror key (gitrepo.MirrorKey of the tenant and
+	// the URL).
+	Mirror string `json:"mirror"`
+}
+
+// The owner kinds of a workspace (RFC GW D35, P12).
 const (
 	WorkspaceOwnerRun       = "run"
 	WorkspaceOwnerPrincipal = "principal"
+	// WorkspaceOwnerParked: a durable workspace no run holds (RFC GW P12
+	// plan D-P12-1). Its OwnerRunID is WorkspaceParkedKey(id), which no run
+	// id can be, so no run-keyed read reaches it. Set only by unpin.
+	WorkspaceOwnerParked = "parked"
 )
+
+// WorkspaceParkedKey is a parked workspace's OwnerRunID.
+func WorkspaceParkedKey(id string) string { return "parked:" + id }
+
+// WorkspaceOwner is the run a durable workspace is pinned to.
+type WorkspaceOwner struct {
+	RunID, AgentID, RootRunID string
+}
 
 // The accesses a share gives (RFC GW §5.2, D20).
 const (
@@ -107,9 +156,12 @@ const (
 // id (which no later run reuses, so a share ends with that run) and the agent
 // id it was named by, and what it may do.
 type WorkspaceShare struct {
-	RunID     string    `json:"run_id"`
-	AgentID   string    `json:"agent_id"`
-	Access    string    `json:"access"`
+	RunID   string `json:"run_id"`
+	AgentID string `json:"agent_id"`
+	Access  string `json:"access"`
+	// Connect lets the peer send HTTP requests to the ports the owner
+	// exposed (RFC GW §5.2, D20). Absent on a share stored before it: none.
+	Connect   bool      `json:"connect,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
@@ -140,6 +192,10 @@ type WorkspaceStore interface {
 	// bumps updated_at. It reports false, and changes nothing, when the row
 	// is absent or not in from — so of two replicas moving one row, one wins.
 	WorkspaceSetState(ctx context.Context, tenantID, id string, from, to WorkspaceState) (bool, error)
+	// WorkspaceSetGit replaces a git workspace's repository record (the
+	// forge's default branch, the base commit, as the core learns them) on
+	// the tenant's row. It reports false when there is no such row.
+	WorkspaceSetGit(ctx context.Context, tenantID, id string, git WorkspaceGit) (bool, error)
 	// WorkspaceDelete removes the tenant's row and reports whether it was
 	// there. It never touches the worker's disk.
 	WorkspaceDelete(ctx context.Context, tenantID, id string) (bool, error)
@@ -184,4 +240,24 @@ type WorkspaceStore interface {
 	WorkspaceListPrincipalOwned(ctx context.Context) ([]WorkspaceRow, error)
 	// WorkspaceTouchUsed sets the tenant's row's last_used_at to at.
 	WorkspaceTouchUsed(ctx context.Context, tenantID, id string, at time.Time) error
+	// WorkspaceGetDurable returns the tenant's durable row of user and
+	// name, pinned or parked; *ErrNotFound when there is none.
+	WorkspaceGetDurable(ctx context.Context, tenantID, userID, name string) (WorkspaceRow, error)
+	// WorkspacePin pins a durable row to a run: a compare-and-set from the
+	// OwnerRunID the caller read (the parked key, or a run that ended), so
+	// two runs never both win. False when the row moved first, or is not a
+	// durable row of the tenant; *ErrConflict when the run already holds a
+	// workspace of that name.
+	WorkspacePin(ctx context.Context, tenantID, id, fromOwnerRunID string, to WorkspaceOwner) (bool, error)
+	// WorkspaceUnpin parks a durable row pinned to fromRunID: owner kind
+	// parked, the parked key, no agent, no root and no shares. False when
+	// the row moved first, or is not a pinned durable row of the tenant.
+	WorkspaceUnpin(ctx context.Context, tenantID, id, fromRunID string) (bool, error)
+	// WorkspaceCountDurableByUser counts the tenant's durable rows of user,
+	// pinned or parked, in any state: what workspace.durable.max_per_user
+	// bounds.
+	WorkspaceCountDurableByUser(ctx context.Context, tenantID, userID string) (int, error)
+	// WorkspaceListDurableByUser returns those rows, ordered by name: what
+	// the user's erasure removes.
+	WorkspaceListDurableByUser(ctx context.Context, tenantID, userID string) ([]WorkspaceRow, error)
 }

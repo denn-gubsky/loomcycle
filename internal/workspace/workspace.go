@@ -5,13 +5,29 @@
 // internal/workspace/worker.
 package workspace
 
-import "strings"
+import (
+	"strings"
+)
 
-// ProtocolVersion is the workspace worker protocol this build speaks. A
-// worker of another version is refused at attach (RFC GW §8). 2 added the
-// worker-to-core Egress stream (RFC GW P4): an older worker has no way out
-// for its sessions, and an older core refuses the stream as unimplemented.
-const ProtocolVersion = 2
+// ProtocolVersion is the workspace worker protocol this build speaks (RFC GW
+// §8). 2 added the worker-to-core Egress stream (RFC GW P4): an older worker
+// has no way out for its sessions, and an older core refuses the stream as
+// unimplemented. 3 added git requests on that stream (RFC GW P11).
+const ProtocolVersion = 3
+
+// MinProtocolVersion is the oldest worker protocol the core still attaches:
+// a v2 worker serves everything but git workspaces, so a fleet need not be
+// upgraded at once. A worker of a version outside
+// [MinProtocolVersion, ProtocolVersion] is refused at attach.
+const MinProtocolVersion = 2
+
+// GitProtocolVersion is the first protocol whose workers make git requests;
+// a git stream from an older worker is refused (ClassProtocolTooOld).
+const GitProtocolVersion = 3
+
+// ClassProtocolTooOld names a refusal of something the worker's protocol
+// predates.
+const ClassProtocolTooOld = "worker_protocol_too_old"
 
 // ChunkSize bounds one Chunk frame's data, either way (RFC GW §8).
 const ChunkSize = 64 << 10
@@ -86,6 +102,15 @@ const (
 	ClassProtocol = "protocol"
 )
 
+// ClassRepositoryNotFound is a git op's answer when the forge has no such
+// repository (gitsource's not_found, renamed so it never reads as
+// ClassNotFound).
+const ClassRepositoryNotFound = "repository_not_found"
+
+// ClassMirrorTooLarge is a git fetch refused because it would take the
+// repository's mirror past workspace.git.mirror_max_mb.
+const ClassMirrorTooLarge = "mirror_too_large"
+
 // KnownWorkerClasses are the classes a worker may answer with that the core
 // reports by name; any other is reported as ClassFailed, so a worker cannot
 // grow a metric's label set or put arbitrary text where a class is read.
@@ -96,6 +121,16 @@ var KnownWorkerClasses = map[string]bool{
 	ClassConversionBusy: true, ClassSourceChanged: true, ClassUnitTooLarge: true, ClassUnpackRefused: true,
 	ClassKernelUnavailable: true, ClassCheckpointLimit: true, ClassCheckpointNotFound: true,
 	ClassServerLimit: true, ClassServerNotFound: true, ClassPortNotServed: true, ClassPortUnreachable: true,
+	ClassTemplateMissing: true, ClassNotOnRoot: true, ClassRootBusy: true,
+	ClassBrowserUnavailable: true, ClassBrowserBusy: true, ClassBrowserTimedOut: true,
+	// A git op's (RFC GW P11): gitrepo's and gitsource's classes, with
+	// not_found as ClassRepositoryNotFound. The worker's drift test holds
+	// this to gitrepo.Classes.
+	"git_failed": true, "not_a_repository": true, "already_exists": true, "invalid_argument": true, "invalid_revision": true,
+	"non_fast_forward": true, "nothing_to_commit": true, "worktree_dirty": true, "push_rejected": true, "already_up_to_date": true,
+	"unsupported_repository_feature": true, "upload_too_large": true, "invalid_request": true, "auth_failed": true,
+	ClassRepositoryNotFound: true, ClassMirrorTooLarge: true, "commit_not_found": true, "source_too_large": true, "timeout": true,
+	"merge_base_not_found": true, "fetch_failed": true,
 }
 
 // The engines a worker may run commands under, weakest first.

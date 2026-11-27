@@ -38,103 +38,108 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	Loomcycle_Run_FullMethodName                  = "/loomcycle.v1.Loomcycle/Run"
-	Loomcycle_Continue_FullMethodName             = "/loomcycle.v1.Loomcycle/Continue"
-	Loomcycle_SpawnRunBatch_FullMethodName        = "/loomcycle.v1.Loomcycle/SpawnRunBatch"
-	Loomcycle_CompactRun_FullMethodName           = "/loomcycle.v1.Loomcycle/CompactRun"
-	Loomcycle_DeleteRunTree_FullMethodName        = "/loomcycle.v1.Loomcycle/DeleteRunTree"
-	Loomcycle_CreateConfiguredRun_FullMethodName  = "/loomcycle.v1.Loomcycle/CreateConfiguredRun"
-	Loomcycle_UpdateConfiguredRun_FullMethodName  = "/loomcycle.v1.Loomcycle/UpdateConfiguredRun"
-	Loomcycle_StartConfiguredRun_FullMethodName   = "/loomcycle.v1.Loomcycle/StartConfiguredRun"
-	Loomcycle_DeleteConfiguredRun_FullMethodName  = "/loomcycle.v1.Loomcycle/DeleteConfiguredRun"
-	Loomcycle_DirectoryUsers_FullMethodName       = "/loomcycle.v1.Loomcycle/DirectoryUsers"
-	Loomcycle_DirectoryInspect_FullMethodName     = "/loomcycle.v1.Loomcycle/DirectoryInspect"
-	Loomcycle_DirectoryTenants_FullMethodName     = "/loomcycle.v1.Loomcycle/DirectoryTenants"
-	Loomcycle_ErasureReport_FullMethodName        = "/loomcycle.v1.Loomcycle/ErasureReport"
-	Loomcycle_ListUserAppSignIns_FullMethodName   = "/loomcycle.v1.Loomcycle/ListUserAppSignIns"
-	Loomcycle_EndUserAppSignIn_FullMethodName     = "/loomcycle.v1.Loomcycle/EndUserAppSignIn"
-	Loomcycle_ListMyAppSignIns_FullMethodName     = "/loomcycle.v1.Loomcycle/ListMyAppSignIns"
-	Loomcycle_EndMyAppSignIn_FullMethodName       = "/loomcycle.v1.Loomcycle/EndMyAppSignIn"
-	Loomcycle_ErasureExecute_FullMethodName       = "/loomcycle.v1.Loomcycle/ErasureExecute"
-	Loomcycle_ReplaySession_FullMethodName        = "/loomcycle.v1.Loomcycle/ReplaySession"
-	Loomcycle_RunInput_FullMethodName             = "/loomcycle.v1.Loomcycle/RunInput"
-	Loomcycle_PutInboxFile_FullMethodName         = "/loomcycle.v1.Loomcycle/PutInboxFile"
-	Loomcycle_RetuneRun_FullMethodName            = "/loomcycle.v1.Loomcycle/RetuneRun"
-	Loomcycle_CancelTurn_FullMethodName           = "/loomcycle.v1.Loomcycle/CancelTurn"
-	Loomcycle_ReviewRun_FullMethodName            = "/loomcycle.v1.Loomcycle/ReviewRun"
-	Loomcycle_ResolveInterrupt_FullMethodName     = "/loomcycle.v1.Loomcycle/ResolveInterrupt"
-	Loomcycle_StreamRun_FullMethodName            = "/loomcycle.v1.Loomcycle/StreamRun"
-	Loomcycle_GetTranscript_FullMethodName        = "/loomcycle.v1.Loomcycle/GetTranscript"
-	Loomcycle_GetAgent_FullMethodName             = "/loomcycle.v1.Loomcycle/GetAgent"
-	Loomcycle_GetRun_FullMethodName               = "/loomcycle.v1.Loomcycle/GetRun"
-	Loomcycle_CancelAgent_FullMethodName          = "/loomcycle.v1.Loomcycle/CancelAgent"
-	Loomcycle_ListUserAgents_FullMethodName       = "/loomcycle.v1.Loomcycle/ListUserAgents"
-	Loomcycle_ListWalkRuns_FullMethodName         = "/loomcycle.v1.Loomcycle/ListWalkRuns"
-	Loomcycle_ListChildRuns_FullMethodName        = "/loomcycle.v1.Loomcycle/ListChildRuns"
-	Loomcycle_UsageReport_FullMethodName          = "/loomcycle.v1.Loomcycle/UsageReport"
-	Loomcycle_TokenLimit_FullMethodName           = "/loomcycle.v1.Loomcycle/TokenLimit"
-	Loomcycle_RetentionOverride_FullMethodName    = "/loomcycle.v1.Loomcycle/RetentionOverride"
-	Loomcycle_TenantTelemetry_FullMethodName      = "/loomcycle.v1.Loomcycle/TenantTelemetry"
-	Loomcycle_MergeSubjects_FullMethodName        = "/loomcycle.v1.Loomcycle/MergeSubjects"
-	Loomcycle_BindSubjectPrincipal_FullMethodName = "/loomcycle.v1.Loomcycle/BindSubjectPrincipal"
-	Loomcycle_PlanOntology_FullMethodName         = "/loomcycle.v1.Loomcycle/PlanOntology"
-	Loomcycle_ListReviewQueue_FullMethodName      = "/loomcycle.v1.Loomcycle/ListReviewQueue"
-	Loomcycle_RuleStatements_FullMethodName       = "/loomcycle.v1.Loomcycle/RuleStatements"
-	Loomcycle_RevertRuling_FullMethodName         = "/loomcycle.v1.Loomcycle/RevertRuling"
-	Loomcycle_ListRulings_FullMethodName          = "/loomcycle.v1.Loomcycle/ListRulings"
-	Loomcycle_ApplyReviewPolicy_FullMethodName    = "/loomcycle.v1.Loomcycle/ApplyReviewPolicy"
-	Loomcycle_Decide_FullMethodName               = "/loomcycle.v1.Loomcycle/Decide"
-	Loomcycle_ListDecisionModels_FullMethodName   = "/loomcycle.v1.Loomcycle/ListDecisionModels"
-	Loomcycle_Calc_FullMethodName                 = "/loomcycle.v1.Loomcycle/Calc"
-	Loomcycle_Health_FullMethodName               = "/loomcycle.v1.Loomcycle/Health"
-	Loomcycle_Config_FullMethodName               = "/loomcycle.v1.Loomcycle/Config"
-	Loomcycle_PauseRuntime_FullMethodName         = "/loomcycle.v1.Loomcycle/PauseRuntime"
-	Loomcycle_ResumeRuntime_FullMethodName        = "/loomcycle.v1.Loomcycle/ResumeRuntime"
-	Loomcycle_GetRuntimeState_FullMethodName      = "/loomcycle.v1.Loomcycle/GetRuntimeState"
-	Loomcycle_ResolveProbe_FullMethodName         = "/loomcycle.v1.Loomcycle/ResolveProbe"
-	Loomcycle_CreateSnapshot_FullMethodName       = "/loomcycle.v1.Loomcycle/CreateSnapshot"
-	Loomcycle_ListSnapshots_FullMethodName        = "/loomcycle.v1.Loomcycle/ListSnapshots"
-	Loomcycle_GetSnapshot_FullMethodName          = "/loomcycle.v1.Loomcycle/GetSnapshot"
-	Loomcycle_ExportSnapshot_FullMethodName       = "/loomcycle.v1.Loomcycle/ExportSnapshot"
-	Loomcycle_RestoreSnapshot_FullMethodName      = "/loomcycle.v1.Loomcycle/RestoreSnapshot"
-	Loomcycle_DeleteSnapshot_FullMethodName       = "/loomcycle.v1.Loomcycle/DeleteSnapshot"
-	Loomcycle_AgentDef_FullMethodName             = "/loomcycle.v1.Loomcycle/AgentDef"
-	Loomcycle_SkillDef_FullMethodName             = "/loomcycle.v1.Loomcycle/SkillDef"
-	Loomcycle_MCPServerDef_FullMethodName         = "/loomcycle.v1.Loomcycle/MCPServerDef"
-	Loomcycle_ScheduleDef_FullMethodName          = "/loomcycle.v1.Loomcycle/ScheduleDef"
-	Loomcycle_A2AServerCardDef_FullMethodName     = "/loomcycle.v1.Loomcycle/A2AServerCardDef"
-	Loomcycle_A2AAgentDef_FullMethodName          = "/loomcycle.v1.Loomcycle/A2AAgentDef"
-	Loomcycle_WebhookDef_FullMethodName           = "/loomcycle.v1.Loomcycle/WebhookDef"
-	Loomcycle_MemoryBackendDef_FullMethodName     = "/loomcycle.v1.Loomcycle/MemoryBackendDef"
-	Loomcycle_DocumentSourceDef_FullMethodName    = "/loomcycle.v1.Loomcycle/DocumentSourceDef"
-	Loomcycle_ClientDef_FullMethodName            = "/loomcycle.v1.Loomcycle/ClientDef"
-	Loomcycle_OperatorTokenDef_FullMethodName     = "/loomcycle.v1.Loomcycle/OperatorTokenDef"
-	Loomcycle_VolumeDef_FullMethodName            = "/loomcycle.v1.Loomcycle/VolumeDef"
-	Loomcycle_EgressRouteDef_FullMethodName       = "/loomcycle.v1.Loomcycle/EgressRouteDef"
-	Loomcycle_TeamDef_FullMethodName              = "/loomcycle.v1.Loomcycle/TeamDef"
-	Loomcycle_HookDef_FullMethodName              = "/loomcycle.v1.Loomcycle/HookDef"
-	Loomcycle_Path_FullMethodName                 = "/loomcycle.v1.Loomcycle/Path"
-	Loomcycle_Document_FullMethodName             = "/loomcycle.v1.Loomcycle/Document"
-	Loomcycle_CredentialDef_FullMethodName        = "/loomcycle.v1.Loomcycle/CredentialDef"
-	Loomcycle_Crypto_FullMethodName               = "/loomcycle.v1.Loomcycle/Crypto"
-	Loomcycle_GroupDef_FullMethodName             = "/loomcycle.v1.Loomcycle/GroupDef"
-	Loomcycle_AclDef_FullMethodName               = "/loomcycle.v1.Loomcycle/AclDef"
-	Loomcycle_AclBinding_FullMethodName           = "/loomcycle.v1.Loomcycle/AclBinding"
-	Loomcycle_Authz_FullMethodName                = "/loomcycle.v1.Loomcycle/Authz"
-	Loomcycle_History_FullMethodName              = "/loomcycle.v1.Loomcycle/History"
-	Loomcycle_Evaluation_FullMethodName           = "/loomcycle.v1.Loomcycle/Evaluation"
-	Loomcycle_Memory_FullMethodName               = "/loomcycle.v1.Loomcycle/Memory"
-	Loomcycle_ListChannels_FullMethodName         = "/loomcycle.v1.Loomcycle/ListChannels"
-	Loomcycle_StreamUserRunStates_FullMethodName  = "/loomcycle.v1.Loomcycle/StreamUserRunStates"
-	Loomcycle_PublishChannel_FullMethodName       = "/loomcycle.v1.Loomcycle/PublishChannel"
-	Loomcycle_SubscribeChannel_FullMethodName     = "/loomcycle.v1.Loomcycle/SubscribeChannel"
-	Loomcycle_PeekChannel_FullMethodName          = "/loomcycle.v1.Loomcycle/PeekChannel"
-	Loomcycle_AckChannel_FullMethodName           = "/loomcycle.v1.Loomcycle/AckChannel"
-	Loomcycle_ListTeamChannels_FullMethodName     = "/loomcycle.v1.Loomcycle/ListTeamChannels"
-	Loomcycle_PeekTeamChannel_FullMethodName      = "/loomcycle.v1.Loomcycle/PeekTeamChannel"
-	Loomcycle_ReleaseTeamChannel_FullMethodName   = "/loomcycle.v1.Loomcycle/ReleaseTeamChannel"
-	Loomcycle_AwaitChannels_FullMethodName        = "/loomcycle.v1.Loomcycle/AwaitChannels"
-	Loomcycle_BroadcastChannels_FullMethodName    = "/loomcycle.v1.Loomcycle/BroadcastChannels"
+	Loomcycle_Run_FullMethodName                   = "/loomcycle.v1.Loomcycle/Run"
+	Loomcycle_Continue_FullMethodName              = "/loomcycle.v1.Loomcycle/Continue"
+	Loomcycle_SpawnRunBatch_FullMethodName         = "/loomcycle.v1.Loomcycle/SpawnRunBatch"
+	Loomcycle_CompactRun_FullMethodName            = "/loomcycle.v1.Loomcycle/CompactRun"
+	Loomcycle_DeleteRunTree_FullMethodName         = "/loomcycle.v1.Loomcycle/DeleteRunTree"
+	Loomcycle_CreateConfiguredRun_FullMethodName   = "/loomcycle.v1.Loomcycle/CreateConfiguredRun"
+	Loomcycle_UpdateConfiguredRun_FullMethodName   = "/loomcycle.v1.Loomcycle/UpdateConfiguredRun"
+	Loomcycle_StartConfiguredRun_FullMethodName    = "/loomcycle.v1.Loomcycle/StartConfiguredRun"
+	Loomcycle_DeleteConfiguredRun_FullMethodName   = "/loomcycle.v1.Loomcycle/DeleteConfiguredRun"
+	Loomcycle_DirectoryUsers_FullMethodName        = "/loomcycle.v1.Loomcycle/DirectoryUsers"
+	Loomcycle_DirectoryInspect_FullMethodName      = "/loomcycle.v1.Loomcycle/DirectoryInspect"
+	Loomcycle_DirectoryTenants_FullMethodName      = "/loomcycle.v1.Loomcycle/DirectoryTenants"
+	Loomcycle_ErasureReport_FullMethodName         = "/loomcycle.v1.Loomcycle/ErasureReport"
+	Loomcycle_ListUserAppSignIns_FullMethodName    = "/loomcycle.v1.Loomcycle/ListUserAppSignIns"
+	Loomcycle_EndUserAppSignIn_FullMethodName      = "/loomcycle.v1.Loomcycle/EndUserAppSignIn"
+	Loomcycle_ListMyAppSignIns_FullMethodName      = "/loomcycle.v1.Loomcycle/ListMyAppSignIns"
+	Loomcycle_EndMyAppSignIn_FullMethodName        = "/loomcycle.v1.Loomcycle/EndMyAppSignIn"
+	Loomcycle_ErasureExecute_FullMethodName        = "/loomcycle.v1.Loomcycle/ErasureExecute"
+	Loomcycle_ReplaySession_FullMethodName         = "/loomcycle.v1.Loomcycle/ReplaySession"
+	Loomcycle_RunInput_FullMethodName              = "/loomcycle.v1.Loomcycle/RunInput"
+	Loomcycle_PutInboxFile_FullMethodName          = "/loomcycle.v1.Loomcycle/PutInboxFile"
+	Loomcycle_RetuneRun_FullMethodName             = "/loomcycle.v1.Loomcycle/RetuneRun"
+	Loomcycle_CancelTurn_FullMethodName            = "/loomcycle.v1.Loomcycle/CancelTurn"
+	Loomcycle_ReviewRun_FullMethodName             = "/loomcycle.v1.Loomcycle/ReviewRun"
+	Loomcycle_ResolveInterrupt_FullMethodName      = "/loomcycle.v1.Loomcycle/ResolveInterrupt"
+	Loomcycle_StreamRun_FullMethodName             = "/loomcycle.v1.Loomcycle/StreamRun"
+	Loomcycle_GetTranscript_FullMethodName         = "/loomcycle.v1.Loomcycle/GetTranscript"
+	Loomcycle_GetAgent_FullMethodName              = "/loomcycle.v1.Loomcycle/GetAgent"
+	Loomcycle_GetRun_FullMethodName                = "/loomcycle.v1.Loomcycle/GetRun"
+	Loomcycle_CancelAgent_FullMethodName           = "/loomcycle.v1.Loomcycle/CancelAgent"
+	Loomcycle_ListUserAgents_FullMethodName        = "/loomcycle.v1.Loomcycle/ListUserAgents"
+	Loomcycle_ListWalkRuns_FullMethodName          = "/loomcycle.v1.Loomcycle/ListWalkRuns"
+	Loomcycle_ListChildRuns_FullMethodName         = "/loomcycle.v1.Loomcycle/ListChildRuns"
+	Loomcycle_UsageReport_FullMethodName           = "/loomcycle.v1.Loomcycle/UsageReport"
+	Loomcycle_TokenLimit_FullMethodName            = "/loomcycle.v1.Loomcycle/TokenLimit"
+	Loomcycle_RetentionOverride_FullMethodName     = "/loomcycle.v1.Loomcycle/RetentionOverride"
+	Loomcycle_TenantTelemetry_FullMethodName       = "/loomcycle.v1.Loomcycle/TenantTelemetry"
+	Loomcycle_MergeSubjects_FullMethodName         = "/loomcycle.v1.Loomcycle/MergeSubjects"
+	Loomcycle_BindSubjectPrincipal_FullMethodName  = "/loomcycle.v1.Loomcycle/BindSubjectPrincipal"
+	Loomcycle_PlanOntology_FullMethodName          = "/loomcycle.v1.Loomcycle/PlanOntology"
+	Loomcycle_ApplyOntologyRollback_FullMethodName = "/loomcycle.v1.Loomcycle/ApplyOntologyRollback"
+	Loomcycle_ListOntologyReleases_FullMethodName  = "/loomcycle.v1.Loomcycle/ListOntologyReleases"
+	Loomcycle_DiffOntologyReleases_FullMethodName  = "/loomcycle.v1.Loomcycle/DiffOntologyReleases"
+	Loomcycle_GetOntologyJob_FullMethodName        = "/loomcycle.v1.Loomcycle/GetOntologyJob"
+	Loomcycle_ResumeOntologyJob_FullMethodName     = "/loomcycle.v1.Loomcycle/ResumeOntologyJob"
+	Loomcycle_ListReviewQueue_FullMethodName       = "/loomcycle.v1.Loomcycle/ListReviewQueue"
+	Loomcycle_RuleStatements_FullMethodName        = "/loomcycle.v1.Loomcycle/RuleStatements"
+	Loomcycle_RevertRuling_FullMethodName          = "/loomcycle.v1.Loomcycle/RevertRuling"
+	Loomcycle_ListRulings_FullMethodName           = "/loomcycle.v1.Loomcycle/ListRulings"
+	Loomcycle_ApplyReviewPolicy_FullMethodName     = "/loomcycle.v1.Loomcycle/ApplyReviewPolicy"
+	Loomcycle_Decide_FullMethodName                = "/loomcycle.v1.Loomcycle/Decide"
+	Loomcycle_ListDecisionModels_FullMethodName    = "/loomcycle.v1.Loomcycle/ListDecisionModels"
+	Loomcycle_Calc_FullMethodName                  = "/loomcycle.v1.Loomcycle/Calc"
+	Loomcycle_Health_FullMethodName                = "/loomcycle.v1.Loomcycle/Health"
+	Loomcycle_Config_FullMethodName                = "/loomcycle.v1.Loomcycle/Config"
+	Loomcycle_PauseRuntime_FullMethodName          = "/loomcycle.v1.Loomcycle/PauseRuntime"
+	Loomcycle_ResumeRuntime_FullMethodName         = "/loomcycle.v1.Loomcycle/ResumeRuntime"
+	Loomcycle_GetRuntimeState_FullMethodName       = "/loomcycle.v1.Loomcycle/GetRuntimeState"
+	Loomcycle_ResolveProbe_FullMethodName          = "/loomcycle.v1.Loomcycle/ResolveProbe"
+	Loomcycle_CreateSnapshot_FullMethodName        = "/loomcycle.v1.Loomcycle/CreateSnapshot"
+	Loomcycle_ListSnapshots_FullMethodName         = "/loomcycle.v1.Loomcycle/ListSnapshots"
+	Loomcycle_GetSnapshot_FullMethodName           = "/loomcycle.v1.Loomcycle/GetSnapshot"
+	Loomcycle_ExportSnapshot_FullMethodName        = "/loomcycle.v1.Loomcycle/ExportSnapshot"
+	Loomcycle_RestoreSnapshot_FullMethodName       = "/loomcycle.v1.Loomcycle/RestoreSnapshot"
+	Loomcycle_DeleteSnapshot_FullMethodName        = "/loomcycle.v1.Loomcycle/DeleteSnapshot"
+	Loomcycle_AgentDef_FullMethodName              = "/loomcycle.v1.Loomcycle/AgentDef"
+	Loomcycle_SkillDef_FullMethodName              = "/loomcycle.v1.Loomcycle/SkillDef"
+	Loomcycle_MCPServerDef_FullMethodName          = "/loomcycle.v1.Loomcycle/MCPServerDef"
+	Loomcycle_ScheduleDef_FullMethodName           = "/loomcycle.v1.Loomcycle/ScheduleDef"
+	Loomcycle_A2AServerCardDef_FullMethodName      = "/loomcycle.v1.Loomcycle/A2AServerCardDef"
+	Loomcycle_A2AAgentDef_FullMethodName           = "/loomcycle.v1.Loomcycle/A2AAgentDef"
+	Loomcycle_WebhookDef_FullMethodName            = "/loomcycle.v1.Loomcycle/WebhookDef"
+	Loomcycle_MemoryBackendDef_FullMethodName      = "/loomcycle.v1.Loomcycle/MemoryBackendDef"
+	Loomcycle_DocumentSourceDef_FullMethodName     = "/loomcycle.v1.Loomcycle/DocumentSourceDef"
+	Loomcycle_ClientDef_FullMethodName             = "/loomcycle.v1.Loomcycle/ClientDef"
+	Loomcycle_OperatorTokenDef_FullMethodName      = "/loomcycle.v1.Loomcycle/OperatorTokenDef"
+	Loomcycle_VolumeDef_FullMethodName             = "/loomcycle.v1.Loomcycle/VolumeDef"
+	Loomcycle_EgressRouteDef_FullMethodName        = "/loomcycle.v1.Loomcycle/EgressRouteDef"
+	Loomcycle_TeamDef_FullMethodName               = "/loomcycle.v1.Loomcycle/TeamDef"
+	Loomcycle_HookDef_FullMethodName               = "/loomcycle.v1.Loomcycle/HookDef"
+	Loomcycle_Path_FullMethodName                  = "/loomcycle.v1.Loomcycle/Path"
+	Loomcycle_Document_FullMethodName              = "/loomcycle.v1.Loomcycle/Document"
+	Loomcycle_CredentialDef_FullMethodName         = "/loomcycle.v1.Loomcycle/CredentialDef"
+	Loomcycle_Crypto_FullMethodName                = "/loomcycle.v1.Loomcycle/Crypto"
+	Loomcycle_GroupDef_FullMethodName              = "/loomcycle.v1.Loomcycle/GroupDef"
+	Loomcycle_AclDef_FullMethodName                = "/loomcycle.v1.Loomcycle/AclDef"
+	Loomcycle_AclBinding_FullMethodName            = "/loomcycle.v1.Loomcycle/AclBinding"
+	Loomcycle_Authz_FullMethodName                 = "/loomcycle.v1.Loomcycle/Authz"
+	Loomcycle_History_FullMethodName               = "/loomcycle.v1.Loomcycle/History"
+	Loomcycle_Evaluation_FullMethodName            = "/loomcycle.v1.Loomcycle/Evaluation"
+	Loomcycle_Memory_FullMethodName                = "/loomcycle.v1.Loomcycle/Memory"
+	Loomcycle_ListChannels_FullMethodName          = "/loomcycle.v1.Loomcycle/ListChannels"
+	Loomcycle_StreamUserRunStates_FullMethodName   = "/loomcycle.v1.Loomcycle/StreamUserRunStates"
+	Loomcycle_PublishChannel_FullMethodName        = "/loomcycle.v1.Loomcycle/PublishChannel"
+	Loomcycle_SubscribeChannel_FullMethodName      = "/loomcycle.v1.Loomcycle/SubscribeChannel"
+	Loomcycle_PeekChannel_FullMethodName           = "/loomcycle.v1.Loomcycle/PeekChannel"
+	Loomcycle_AckChannel_FullMethodName            = "/loomcycle.v1.Loomcycle/AckChannel"
+	Loomcycle_ListTeamChannels_FullMethodName      = "/loomcycle.v1.Loomcycle/ListTeamChannels"
+	Loomcycle_PeekTeamChannel_FullMethodName       = "/loomcycle.v1.Loomcycle/PeekTeamChannel"
+	Loomcycle_ReleaseTeamChannel_FullMethodName    = "/loomcycle.v1.Loomcycle/ReleaseTeamChannel"
+	Loomcycle_AwaitChannels_FullMethodName         = "/loomcycle.v1.Loomcycle/AwaitChannels"
+	Loomcycle_BroadcastChannels_FullMethodName     = "/loomcycle.v1.Loomcycle/BroadcastChannels"
 )
 
 // LoomcycleClient is the client API for Loomcycle service.
@@ -448,6 +453,71 @@ type LoomcycleClient interface {
 	//
 	// Mirrors POST /v1/_ontology/plan.
 	PlanOntology(ctx context.Context, in *PlanOntologyRequest, opts ...grpc.CallOption) (*PlanOntologyResponse, error)
+	// ApplyOntologyRollback applies the plan of rolling the tenant ontology
+	// back to a release (a PlanOntology change {op: release, seq}). It plans
+	// again and is refused unless plan_fingerprint is still that plan's; the
+	// writes go through the ontology's own guards, and a write by anyone else
+	// stops it. Never automatic.
+	//
+	// Operator-only, as PlanOntology. A refusal carries a google.rpc.ErrorInfo
+	// whose reason is the code HTTP returns. What HTTP's 409 body carries
+	// beside the code is in the ErrorInfo's metadata: `fingerprint` (the
+	// ontology's current one) on plan_required and plan_stale
+	// (FAILED_PRECONDITION), and `applied` (the writes made, as HTTP's JSON
+	// array) on partially_applied (FAILED_PRECONDITION). rename_job_pending and
+	// entry_locked are FAILED_PRECONDITION, invalid_request INVALID_ARGUMENT;
+	// the plan's own refusals map as PlanOntology's.
+	//
+	// Mirrors POST /v1/_ontology/rollback.
+	ApplyOntologyRollback(ctx context.Context, in *ApplyOntologyRollbackRequest, opts ...grpc.CallOption) (*ApplyOntologyRollbackResponse, error)
+	// ListOntologyReleases lists the tenant ontology's releases — the copies
+	// taken when it was confirmed and on each applied or rolled-back change,
+	// the newest 50 kept — newest first. It writes nothing.
+	//
+	// Operator-only, as PlanOntology: a release keeps the ontology's text after
+	// an edit or an erasure removed it, so a member never reads one. An admin
+	// may name another tenant. A refusal carries a google.rpc.ErrorInfo whose
+	// reason is the code HTTP returns (forbidden, unavailable).
+	//
+	// Mirrors GET /v1/_ontology/releases.
+	ListOntologyReleases(ctx context.Context, in *ListOntologyReleasesRequest, opts ...grpc.CallOption) (*ListOntologyReleasesResponse, error)
+	// DiffOntologyReleases compares two releases, or a release with the
+	// ontology in force, entry by entry: what was added, removed, renamed,
+	// moved, retired, or had its meaning or directives changed. It writes
+	// nothing.
+	//
+	// Operator-only, as ListOntologyReleases. A refusal carries a
+	// google.rpc.ErrorInfo whose reason is the code HTTP returns
+	// (invalid_request, forbidden, release_not_found, unavailable).
+	//
+	// Mirrors GET /v1/_ontology/releases/diff.
+	DiffOntologyReleases(ctx context.Context, in *DiffOntologyReleasesRequest, opts ...grpc.CallOption) (*DiffOntologyReleasesResponse, error)
+	// GetOntologyJob reads the tenant's ontology job — the class rename or
+	// concept re-tag carrying a change through the stored rows of the tenant
+	// scope and every user and agent scope: the unfinished one, else the one
+	// updated last; job is absent when the tenant never had one. It writes
+	// nothing.
+	//
+	// Operator-only, as PlanOntology: the job rewrites rows in every scope of
+	// the tenant. An admin may name another tenant. A refusal carries a
+	// google.rpc.ErrorInfo whose reason is the code HTTP returns (forbidden,
+	// unavailable).
+	//
+	// Mirrors GET /v1/_ontology/job.
+	GetOntologyJob(ctx context.Context, in *GetOntologyJobRequest, opts ...grpc.CallOption) (*OntologyJobResponse, error)
+	// ResumeOntologyJob gives the tenant's unfinished ontology job one slice of
+	// work under the ontology rename lease, from the scope and step it is at,
+	// as the next class rename or concept move would; a job whose change never
+	// reached the ontology is marked abandoned. Answers with the job as the
+	// slice left it. id is required.
+	//
+	// Operator-only, as GetOntologyJob. A refusal carries a google.rpc.ErrorInfo
+	// whose reason is the code HTTP returns: job_not_found (NOT_FOUND), job_busy
+	// (FAILED_PRECONDITION: another call holds the lease), invalid_request
+	// (INVALID_ARGUMENT: no id), forbidden, unavailable.
+	//
+	// Mirrors POST /v1/_ontology/job/resume.
+	ResumeOntologyJob(ctx context.Context, in *ResumeOntologyJobRequest, opts ...grpc.CallOption) (*OntologyJobResponse, error)
 	// ListReviewQueue lists a document scope's statements awaiting review
 	// (proposed unless the filter names another status), narrowed by the queue
 	// filters, newest first; or, with summarize, their counts grouped by kind,
@@ -1306,6 +1376,56 @@ func (c *loomcycleClient) PlanOntology(ctx context.Context, in *PlanOntologyRequ
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(PlanOntologyResponse)
 	err := c.cc.Invoke(ctx, Loomcycle_PlanOntology_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomcycleClient) ApplyOntologyRollback(ctx context.Context, in *ApplyOntologyRollbackRequest, opts ...grpc.CallOption) (*ApplyOntologyRollbackResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ApplyOntologyRollbackResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_ApplyOntologyRollback_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomcycleClient) ListOntologyReleases(ctx context.Context, in *ListOntologyReleasesRequest, opts ...grpc.CallOption) (*ListOntologyReleasesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListOntologyReleasesResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_ListOntologyReleases_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomcycleClient) DiffOntologyReleases(ctx context.Context, in *DiffOntologyReleasesRequest, opts ...grpc.CallOption) (*DiffOntologyReleasesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DiffOntologyReleasesResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_DiffOntologyReleases_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomcycleClient) GetOntologyJob(ctx context.Context, in *GetOntologyJobRequest, opts ...grpc.CallOption) (*OntologyJobResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(OntologyJobResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_GetOntologyJob_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomcycleClient) ResumeOntologyJob(ctx context.Context, in *ResumeOntologyJobRequest, opts ...grpc.CallOption) (*OntologyJobResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(OntologyJobResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_ResumeOntologyJob_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -2202,6 +2322,71 @@ type LoomcycleServer interface {
 	//
 	// Mirrors POST /v1/_ontology/plan.
 	PlanOntology(context.Context, *PlanOntologyRequest) (*PlanOntologyResponse, error)
+	// ApplyOntologyRollback applies the plan of rolling the tenant ontology
+	// back to a release (a PlanOntology change {op: release, seq}). It plans
+	// again and is refused unless plan_fingerprint is still that plan's; the
+	// writes go through the ontology's own guards, and a write by anyone else
+	// stops it. Never automatic.
+	//
+	// Operator-only, as PlanOntology. A refusal carries a google.rpc.ErrorInfo
+	// whose reason is the code HTTP returns. What HTTP's 409 body carries
+	// beside the code is in the ErrorInfo's metadata: `fingerprint` (the
+	// ontology's current one) on plan_required and plan_stale
+	// (FAILED_PRECONDITION), and `applied` (the writes made, as HTTP's JSON
+	// array) on partially_applied (FAILED_PRECONDITION). rename_job_pending and
+	// entry_locked are FAILED_PRECONDITION, invalid_request INVALID_ARGUMENT;
+	// the plan's own refusals map as PlanOntology's.
+	//
+	// Mirrors POST /v1/_ontology/rollback.
+	ApplyOntologyRollback(context.Context, *ApplyOntologyRollbackRequest) (*ApplyOntologyRollbackResponse, error)
+	// ListOntologyReleases lists the tenant ontology's releases — the copies
+	// taken when it was confirmed and on each applied or rolled-back change,
+	// the newest 50 kept — newest first. It writes nothing.
+	//
+	// Operator-only, as PlanOntology: a release keeps the ontology's text after
+	// an edit or an erasure removed it, so a member never reads one. An admin
+	// may name another tenant. A refusal carries a google.rpc.ErrorInfo whose
+	// reason is the code HTTP returns (forbidden, unavailable).
+	//
+	// Mirrors GET /v1/_ontology/releases.
+	ListOntologyReleases(context.Context, *ListOntologyReleasesRequest) (*ListOntologyReleasesResponse, error)
+	// DiffOntologyReleases compares two releases, or a release with the
+	// ontology in force, entry by entry: what was added, removed, renamed,
+	// moved, retired, or had its meaning or directives changed. It writes
+	// nothing.
+	//
+	// Operator-only, as ListOntologyReleases. A refusal carries a
+	// google.rpc.ErrorInfo whose reason is the code HTTP returns
+	// (invalid_request, forbidden, release_not_found, unavailable).
+	//
+	// Mirrors GET /v1/_ontology/releases/diff.
+	DiffOntologyReleases(context.Context, *DiffOntologyReleasesRequest) (*DiffOntologyReleasesResponse, error)
+	// GetOntologyJob reads the tenant's ontology job — the class rename or
+	// concept re-tag carrying a change through the stored rows of the tenant
+	// scope and every user and agent scope: the unfinished one, else the one
+	// updated last; job is absent when the tenant never had one. It writes
+	// nothing.
+	//
+	// Operator-only, as PlanOntology: the job rewrites rows in every scope of
+	// the tenant. An admin may name another tenant. A refusal carries a
+	// google.rpc.ErrorInfo whose reason is the code HTTP returns (forbidden,
+	// unavailable).
+	//
+	// Mirrors GET /v1/_ontology/job.
+	GetOntologyJob(context.Context, *GetOntologyJobRequest) (*OntologyJobResponse, error)
+	// ResumeOntologyJob gives the tenant's unfinished ontology job one slice of
+	// work under the ontology rename lease, from the scope and step it is at,
+	// as the next class rename or concept move would; a job whose change never
+	// reached the ontology is marked abandoned. Answers with the job as the
+	// slice left it. id is required.
+	//
+	// Operator-only, as GetOntologyJob. A refusal carries a google.rpc.ErrorInfo
+	// whose reason is the code HTTP returns: job_not_found (NOT_FOUND), job_busy
+	// (FAILED_PRECONDITION: another call holds the lease), invalid_request
+	// (INVALID_ARGUMENT: no id), forbidden, unavailable.
+	//
+	// Mirrors POST /v1/_ontology/job/resume.
+	ResumeOntologyJob(context.Context, *ResumeOntologyJobRequest) (*OntologyJobResponse, error)
 	// ListReviewQueue lists a document scope's statements awaiting review
 	// (proposed unless the filter names another status), narrowed by the queue
 	// filters, newest first; or, with summarize, their counts grouped by kind,
@@ -2746,6 +2931,21 @@ func (UnimplementedLoomcycleServer) BindSubjectPrincipal(context.Context, *BindS
 }
 func (UnimplementedLoomcycleServer) PlanOntology(context.Context, *PlanOntologyRequest) (*PlanOntologyResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method PlanOntology not implemented")
+}
+func (UnimplementedLoomcycleServer) ApplyOntologyRollback(context.Context, *ApplyOntologyRollbackRequest) (*ApplyOntologyRollbackResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ApplyOntologyRollback not implemented")
+}
+func (UnimplementedLoomcycleServer) ListOntologyReleases(context.Context, *ListOntologyReleasesRequest) (*ListOntologyReleasesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListOntologyReleases not implemented")
+}
+func (UnimplementedLoomcycleServer) DiffOntologyReleases(context.Context, *DiffOntologyReleasesRequest) (*DiffOntologyReleasesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DiffOntologyReleases not implemented")
+}
+func (UnimplementedLoomcycleServer) GetOntologyJob(context.Context, *GetOntologyJobRequest) (*OntologyJobResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetOntologyJob not implemented")
+}
+func (UnimplementedLoomcycleServer) ResumeOntologyJob(context.Context, *ResumeOntologyJobRequest) (*OntologyJobResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ResumeOntologyJob not implemented")
 }
 func (UnimplementedLoomcycleServer) ListReviewQueue(context.Context, *ListReviewQueueRequest) (*ListReviewQueueResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListReviewQueue not implemented")
@@ -3616,6 +3816,96 @@ func _Loomcycle_PlanOntology_Handler(srv interface{}, ctx context.Context, dec f
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(LoomcycleServer).PlanOntology(ctx, req.(*PlanOntologyRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Loomcycle_ApplyOntologyRollback_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ApplyOntologyRollbackRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).ApplyOntologyRollback(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_ApplyOntologyRollback_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).ApplyOntologyRollback(ctx, req.(*ApplyOntologyRollbackRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Loomcycle_ListOntologyReleases_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListOntologyReleasesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).ListOntologyReleases(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_ListOntologyReleases_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).ListOntologyReleases(ctx, req.(*ListOntologyReleasesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Loomcycle_DiffOntologyReleases_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DiffOntologyReleasesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).DiffOntologyReleases(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_DiffOntologyReleases_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).DiffOntologyReleases(ctx, req.(*DiffOntologyReleasesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Loomcycle_GetOntologyJob_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetOntologyJobRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).GetOntologyJob(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_GetOntologyJob_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).GetOntologyJob(ctx, req.(*GetOntologyJobRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Loomcycle_ResumeOntologyJob_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ResumeOntologyJobRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).ResumeOntologyJob(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_ResumeOntologyJob_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).ResumeOntologyJob(ctx, req.(*ResumeOntologyJobRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -4785,6 +5075,26 @@ var Loomcycle_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "PlanOntology",
 			Handler:    _Loomcycle_PlanOntology_Handler,
+		},
+		{
+			MethodName: "ApplyOntologyRollback",
+			Handler:    _Loomcycle_ApplyOntologyRollback_Handler,
+		},
+		{
+			MethodName: "ListOntologyReleases",
+			Handler:    _Loomcycle_ListOntologyReleases_Handler,
+		},
+		{
+			MethodName: "DiffOntologyReleases",
+			Handler:    _Loomcycle_DiffOntologyReleases_Handler,
+		},
+		{
+			MethodName: "GetOntologyJob",
+			Handler:    _Loomcycle_GetOntologyJob_Handler,
+		},
+		{
+			MethodName: "ResumeOntologyJob",
+			Handler:    _Loomcycle_ResumeOntologyJob_Handler,
 		},
 		{
 			MethodName: "ListReviewQueue",

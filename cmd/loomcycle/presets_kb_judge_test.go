@@ -579,6 +579,44 @@ func TestKBJudge_OnlyASubjectWithTextIsJudgedWithoutQuotes(t *testing.T) {
 	}
 }
 
+// A rule-made subject proposal (node_stats assign or misfits, method rule:assign
+// or rule:centroid) quotes only the document's title. A title says too little
+// to judge a topic on, and with a quote present the judge used to skip the
+// opening and the topic's meaning: the verdict model saw a name beside a bare
+// concept title and rejected nearly everything. A subject claim whose only
+// evidence is the FROM title is judged on the opening, as a quoteless one is.
+func TestKBJudge_ASubjectQuotingOnlyTheTitleIsJudgedOnTheOpening(t *testing.T) {
+	f := newKBJudgeSubjectFixture()
+	f.edges["sub1"]["method"] = "rule:assign"
+	f.edges["sub1"]["evidence"] = []map[string]any{
+		{"chunk_id": "root", "quote": "Running on a home server", "part": "title", "char_start": 0, "char_end": 24},
+	}
+	rep := runKBJudge(t, f, `{"scope":"tenant","write":"recommend"}`)
+	if len(f.prompts) != 1 {
+		t.Fatalf("the proposal was not judged: report %v", rep)
+	}
+	p := f.prompts[0]
+	for _, want := range []string{"Claim: the FROM document is about the TO topic", "TOPICMEANING Installing and upgrading",
+		"Topic: topic/operations/deployment", "[1] the opening of the FROM document:", "ROOTTEXT How to install", "FIRSTTEXT"} {
+		if !strings.Contains(p, want) {
+			t.Errorf("the verdict prompt lacks %q:\n%s", want, p)
+		}
+	}
+
+	// A subject claim with a body quote keeps its quote: only a title is too thin.
+	f = newKBJudgeSubjectFixture()
+	f.edges["sub1"]["evidence"] = []map[string]any{
+		{"chunk_id": "sec1", "quote": "FIRSTTEXT", "char_start": 0, "char_end": 9},
+	}
+	runKBJudge(t, f, `{"scope":"tenant","write":"recommend"}`)
+	if len(f.prompts) != 1 || !strings.Contains(f.prompts[0], "<<FIRSTTEXT>>") || strings.Contains(f.prompts[0], "the opening of the FROM document") {
+		t.Errorf("a subject claim with a body quote was not judged on its quote:\n%v", f.prompts)
+	}
+
+	// The opening stands in only for a subject: a duplicate_of title quote stays a quote
+	// (TestKBJudge_ATitleQuoteIsReadFromTheChunksTitle).
+}
+
 // A duplicate_of proposal's evidence is each side's title (find_duplicates
 // quotes the two root titles, part title): the judge reads the quote from the
 // cited chunk's TITLE at its span, not from the body, so the proposal is judged

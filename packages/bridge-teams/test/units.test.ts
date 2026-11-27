@@ -249,6 +249,19 @@ describe("cards", () => {
     });
   });
 
+  // RFC HG: bridge-core lists every option numbered in the context and draws
+  // buttons for the first six; this is the card it sends for eight.
+  it("shows all eight numbered options and buttons for the first six, then Decline", () => {
+    const options = ["o1", "o2", "o3", "o4", "o5", "o6", "o7", "o8"];
+    const context = `${options.map((o, i) => `${i + 1}. ${o}`).join("\n")}\n\nReply with a number, or tap a button.`;
+    const card = renderCard({ kind: "question", runId: "r", interruptId: "q", question: "Which?", context, options, buttons: [] }) as {
+      body: Array<{ text?: string }>;
+      actions: Array<{ title: string }>;
+    };
+    expect(card.body[1]!.text).toBe(context);
+    expect(card.actions.map((a) => a.title)).toEqual(["o1", "o2", "o3", "o4", "o5", "o6", "Decline"]);
+  });
+
   // The Adaptive Cards the bridge sent before it moved onto the core, byte for
   // byte: moving must not change what a Teams user sees or clicks.
   it("renders the core's cards exactly as the Teams bridge always has", () => {

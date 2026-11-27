@@ -182,7 +182,7 @@ func nilIfZeroContext(c *config.Context) *config.Context {
 }
 
 // statementMethodsOf is the run's statement_methods grant: its definition's,
-// with the code-only values (rule, extractor, judge) kept only when the
+// with the code-only values (config.StatementMethodCodeOnly) kept only when the
 // definition runs code. Load and AgentDef create/fork refuse them on any other
 // provider; this keeps a definition that reached a run some other way from
 // claiming a rule: stamp for a model's writes.

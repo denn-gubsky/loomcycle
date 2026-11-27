@@ -42,6 +42,7 @@ type planItem struct {
 	index    int
 	change   connector.OntologyChange
 	proposal string
+	release  int64
 	fixed    *connector.OntologyPlannedChange
 }
 
@@ -53,6 +54,16 @@ func (d *Document) expandPlanProposals(ctx context.Context, key sqlmem.ScopeKey,
 	items := make([]planItem, 0, len(changes))
 	direct := 0
 	for i, ch := range changes {
+		if ch.Op == connector.OntologyPlanAdd {
+			// Adding back an entry of a release: nothing rests on it, so it is final here
+			// and costs no counting (document_ontology_rollback.go).
+			fixed, err := d.planAddBack(ctx, key, i, ch, before)
+			if err != nil {
+				return nil, err
+			}
+			items = append(items, planItem{index: i, fixed: fixed})
+			continue
+		}
 		if ch.Op != connector.OntologyPlanProposal {
 			items = append(items, planItem{index: i, change: ch})
 			direct++
@@ -113,6 +124,14 @@ func (d *Document) planProposal(ctx context.Context, key sqlmem.ScopeKey, mscope
 	if len(b.Fields) > 0 && json.Unmarshal(b.Fields, &marks) == nil {
 		if raw, marked := marks[changeProposalField]; marked {
 			return d.planChangeProposal(ctx, key, mscope, at, self, raw)
+		}
+		// An add carrying structured data is planned as an add, once its mark passes the
+		// accept's checks: one the accept would refuse is refused here too.
+		if raw, marked := marks[entryProposalField]; marked {
+			if _, err := checkEntryAccept(before, self, raw); err != nil {
+				return nil, nil, connector.WithMessage(connector.ErrOntologyPlanInvalid,
+					at+": proposal "+strconv.Quote(self.ID)+" cannot be accepted as it stands: "+err.Error())
+			}
 		}
 	}
 	return nil, addProposalPlan(*listed), nil

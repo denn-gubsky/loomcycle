@@ -6,7 +6,9 @@ import (
 	"io"
 	"net"
 	"path/filepath"
+	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -125,26 +127,26 @@ func TestDo_OpenStatusRemoveOnARealWorker(t *testing.T) {
 	waitAttached(t, d, id)
 	ctx := context.Background()
 
-	if err := d.Open(ctx, "acme", id, "ws1"); err != nil {
+	if err := d.Open(ctx, "acme", "", id, "ws1"); err != nil {
 		t.Fatal(err)
 	}
 	if !exists(filepath.Join(root, "ws1")) {
 		t.Fatal("open made no directory")
 	}
-	if ok, err := d.Status(ctx, "acme", id, "ws1"); err != nil || !ok {
+	if ok, err := d.Status(ctx, "acme", "", id, "ws1"); err != nil || !ok {
 		t.Fatalf("status = %v, %v", ok, err)
 	}
 	// An open repeated is harmless.
-	if err := d.Open(ctx, "acme", id, "ws1"); err != nil {
+	if err := d.Open(ctx, "acme", "", id, "ws1"); err != nil {
 		t.Fatalf("a repeated open: %v", err)
 	}
-	if err := d.Open(ctx, "acme", id, "ws2"); dispatch.ClassOf(err) != workspace.ClassAtCapacity {
+	if err := d.Open(ctx, "acme", "", id, "ws2"); dispatch.ClassOf(err) != workspace.ClassAtCapacity {
 		t.Fatalf("an open past capacity: %v, want at_capacity", err)
 	}
-	if err := d.Remove(ctx, "acme", id, "ws1"); err != nil {
+	if err := d.Remove(ctx, "acme", "", id, "ws1"); err != nil {
 		t.Fatal(err)
 	}
-	if ok, err := d.Status(ctx, "acme", id, "ws1"); err != nil || ok || exists(filepath.Join(root, "ws1")) {
+	if ok, err := d.Status(ctx, "acme", "", id, "ws1"); err != nil || ok || exists(filepath.Join(root, "ws1")) {
 		t.Fatalf("after remove: status = %v, %v", ok, err)
 	}
 	if _, err := d.Do(ctx, id, dispatch.Request{TenantID: "acme", WorkspaceID: "ws1", Op: "launch"}); dispatch.ClassOf(err) != workspace.ClassUnsupportedOp {
@@ -174,7 +176,7 @@ func TestPlace_ATenantWorkerServesOnlyItsTenant(t *testing.T) {
 	}
 	// A caller holding the worker's id still cannot send it another
 	// tenant's op.
-	if err := d.Open(ctx, "other", acmeID("w1"), "ws9"); dispatch.ClassOf(err) != workspace.ClassNoWorker {
+	if err := d.Open(ctx, "other", "", acmeID("w1"), "ws9"); dispatch.ClassOf(err) != workspace.ClassNoWorker {
 		t.Fatalf("another tenant's op: %v, want no_worker", err)
 	}
 	if exists(filepath.Join(root, "ws9")) {
@@ -217,6 +219,42 @@ func TestPlace_ChecksToolchainEngineAndCapacity(t *testing.T) {
 	}
 }
 
+// A git workspace goes only to a worker that reported the git label and
+// speaks the protocol git requests need: an older worker claiming the label
+// would have its git requests refused mid-open.
+func TestPlace_AGitWorkspaceNeedsTheLabelAndTheGitProtocol(t *testing.T) {
+	d, target := core(t, newMemStore(), dispatch.Options{})
+	ctx := context.Background()
+	git := dispatch.PlaceRequest{TenantID: "acme", Labels: []string{workspace.GitLabel}}
+	for _, c := range []struct {
+		id       string
+		protocol uint32
+		labels   []string
+	}{
+		{"nolabel", workspace.ProtocolVersion, nil},
+		{"old", workspace.GitProtocolVersion - 1, []string{workspace.GitLabel}},
+	} {
+		fw := dialFake(t, target, tokAcme)
+		if _, err := fw.hello(&workspacepb.Hello{WorkerId: c.id, ProtocolVersion: c.protocol, Engine: workspace.EngineHost, Capacity: 4, Labels: c.labels}); err != nil {
+			t.Fatal(err)
+		}
+		fw.heartbeat(time.Second)
+		waitAttached(t, d, acmeID(c.id))
+		if got, err := d.Place(ctx, git); dispatch.ClassOf(err) != workspace.ClassNoWorker {
+			t.Fatalf("worker %s placed a git workspace: %v, %v", c.id, got, err)
+		}
+	}
+	fw := dialFake(t, target, tokAcme)
+	if _, err := fw.hello(&workspacepb.Hello{WorkerId: "git", ProtocolVersion: workspace.GitProtocolVersion, Engine: workspace.EngineHost, Capacity: 4, Labels: []string{workspace.GitLabel}}); err != nil {
+		t.Fatal(err)
+	}
+	fw.heartbeat(time.Second)
+	waitAttached(t, d, acmeID("git"))
+	if got, err := d.Place(ctx, git); err != nil || len(got) != 1 || got[0] != acmeID("git") {
+		t.Fatalf("place a git workspace = %v, %v", got, err)
+	}
+}
+
 // A worker's pool refills: more ops than it keeps streams for run one after
 // another, and when the core runs low it asks for more streams.
 func TestPool_Refills(t *testing.T) {
@@ -224,7 +262,7 @@ func TestPool_Refills(t *testing.T) {
 	realWorker(t, target, tokAcme, "w1", worker.Options{IdleStreams: 1})
 	waitAttached(t, d, acmeID("w1"))
 	for i := range 20 {
-		if _, err := d.Status(context.Background(), "acme", acmeID("w1"), "ws1"); err != nil {
+		if _, err := d.Status(context.Background(), "acme", "", acmeID("w1"), "ws1"); err != nil {
 			t.Fatalf("op %d: %v", i, err)
 		}
 	}
@@ -234,7 +272,7 @@ func TestPool_Refills(t *testing.T) {
 	f.attach("f1")
 	f.heartbeat(100 * time.Millisecond)
 	s := f.stream("f1")
-	go func() { _, _ = d.Status(context.Background(), "other", otherID("f1"), "ws1") }()
+	go func() { _, _ = d.Status(context.Background(), "other", "", otherID("f1"), "ws1") }()
 	if _, err := s.Recv(); err != nil { // the OpStart; never answered
 		t.Fatal(err)
 	}
@@ -344,7 +382,7 @@ func TestDo_AKilledWorkerFailsItsOpWithWorkerLost(t *testing.T) {
 				t.Fatalf("deaths = %d, want 1", d.Stats().Deaths)
 			}
 			// An op for a worker that is gone answers worker_lost at once.
-			if err := d.Open(context.Background(), "acme", acmeID("f1"), "ws1"); !errors.Is(err, dispatch.ErrWorkerLost) {
+			if err := d.Open(context.Background(), "acme", "", acmeID("f1"), "ws1"); !errors.Is(err, dispatch.ErrWorkerLost) {
 				t.Fatalf("an op for a gone worker: %v", err)
 			}
 		})
@@ -495,7 +533,7 @@ func TestAttach_AnUnverifiableTokenIsRetriedNeverServed(t *testing.T) {
 	if n := len(d.Workers()); n != 0 {
 		t.Fatalf("%d workers attached on a token that does not resolve", n)
 	}
-	if err := d.Open(context.Background(), "acme", acmeID("w1"), "ws1"); !errors.Is(err, dispatch.ErrWorkerLost) {
+	if err := d.Open(context.Background(), "acme", "", acmeID("w1"), "ws1"); !errors.Is(err, dispatch.ErrWorkerLost) {
 		t.Fatalf("an op while the token does not resolve: %v", err)
 	}
 	select {
@@ -524,7 +562,7 @@ func TestAttach_ARotatedTokenKeepsTheWorkerAndItsWorkspaces(t *testing.T) {
 
 	realWorker(t, target, tokAcme2, "w1", worker.Options{Root: root, IdleStreams: 1})
 	waitAttached(t, d, id)
-	if ok, err := d.Status(context.Background(), "acme", id, "ws1"); err != nil || !ok {
+	if ok, err := d.Status(context.Background(), "acme", "", id, "ws1"); err != nil || !ok {
 		t.Fatalf("the workspace after the rotation: status = %v, %v", ok, err)
 	}
 	if !st.has("ws1") || st.state("ws1") != store.WorkspaceReady {
@@ -571,6 +609,85 @@ func TestAttach_ALostWorkspaceIsRecoveredOrRemovedByItsRun(t *testing.T) {
 	}
 }
 
+// A durable workspace that comes back with its worker is never removed,
+// whatever became of its last run (RFC GW §8 "Worker death": durable disks
+// keep their workspaces): a parked one and one pinned to an ended run are
+// ready again with their directories; the sweeper parks the second.
+func TestAttach_ALostDurableWorkspaceIsNeverRemoved(t *testing.T) {
+	id := acmeID("w1")
+	durable := func(ws, owner, kind string) store.WorkspaceRow {
+		return store.WorkspaceRow{ID: ws, TenantID: "acme", UserID: "alice", WorkerID: id, OwnerRunID: owner, OwnerKind: kind,
+			Lifetime: store.WorkspaceLifetimeDurable, State: store.WorkspaceLost}
+	}
+	st := newMemStore(durable("ws-parked", store.WorkspaceParkedKey("ws-parked"), store.WorkspaceOwnerParked),
+		durable("ws-ended", "run-done", store.WorkspaceOwnerRun), durable("ws-gone", "run-gone", store.WorkspaceOwnerRun))
+	st.runs["run-done"] = store.RunCompleted
+	d, target := core(t, st, dispatch.Options{})
+	root := t.TempDir()
+	mkdirs(t, root, "ws-parked", "ws-ended", "ws-gone")
+	realWorker(t, target, tokAcme, "w1", worker.Options{Root: root, IdleStreams: 1})
+	waitAttached(t, d, id)
+	for _, ws := range []string{"ws-parked", "ws-ended", "ws-gone"} {
+		waitFor(t, ws+" to be ready", func() bool { return st.state(ws) == store.WorkspaceReady })
+		if !exists(filepath.Join(root, ws)) {
+			t.Errorf("%s's directory was removed", ws)
+		}
+	}
+}
+
+// A worker that comes back without a ready workspace's directory (a new
+// disk) leaves it lost, never ready: its files are gone (RFC GW P12 plan
+// §3.4, G-C). A row made in the last minutes may be one another replica is
+// opening on the worker as it attaches, and is left; an opening row is left;
+// each row marked lost is told to the lost hook.
+func TestAttach_AWorkspaceTheWorkerNoLongerHoldsIsLost(t *testing.T) {
+	id := acmeID("w1")
+	old := time.Now().Add(-10 * time.Minute)
+	row := func(ws string, state store.WorkspaceState, created time.Time, lifetime string) store.WorkspaceRow {
+		return store.WorkspaceRow{ID: ws, TenantID: "acme", UserID: "alice", WorkerID: id, OwnerRunID: "run-1", OwnerKind: store.WorkspaceOwnerRun,
+			Lifetime: lifetime, State: state, CreatedAt: created}
+	}
+	st := newMemStore(
+		row("ws-gone", store.WorkspaceReady, old, store.WorkspaceLifetimeEphemeral),
+		row("ws-durable", store.WorkspaceReady, old, store.WorkspaceLifetimeDurable),
+		row("ws-new", store.WorkspaceReady, time.Now(), store.WorkspaceLifetimeEphemeral),
+		row("ws-opening", store.WorkspaceOpening, old, store.WorkspaceLifetimeEphemeral),
+		row("ws-here", store.WorkspaceReady, old, store.WorkspaceLifetimeEphemeral),
+	)
+	st.runs["run-1"] = store.RunRunning
+	d, target := core(t, st, dispatch.Options{})
+	var mu sync.Mutex
+	var told []string
+	d.SetOnLost(func(_ context.Context, r store.WorkspaceRow) {
+		mu.Lock()
+		told = append(told, r.ID)
+		mu.Unlock()
+	})
+	root := t.TempDir()
+	mkdirs(t, root, "ws-here")
+	realWorker(t, target, tokAcme, "w1", worker.Options{Root: root, IdleStreams: 1})
+	waitAttached(t, d, id)
+	waitFor(t, "the gone workspaces to be lost", func() bool {
+		return st.state("ws-gone") == store.WorkspaceLost && st.state("ws-durable") == store.WorkspaceLost
+	})
+	for ws, want := range map[string]store.WorkspaceState{"ws-new": store.WorkspaceReady, "ws-opening": store.WorkspaceOpening, "ws-here": store.WorkspaceReady} {
+		if got := st.state(ws); got != want {
+			t.Errorf("%s = %s, want %s", ws, got, want)
+		}
+	}
+	waitFor(t, "the lost hook to be told", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(told) == 2
+	})
+	mu.Lock()
+	sort.Strings(told)
+	if strings.Join(told, ",") != "ws-durable,ws-gone" {
+		t.Errorf("told = %v", told)
+	}
+	mu.Unlock()
+}
+
 // On the host engine every command runs as the worker's user over the
 // worker's whole disk, so a shared worker on it would let one tenant's
 // command reach another tenant's workspaces. Such an attachment is refused
@@ -615,4 +732,18 @@ func TestAttach_MarksTheWorkersWorkspacesAsSeen(t *testing.T) {
 	realWorker(t, target, tokAcme, "w1", worker.Options{IdleStreams: 1})
 	waitAttached(t, d, acmeID("w1"))
 	waitFor(t, "two touches", func() bool { return st.touched() >= 2 })
+}
+
+// RFC GW P13: with workspace.personal_workers off (Options.PersonalWorkers
+// unset), a personal worker token attaches nothing.
+func TestAttach_APersonalWorkerTokenIsRefusedWithPersonalWorkersOff(t *testing.T) {
+	d, target := core(t, newMemStore(), dispatch.Options{})
+	f := dialFake(t, target, tokPersonal)
+	_, err := f.hello(&workspacepb.Hello{WorkerId: "w1", ProtocolVersion: workspace.ProtocolVersion, Engine: workspace.EngineHost, Capacity: 4})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("personal: err = %v, want PermissionDenied", err)
+	}
+	if n := len(d.Workers()); n != 0 {
+		t.Fatalf("%d workers attached", n)
+	}
 }

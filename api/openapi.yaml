@@ -615,8 +615,10 @@ paths:
         or orphaned, `stales` when any is stale, else `none`. An edit that
         changes any directive of the entry makes every count it has stale; an
         edit of the meaning alone keeps them all. A rename of a class something
-        rests on carries a note starting `rename_job_pending:`: it is refused,
-        whatever the fingerprint, until the rename job exists (RFC GQ P5).
+        rests on carries `job`, what the rename job would rewrite in every
+        scope; when the plan could not count every scope it carries a note
+        starting `rename_job_pending:` and is refused, whatever the fingerprint
+        (RFC GQ P5).
         Sample ids come from the tenant scope only. `issues` are the advisories of the ontology
         as it would read after every change, `new_issues` those it does not
         report now. `fingerprint` identifies the ontology the plan was computed
@@ -648,8 +650,9 @@ paths:
                     type: object
                     required: [op]
                     properties:
-                      op: { type: string, enum: [retire, rename, move, edit, delete, proposal] }
-                      entry: { type: string, description: "Every op but proposal (required): an in-force entry's chunk id (a class, relation, scheme, concept or instance)." }
+                      op: { type: string, enum: [retire, unretire, rename, move, edit, delete, add, release, proposal] }
+                      entry: { type: string, description: "Every op but proposal and release (required): an in-force entry's chunk id (a class, relation, scheme, concept or instance); for unretire a retired one; for add a chunk id of release `seq` that is not in force now." }
+                      seq: { type: integer, minimum: 1, description: "release (required, and its only field; the request's only change): roll back to this release — the plan lists the direct changes that make the ontology declare what the release declared (rename, edit, move, retire, unretire of entries in both; delete of an entry added since, or retire when something rests on it; add of an entry only in the release), each carrying `release`. Apply it with POST /v1/_ontology/rollback. add (required): the release the entry is added back from." }
                       name: { type: string, description: "rename: the new name, one line, at most 200 characters." }
                       parent: { type: string, description: "move: the new parent — the entry's section, or an entry of it that can hold it." }
                       body: { type: string, description: "edit: the new body, at most 32 KiB." }
@@ -696,6 +699,8 @@ paths:
                           items: { type: object }
                         notes: { type: array, items: { type: string } }
                         proposal: { type: string, description: "The proposal's chunk id when the change is one accepting it makes; absent for a direct change." }
+                        release: { type: integer, description: "The release a rollback plans toward (op release), on every change it expands to; absent otherwise." }
+                        job: { $ref: "#/components/schemas/OntologyRenameJobPlan" }
                   issues: { type: array, items: { type: string } }
                   new_issues: { type: array, items: { type: string } }
                   scopes_counted: { type: integer }
@@ -707,6 +712,268 @@ paths:
         "403": { description: "`forbidden`: not an admin or a tenant operator." }
         "404":
           description: "`entry_not_found`: the tenant has no ontology, a change names no in-force entry, a move names a parent that cannot hold the entry, or a proposal id is not an open proposal of the tenant's ontology."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "503": { description: "`unavailable`: no SQL Memory on this server." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /v1/_ontology/rollback:
+    post:
+      tags: [documents]
+      summary: Roll the tenant ontology back to a release.
+      description: |
+        Applies the plan of `{"op": "release", "seq": N}` (POST /v1/_ontology/plan)
+        so the ontology in force declares what release N declared (RFC GQ P5.7,
+        D8). Never automatic: the plan is computed again and the call is refused
+        unless `plan_fingerprint` is its fingerprint. The writes go through the
+        ontology's own guards (locks, the delete refusal, the rename job): an
+        entry added since the release is deleted only when nothing rests on it,
+        else retired; an entry removed since is added back under a new chunk id;
+        a class rename is carried by the rename job, and refused as a whole when
+        the job cannot carry it. Before each write the ontology must be what the
+        previous one left; a write by anyone else stops the rollback. A rollback
+        that applied takes a `rollback` release. `matches` says whether the
+        content version in force is now the release's (it is not after an entry
+        is added back, or a class renamed through the job keeps `@renamed_from`).
+        For a tenant operator (`substrate:tenant`, its own tenant) or an admin
+        (`?tenant=` focuses another).
+      operationId: rollbackOntology
+      parameters:
+        - name: tenant
+          in: query
+          required: false
+          description: An admin's focus on another tenant; ignored for anyone else.
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [seq, plan_fingerprint]
+              additionalProperties: false
+              properties:
+                seq: { type: integer, minimum: 1, description: "The release to roll back to." }
+                plan_fingerprint: { type: string, description: "The fingerprint of the plan of `{op: release, seq}`." }
+      responses:
+        "200":
+          description: The rollback was applied (or there was nothing to change).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tenant: { type: string }
+                  rollback:
+                    type: object
+                    properties:
+                      release: { type: integer }
+                      release_content_version: { type: string }
+                      content_version: { type: string, description: "The content version in force after the rollback." }
+                      matches: { type: boolean }
+                      risk: { type: string, enum: [destroys, stales, none] }
+                      applied:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            op: { type: string }
+                            entry: { type: string }
+                            name: { type: string }
+                            new_id: { type: string, description: "add: the chunk the entry was added back as." }
+                      rename_jobs: { type: array, items: { type: object } }
+                      rollback_release: { type: integer }
+                      notes: { type: array, items: { type: string } }
+                      warnings: { type: array, items: { type: string } }
+        "400":
+          description: "`invalid_body` or `invalid_request` (no seq, or a rollback that cannot be planned)."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "403": { description: "`forbidden`: not an admin or a tenant operator." }
+        "404": { description: "`entry_not_found`: no such complete release, or no ontology." }
+        "409":
+          description: "`plan_required` / `plan_stale` (the body carries the current `fingerprint`), `rename_job_pending`, `entry_locked`, or `partially_applied` (the body's `applied` lists the writes made before one was refused)."
+        "422": { description: "`invalid_request`: a write of the rollback was refused before anything was written." }
+        "503": { description: "`unavailable`: no SQL Memory on this server, or the ontology moved while the rollback was planned." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /v1/_ontology/job:
+    get:
+      tags: [documents]
+      summary: Read the tenant's ontology job.
+      description: |
+        A class rename something rests on, and a concept rename or move that moves
+        a tag, start a job that carries the change through the stored rows of the
+        tenant scope and every user and agent scope (RFC GQ P5). Each ontology
+        write that moves a name or a tag first gives an unfinished job a slice;
+        this reads where the job is. Returns the unfinished job, else the one
+        updated last, else `job: null`. Reads only. For a tenant operator
+        (`substrate:tenant`, its own tenant) or an admin (`?tenant=` focuses
+        another).
+      operationId: getOntologyJob
+      parameters:
+        - { $ref: "#/components/parameters/OntologyReleaseTenant" }
+      responses:
+        "200":
+          description: The job.
+          content: { application/json: { schema: { $ref: "#/components/schemas/OntologyJobResult" } } }
+        "403": { description: "`forbidden`: not an admin or a tenant operator." }
+        "503": { description: "`unavailable`: no SQL Memory on this server." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /v1/_ontology/job/resume:
+    post:
+      tags: [documents]
+      summary: Give the tenant's unfinished ontology job a slice of work.
+      description: |
+        Runs the unfinished job for one slice (about 20 seconds) under the
+        ontology rename lease, from the scope and step it is at, exactly as the
+        next class rename or concept move would before its own change. A job
+        whose change never reached the ontology is marked `abandoned`. Answers
+        with the job as the slice left it; call again while it is unfinished. For
+        a tenant operator or an admin, as the status read.
+      operationId: resumeOntologyJob
+      parameters:
+        - { $ref: "#/components/parameters/OntologyReleaseTenant" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [id]
+              properties:
+                id: { type: string, minLength: 1, description: "Required: the job's id from the status read. The resume is refused (job_not_found) unless that job is the one still unfinished, so a resume aimed at a job that has since finished cannot carry on a newer one." }
+      responses:
+        "200":
+          description: The job after its slice.
+          content: { application/json: { schema: { $ref: "#/components/schemas/OntologyJobResult" } } }
+        "400":
+          description: "`invalid_body`: not JSON, an unknown field, or no `id` (a missing body, `{}` and an empty `id` alike)."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "403": { description: "`forbidden`: not an admin or a tenant operator." }
+        "404": { description: "`job_not_found`: no unfinished job, or not the one `id` names." }
+        "409": { description: "`job_busy`: a class rename or concept move is being checked or carried out right now." }
+        "503": { description: "`unavailable`: no SQL Memory on this server." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /v1/_ontology/releases:
+    get:
+      tags: [documents]
+      summary: List the tenant ontology's releases, newest first.
+      description: |
+        A release is a copy of the tenant ontology taken when it is confirmed
+        (`confirm`), when an accepted change is applied (`apply`) or rolled back
+        (`rollback`), and before either when the ontology changed without one
+        (`catch_up`) (RFC GQ P3). Every row a fact, statement or annotation was
+        written under records a content version; the release of that version says
+        what it declared. The newest 50 are kept; an incomplete copy is never
+        listed. Reads only. For a tenant operator (`substrate:tenant`, its own
+        tenant) or an admin (`?tenant=` focuses another); not open to a tenant's
+        members, since a release keeps text an edit or an erasure removed.
+      operationId: listOntologyReleases
+      parameters:
+        - { $ref: "#/components/parameters/OntologyReleaseTenant" }
+      responses:
+        "200":
+          description: The releases.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tenant: { type: string }
+                  releases: { type: array, items: { $ref: "#/components/schemas/OntologyRelease" } }
+        "403": { description: "`forbidden`: not an admin or a tenant operator." }
+        "503": { description: "`unavailable`: no SQL Memory on this server." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /v1/_ontology/releases/diff:
+    get:
+      tags: [documents]
+      summary: Compare two ontology releases, or a release with the ontology in force.
+      description: |
+        Both sides are read with the reader the ontology in force is read with,
+        and their in-force entries are matched by chunk id: a rename is one
+        changed entry, never an add and a remove. Each entry that differs is
+        `added`, `removed` or `changed`; a changed one lists what changed
+        (`renamed`, `moved`, `kind`, `status`, `meaning`, `directives`) with its
+        state before and after. Proposals, the Review section, section headers
+        and sibling order are not compared, as the content version does not
+        count them. Entries are ordered by kind, then name. Reads only; the same
+        callers as the list.
+      operationId: diffOntologyReleases
+      parameters:
+        - { $ref: "#/components/parameters/OntologyReleaseTenant" }
+        - name: from
+          in: query
+          required: true
+          description: The earlier side, a release's seq.
+          schema: { type: integer, minimum: 1 }
+        - name: to
+          in: query
+          required: false
+          description: The later side, a release's seq, or `current` (the default) for the ontology as it stands.
+          schema: { type: string }
+      responses:
+        "200":
+          description: The differences.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tenant: { type: string }
+                  from: { $ref: "#/components/schemas/OntologyDiffSide" }
+                  to: { $ref: "#/components/schemas/OntologyDiffSide" }
+                  changes:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        chunk_id: { type: string }
+                        kind: { type: string, enum: [class, grammar, relation, scheme, concept, instance] }
+                        change: { type: string, enum: [added, removed, changed, erased], description: "erased: a subject erasure redacted the entry from a release on either side; it carries no before or after and is not compared." }
+                        changed: { type: array, items: { type: string, enum: [renamed, moved, kind, status, meaning, directives] } }
+                        before: { $ref: "#/components/schemas/OntologyEntryState" }
+                        after: { $ref: "#/components/schemas/OntologyEntryState" }
+                  issues: { type: array, items: { type: string }, description: "What a side could not read: entries a release copied under a proposal it did not copy, a body that could not be read." }
+        "400":
+          description: "`invalid_request`: from missing or not a positive integer, or to neither one nor `current`."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "403": { description: "`forbidden`: not an admin or a tenant operator." }
+        "404":
+          description: "`release_not_found`: a side names no complete release, or to is current and the tenant has no ontology document."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "503": { description: "`unavailable`: no SQL Memory on this server." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /v1/_ontology/releases/{seq}:
+    get:
+      tags: [documents]
+      summary: Read one ontology release.
+      description: |
+        Its header, the plan summary of the change it applied (an `apply`
+        release) and the ontology it copied, rendered as Markdown (a heading
+        per chunk, its body verbatim). Reads only; the same callers as the list.
+      operationId: getOntologyRelease
+      parameters:
+        - { $ref: "#/components/parameters/OntologyReleaseTenant" }
+        - name: seq
+          in: path
+          required: true
+          schema: { type: integer, minimum: 1 }
+      responses:
+        "200":
+          description: The release.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tenant: { type: string }
+                  release: { $ref: "#/components/schemas/OntologyRelease" }
+                  plan_summary: { type: object, description: "An apply release's accept report (at most 8 KiB, else {truncated, bytes}); absent otherwise." }
+                  export_md: { type: string }
+        "400":
+          description: "`invalid_request`: seq is not a positive integer."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "403": { description: "`forbidden`: not an admin or a tenant operator." }
+        "404":
+          description: "`release_not_found`: no complete release has that seq."
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
         "503": { description: "`unavailable`: no SQL Memory on this server." }
         "401": { $ref: "#/components/responses/Unauthorized" }
@@ -760,7 +1027,7 @@ paths:
           description: "`not_a_proposal`: no proposal with that chunk id in this tenant's ontology."
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
         "409":
-          description: "`not_pending` (the proposal was already rejected); `entry_locked` (the entry, or one under it, carries @locked); `rename_job_pending` (renaming a class something rests on waits for the rename job, RFC GQ P5); `target_changed` (the entry was edited while the accept ran; nothing was applied, accept again); `entry_retired`; `plan_required` / `plan_stale` (the change needs the fingerprint of a current plan; the body's `fingerprint` is the current one). Each of these wrote nothing. `partially_applied` is the exception: the entry's update was written and its move was not (the ontology changed between them, or the move failed); the body's `applied` says what was written, the change is recorded, and the proposal stays — do not retry it; reject it and finish the move in the editor."
+          description: "`not_pending` (the proposal was already rejected); `entry_locked` (the entry, or one under it, carries @locked); `rename_job_pending` (renaming a class something rests on is refused while the plan cannot count every user and agent scope, RFC GQ P5); `target_changed` (the entry was edited while the accept ran; nothing was applied, accept again); `entry_retired`; `plan_required` / `plan_stale` (the change needs the fingerprint of a current plan; the body's `fingerprint` is the current one). Each of these wrote nothing. `partially_applied` is the exception: the entry's update was written and its move was not (the ontology changed between them, or the move failed); the body's `applied` says what was written, the change is recorded, and the proposal stays — do not retry it; reject it and finish the move in the editor."
           content:
             application/json:
               schema:
@@ -2676,6 +2943,12 @@ components:
       required: false
       schema: { type: string }
       description: The tenant to act on. Required for an auth:manage token; a tenant operator may name only its own.
+    OntologyReleaseTenant:
+      name: tenant
+      in: query
+      required: false
+      schema: { type: string }
+      description: An admin's focus on another tenant; ignored for anyone else.
     Scope:
       name: scope
       in: path
@@ -2805,6 +3078,103 @@ components:
         code: { type: string }
         error: { type: string }
       required: [code, error]
+    OntologyRelease:
+      description: One complete release of the tenant ontology (RFC GQ P3).
+      type: object
+      properties:
+        seq: { type: integer }
+        content_version: { type: string, description: "What the ontology declared then, as stamped on the rows written under it." }
+        fingerprint: { type: string, description: "The plan fingerprint it had." }
+        reason: { type: string, enum: [confirm, apply, rollback, catch_up] }
+        actor: { type: string }
+        created_at: { type: integer, description: Unix nanoseconds. }
+        entries: { type: integer, description: How many chunks of the ontology document it copied. }
+        redacted: { type: boolean, description: "true once a subject erasure changed the release (an entry or its plan summary); content_version stays as recorded, so its copy no longer hashes to it. Absent otherwise." }
+    OntologyJob:
+      description: |
+        A job carrying an ontology change through stored rows (RFC GQ P5): a class
+        rename (`class_rename`) or a concept re-tag (`concept_retag`). It walks the
+        tenant scope, then every user and agent scope of the tenant, step by step.
+      type: object
+      properties:
+        id: { type: string }
+        kind: { type: string, enum: [class_rename, concept_retag] }
+        entry: { type: string, description: "The renamed or moved entry's chunk id." }
+        from: { type: array, items: { type: string }, description: "The old names (a class rename) or the old tags (a re-tag)." }
+        to: { type: string, description: "The new name; for a re-tag the new tags joined by \", \"." }
+        to_tags: { type: array, items: { type: string }, description: "A re-tag's new tags, index-aligned with from." }
+        state: { type: string, enum: [pending, running, blocked, done, abandoned] }
+        step: { type: string, description: "The step it is at; absent once done." }
+        done: { type: object, additionalProperties: { type: integer }, description: Rows rewritten so far, by step. }
+        error: { type: string, description: "Why a blocked job cannot go on. In a user or agent scope it names only the kind of scope and the step." }
+        remaining: { type: integer, description: "Rows still under an old name in the scope the job is at." }
+        scope: { type: string, enum: [tenant, user, agent], description: The kind of scope the job is at. }
+        scopes_done: { type: integer }
+        scopes_total: { type: integer, description: "The scopes the job walks; set by the status read and the resume." }
+        created_at: { type: integer, description: "Unix nanoseconds; set by the status read and the resume." }
+        updated_at: { type: integer, description: "Unix nanoseconds; set by the status read and the resume." }
+    OntologyJobResult:
+      type: object
+      properties:
+        tenant: { type: string }
+        job:
+          description: The unfinished job, else the one updated last; null when the tenant never had one.
+          oneOf: [{ $ref: "#/components/schemas/OntologyJob" }, { type: "null" }]
+    OntologyRenameJobPlan:
+      description: "What the ontology job a change would start would do: the class-rename job for a rename of a class something rests on (kind class_rename), the concept re-tag job for a concept rename or move or a scheme rename that moves a tag (kind concept_retag, with tag_moves); absent for every other change."
+      type: object
+      properties:
+        kind: { type: string, enum: [class_rename, concept_retag] }
+        tag_moves:
+          type: array
+          description: "concept_retag: the tags the change moves, the topmost only. Every tag equal to from, or under it, becomes to with the same rest."
+          items:
+            type: object
+            properties:
+              from: { type: string }
+              to: { type: string }
+        steps:
+          type: array
+          items:
+            type: object
+            properties:
+              name: { type: string }
+              tenant_scope: { type: integer }
+              other_scopes: { type: integer }
+        runnable: { type: boolean }
+        blocked: { type: array, items: { type: string }, description: "Why the job cannot carry the rename (rename_job_pending)." }
+        collisions:
+          type: array
+          description: "Stored keys that would collide under the new name (rename_identity_collision): the tenant scope's first five."
+          items:
+            type: object
+            properties:
+              column: { type: string, enum: [identity_key, natural_key] }
+              key: { type: string }
+              into: { type: string }
+              holder: { type: string }
+        collisions_total: { type: integer }
+        collisions_other_scopes: { type: integer, description: Counted in user and agent scopes, never listed. }
+        scopes_not_counted: { type: integer }
+        running: { $ref: "#/components/schemas/OntologyJob" }
+        notes: { type: array, items: { type: string } }
+    OntologyDiffSide:
+      type: object
+      properties:
+        seq: { type: integer, description: The release; absent for the ontology in force. }
+        current: { type: boolean, description: true for the ontology in force. }
+        content_version: { type: string }
+        redacted: { type: boolean, description: "true when the release on this side was changed by a subject erasure." }
+    OntologyEntryState:
+      description: An entry as one side of a diff declares it.
+      type: object
+      properties:
+        name: { type: string }
+        parent: { type: string, description: "The chunk of the entry it sits under (superclass, parent kind, broader concept or scheme, parent instance, a grammar's class); absent at the top of its section." }
+        parent_name: { type: string }
+        status: { type: string, description: "retired, or absent when in force." }
+        meaning: { type: string }
+        directives: { type: object, description: "The entry's parsed declaration without its name, status, meaning and parent." }
     TenantPolicy:
       description: A tenant's gate policy (RFC FA P5).
       type: object
@@ -3092,7 +3462,7 @@ components:
         natural_key: { type: string }
         supersedes_id: { type: string }
         revision: { type: integer, description: "update_chunk optimistic concurrency / get_version target." }
-        plan_fingerprint: { type: string, description: "update_chunk / move_chunk on an entry of the tenant ontology that something rests on (RFC GQ P2.4): the fingerprint of a plan of the change (POST /v1/_ontology/plan). Needed to rename it, retire it, move it under another parent or change any of its directives; without it POST /v1/_document answers 409 plan_required, with one that is not current 409 plan_stale, each body carrying the current fingerprint. An edit of the meaning alone, and any change to an entry nothing rests on, needs none. A class something rests on is not renamed at all until the rename job exists (RFC GQ P5): with or without a fingerprint the update is refused, 422 with rename_job_pending in its error." }
+        plan_fingerprint: { type: string, description: "update_chunk / move_chunk on an entry of the tenant ontology that something rests on (RFC GQ P2.4): the fingerprint of a plan of the change (POST /v1/_ontology/plan). Needed to rename it, retire it, move it under another parent or change any of its directives; without it POST /v1/_document answers 409 plan_required, with one that is not current 409 plan_stale, each body carrying the current fingerprint. An edit of the meaning alone, and any change to an entry nothing rests on, needs none. Renaming a class something rests on starts the rename job (RFC GQ P5), which carries the new name through every scope; while the plan cannot count every scope the update is refused, with or without a fingerprint, 422 with rename_job_pending in its error." }
         from_revision: { type: integer }
         to_revision: { type: integer }
         query: { type: string }
@@ -3150,6 +3520,12 @@ components:
         resource_too: { type: boolean }
         with_summary: { type: boolean, description: "ls (tenant scope): add each entry's annotation as summary." }
         summary_chars: { type: integer, description: "ls with_summary: the most abstract characters the page carries." }
+        limit: { type: integer, description: "ls: entries per page (default 500, at most 5000)." }
+        cursor: { type: string, description: "ls: the next_cursor of the previous page. Opaque." }
+        with_counts: { type: boolean, description: "ls (one level): add documents to each directory entry and to a document entry with names below it — the documents the caller may read named at or under it, each once, exact to 10000, then documents_capped. Absent where not computable." }
+        name_contains: { type: string, maxLength: 256, description: "ls (one level): keep only entries with a document at or under them whose Path name or title contains this, ignoring case; % and _ are literal." }
+        type: { type: string, maxLength: 256, description: "ls (one level): filter by the document's type, including its subtypes." }
+        status: { type: string, maxLength: 256, description: "ls (one level): filter by the document's exact status." }
     # CalcToolInput mirrors the Calc tool's InputSchema() less the fields a
     # caller with no run may not send (`from`, `to`); its properties are
     # drift-tested against the live tool schema (internal/api/http/openapi_test.go).

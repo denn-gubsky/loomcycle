@@ -83,6 +83,7 @@ from .events import (
     UserInput,
     LimitInfo,
     FileCapturedInfo,
+    SurfaceInfo,
     TranscriptionInfo,
     AdmissionInfo,
     ErrorInfo,
@@ -132,6 +133,7 @@ __all__ = [
     "UserInput",
     "LimitInfo",
     "FileCapturedInfo",
+    "SurfaceInfo",
     "TranscriptionInfo",
     "AdmissionInfo",
     "ErrorInfo",
@@ -163,4 +165,4 @@ __all__ = [
     "verify_loomcycle_delivery",
 ]
 
-__version__ = "1.168.0"
+__version__ = "1.170.0"

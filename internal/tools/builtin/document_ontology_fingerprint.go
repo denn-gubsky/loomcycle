@@ -34,10 +34,13 @@ package builtin
 // guardOntologyWrite refuses on the ontology before the handler runs. It runs after the
 // lock checks, so a locked entry answers entry_locked, which no fingerprint lifts.
 //
-// A CLASS RENAME something rests on is refused outright (rename_job_pending), with or
-// without a fingerprint, until RFC GQ P5 carries the new name through stored data; the
-// accept path refuses it the same way (planChangeAccept). A class nothing rests on, a
-// relation and a concept still rename with the plan.
+// A CLASS RENAME something rests on is carried through stored data by the rename job
+// (document_ontology_rename_job.go), with the plan's fingerprint like any stales change.
+// One the job cannot carry yet — rows in user and agent scopes, mentions of the class
+// elsewhere in the ontology, an incomplete count — is refused outright
+// (rename_job_pending), with or without a fingerprint, and the accept path refuses it the
+// same way (planChangeAccept). A class nothing rests on, a relation and a concept still
+// rename with the plan.
 //
 // THE PLAN DECIDES, NOT A SECOND RULE. Whether a change needs a fingerprint is the risk
 // the plan reports for it, so the refusal and the plan the caller reads cannot
@@ -79,8 +82,8 @@ const (
 	planRequiredCode = "plan_required"
 	planStaleCode    = "plan_stale"
 	// renameJobPendingCode refuses renaming a class something rests on, by any path,
-	// until RFC GQ P5's rename job carries the new name through stored data (Q4 and the
-	// owner's ruling of 2026-11-20). No fingerprint lifts it.
+	// while the rename job cannot carry the new name through the stored data (Q4, the
+	// owner's ruling of 2026-11-20, and RFC GQ P5.3). No fingerprint lifts it.
 	renameJobPendingCode = "rename_job_pending"
 )
 
@@ -112,8 +115,10 @@ func OntologyPlanRefusalCode(text string, info *tools.ErrorInfo) (string, bool) 
 // ontologyUpdatePlanRefusal is update_chunk's check: the changes the update makes to an
 // in-force entry of the tenant ontology, gated on the plan. nil outside the ontology,
 // for a chunk that is not an entry, and for an update that renames, retires and
-// re-declares nothing. Fails closed.
-func (d *Document) ontologyUpdatePlanRefusal(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, row chunkRow, in docInput, present map[string]json.RawMessage) *tools.Result {
+// re-declares nothing. Fails closed. A class rename the rename job will carry is
+// admitted with *rename set: the caller holds its lease until it releases it.
+func (d *Document) ontologyUpdatePlanRefusal(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, row chunkRow, in docInput,
+	present map[string]json.RawMessage, rename **renameJobStart) *tools.Result {
 	_, hasTitle := present["title"]
 	_, hasBody := present["body"]
 	_, hasFields := present["fields"]
@@ -201,54 +206,52 @@ func (d *Document) ontologyUpdatePlanRefusal(ctx context.Context, key sqlmem.Sco
 			changes = append(changes, connector.OntologyChange{Op: connector.OntologyPlanEdit, Entry: e.ChunkID, Body: in.Body})
 		}
 	}
+	var start *renameJobStart
 	if e.Kind == planKindClass {
 		for _, ch := range changes {
 			if ch.Op != connector.OntologyPlanRename {
 				continue
 			}
-			// Before the fingerprint: a current plan does not make the rename safe, since
-			// nothing yet rewrites the stored types, identity and subject keys.
-			if r := d.classRenameRefusal(ctx, key, mscope, "update_chunk", ch); r != nil {
+			// Before the fingerprint: a current plan does not make a rename safe that the
+			// rename job cannot carry through the stored rows (document_ontology_rename_job.go).
+			s, r := d.classRenameGate(ctx, key, mscope, "update_chunk", ch)
+			if r != nil {
 				return r
 			}
+			start = s
 		}
 	}
-	return d.ontologyPlanGate(ctx, key, mscope, "update_chunk", read.DocumentID, changes, in.PlanFingerprint)
-}
-
-// classRenameRefusal is the rename_job_pending refusal of a rename of a class something
-// rests on (as the plan finds it: risk not none, or not every scope counted), nil for
-// one nothing rests on. Fails closed.
-func (d *Document) classRenameRefusal(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, op string, rename connector.OntologyChange) *tools.Result {
-	plan, err := d.planOntologyAt(ctx, key, mscope, []connector.OntologyChange{rename})
-	if err != nil {
-		return planGateError(op, err)
+	if r := d.ontologyPlanGate(ctx, key, mscope, "update_chunk", read.DocumentID, changes, in.PlanFingerprint); r != nil {
+		start.release(ctx, d, key)
+		return r
 	}
-	if len(plan.Changes) != 1 {
-		return nil
-	}
-	why, pending := renameJobPending(plan.Changes[0], plan.Complete)
-	if !pending {
-		return nil
-	}
-	r := errBusiness(op+": "+renameJobPendingCode+": "+why+". Nothing was changed.",
-		"Keep the name until the rename job exists, or retire the class and declare the new name as a new class.")
-	return &r
+	*rename = start
+	return nil
 }
 
 // renameJobPending reports whether a planned change is a rename of a class something
-// rests on, and why, naming what rests on it. An incomplete plan counts as in use: an
-// incomplete zero is not "nothing rests on it".
+// rests on that the rename job cannot carry yet, and why, naming what rests on it. An
+// incomplete plan counts as in use: an incomplete zero is not "nothing rests on it".
+// The plan's job block decides (document_ontology_rename_job_plan.go): a rename it finds
+// nothing blocking is carried by the job (key collisions are refused apart, as
+// rename_identity_collision).
 func renameJobPending(ch connector.OntologyPlannedChange, complete bool) (string, bool) {
 	if ch.Op != connector.OntologyPlanRename || ch.Entry.Kind != planKindClass || (ch.Risk == connector.OntologyRiskNone && complete) {
+		return "", false
+	}
+	if ch.Job != nil && len(ch.Job.Blocked) == 0 && complete {
 		return "", false
 	}
 	what := affectedCounts(ch)
 	if what == "" {
 		what = "not every user and agent scope could be counted"
 	}
-	return "renaming the class " + strconv.Quote(ch.Entry.Name) + " needs the rename job (RFC GQ P5), which carries the new name " +
-		"through stored types, identity and subject keys; something rests on it (" + what + ")", true
+	why := "the job is not planned"
+	if ch.Job != nil {
+		why = strings.Join(ch.Job.Blocked, "; ")
+	}
+	return "renaming the class " + strconv.Quote(ch.Entry.Name) + " needs the rename job (RFC GQ P5), which cannot carry it yet (" +
+		why + "); something rests on it (" + what + ")", true
 }
 
 // renameJobPendingNote is the plan's report of a class rename that would be refused.

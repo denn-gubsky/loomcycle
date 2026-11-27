@@ -18,8 +18,8 @@ set -a; source "$HERE/.env.local"; set +a
 export LOOMCYCLE_DATA_DIR="${LOOMCYCLE_DATA_DIR:-$HERE/data}"
 export LOOMCYCLE_LISTEN_ADDR="${LOOMCYCLE_LISTEN_ADDR:-127.0.0.1:8787}"
 export LOOMCYCLE_ANTHROPIC_OAUTH_DEV_ENABLED="${LOOMCYCLE_ANTHROPIC_OAUTH_DEV_ENABLED:-1}"
-# Bash is required by both agents (coder: python3 stdio; validator: inline trial-division)
-export LOOMCYCLE_BASH_ENABLED="${LOOMCYCLE_BASH_ENABLED:-1}"
+# Both agents run Python in a workspace on the local worker (workspace.mode:
+# local in loomcycle.yaml): python3 must be on PATH.
 mkdir -p "$HERE/data" "$HERE/work"
 LOOMCYCLE_BIN="${LOOMCYCLE_BIN:-loomcycle}"
 command -v "$LOOMCYCLE_BIN" >/dev/null 2>&1 || \
@@ -28,6 +28,6 @@ command -v "$LOOMCYCLE_BIN" >/dev/null 2>&1 || \
     echo "  LOOMCYCLE_BIN=/tmp/loomcycle-dev ./run.sh serve" >&2
     exit 127; }
 # cd into the volume root so loomcycle.yaml `default: {path: .}` resolves to ./work.
-# primes.py is at ../primes.py from the coder's working directory (../primes.py = $HERE/primes.py).
+# primes.py is in ./work, the default volume; the coder copies it into a workspace.
 cd "$HERE/work"
 exec "$LOOMCYCLE_BIN" "$@" --config "$HERE/loomcycle.yaml"

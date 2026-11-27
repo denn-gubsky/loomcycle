@@ -1,7 +1,10 @@
 package builtin
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,6 +23,44 @@ import (
 
 // renderDefaultStyle is the tenant's default style document.
 const renderDefaultStyle = "/render/styles/default"
+
+// renderStyleArg is a render's style argument: a Path (or none), or the
+// style JSON itself passed on the call (RFC HB D5), which needs no Document
+// and so no SQL Memory.
+type renderStyleArg struct {
+	Name   string
+	Inline json.RawMessage
+}
+
+// errStyleArg is a style argument that is neither a string nor an object.
+var errStyleArg = errors.New("style must be a Path, none, or a style object")
+
+func (a *renderStyleArg) UnmarshalJSON(b []byte) error {
+	b = bytes.TrimSpace(b)
+	switch {
+	case bytes.Equal(b, []byte("null")):
+		*a = renderStyleArg{}
+	case len(b) > 0 && b[0] == '"':
+		var s string
+		if err := json.Unmarshal(b, &s); err != nil {
+			return errStyleArg
+		}
+		*a = renderStyleArg{Name: s}
+	case len(b) > 0 && b[0] == '{':
+		*a = renderStyleArg{Inline: append(json.RawMessage(nil), b...)}
+	default:
+		return errStyleArg
+	}
+	return nil
+}
+
+// renderPageText is page_text: a header and footer for this render only,
+// and the text {date} prints (RFC HB D3).
+type renderPageText struct {
+	Header *render.PageLine `json:"header"`
+	Footer *render.PageLine `json:"footer"`
+	Date   string           `json:"date"`
+}
 
 // styleRequest asks export_md for a style document's parts instead of
 // Markdown. Set only in process (docInput.styleRead is not decoded from
@@ -69,14 +110,17 @@ func (d *Document) readStyleDoc(ctx context.Context, key sqlmem.ScopeKey, mscope
 // with the same answer. A style that does not parse is refused naming the
 // field, the default included: a style never falls back.
 func (j *renderJob) resolveStyle(ctx context.Context, checkGrant bool) (tools.Result, bool) {
-	name := strings.TrimSpace(j.in.Style)
-	if name == "none" {
-		return tools.Result{}, true
-	}
+	name := strings.TrimSpace(j.in.Style.Name)
 	if j.format == render.FormatMarkdown {
-		if name != "" {
+		if name != "" && name != "none" || j.in.Style.Inline != nil || j.in.PageText != nil {
 			j.styleNote = "the style does not apply to Markdown"
 		}
+		return tools.Result{}, true
+	}
+	if j.in.Style.Inline != nil {
+		return j.inlineStyle()
+	}
+	if name == "none" {
 		return tools.Result{}, true
 	}
 	explicit := name != ""
@@ -125,15 +169,75 @@ func (j *renderJob) resolveStyle(ctx context.Context, checkGrant bool) (tools.Re
 	return tools.Result{}, true
 }
 
-// attachStyle gives the built Doc the resolved style and its logo.
+// inlineStyle parses a style passed on the call (RFC HB D5) with the same
+// strict keys and ranges as a style document. It has no logo, and its
+// source in the render log is the hash of its canonical JSON.
+func (j *renderJob) inlineStyle() (tools.Result, bool) {
+	st, err := render.ParseStyle(string(j.in.Style.Inline))
+	if err != nil {
+		return errValidation("render: the style passed on the call is not one: "+strings.TrimPrefix(err.Error(), "render: style: "),
+			"Correct the style (help topic File/render lists its keys), or pass style: none."), false
+	}
+	canon, err := json.Marshal(st)
+	if err != nil {
+		return errFrom("render: style: "+err.Error(), err), false
+	}
+	sum := sha256.Sum256(canon)
+	st.Source = "inline:" + hex.EncodeToString(sum[:])
+	j.style = st
+	return tools.Result{}, true
+}
+
+// checkPageText holds page_text to what a style's header and footer are
+// held to, before any work is done.
+func checkPageText(pt *renderPageText) (tools.Result, bool) {
+	if pt == nil {
+		return tools.Result{}, true
+	}
+	probe := render.Style{Version: render.StyleVersion, Date: pt.Date}
+	if pt.Header != nil {
+		probe.Header = *pt.Header
+	}
+	if pt.Footer != nil {
+		probe.Footer = *pt.Footer
+	}
+	if err := probe.Check(); err != nil {
+		return errValidation("render: page_text: "+strings.TrimPrefix(err.Error(), "render: style: "),
+			"header and footer are each one line or {left, center, right}, using only {page}, {pages}, {title} and {date} ({{ for a brace); date is one line of at most 40 characters."), false
+	}
+	return tools.Result{}, true
+}
+
+// attachStyle gives the built Doc the resolved style and its logo, with the
+// call's page text over the style's header and footer.
 func (j *renderJob) attachStyle(doc *render.Doc, rep *render.Report) {
 	if j.styleNote != "" {
 		rep.Notes = append(rep.Notes, j.styleNote)
 	}
-	if j.style == nil {
+	if j.style == nil && j.in.PageText == nil {
 		return
 	}
-	st := *j.style
+	st := render.Style{Version: render.StyleVersion}
+	if j.style != nil {
+		st = *j.style
+	}
+	if pt := j.in.PageText; pt != nil {
+		if pt.Header != nil {
+			st.Header = *pt.Header
+		}
+		if pt.Footer != nil {
+			st.Footer = *pt.Footer
+		}
+	}
+	// {date} prints the call's date, else the render day; set only when a
+	// line shows it, so the render log reuses a render across days when
+	// its page text does not.
+	if st.UsesDate() {
+		st.Date = j.date
+		if j.in.PageText != nil && j.in.PageText.Date != "" {
+			st.Date = j.in.PageText.Date
+		}
+	}
 	doc.Style = &st
 	if j.logo != nil && !doc.AddLogo(j.logoMT, j.logo) {
 		rep.Notes = append(rep.Notes, "the style's logo was left out: it is not a picture a file can show")

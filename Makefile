@@ -254,7 +254,7 @@ runtime-mock:
 # exemption, the run-timeout-bounded runaway) live in runtime-stress, which CI
 # does NOT run — see that target.
 runtime-codejs:
-	@set -e; for s in code-js channel-hooks git-tool workspace calc; do \
+	@set -e; for s in code-js channel-hooks git-tool workspace workspace-bundles workspace-git calc; do \
 		echo "=== runtime/$$s ==="; ./test/runtime/$$s/run.sh; \
 	done; echo "=== all runtime-codejs suites PASSED ==="
 

@@ -2188,6 +2188,15 @@ func eventToProto(ev providers.Event) *loomcyclepb.Event {
 			Ref: f.Ref, MediaType: f.MediaType, Size: f.Size, Sha256: f.SHA256, Origin: f.Origin, RunId: f.RunID,
 		}
 	}
+	if sf := ev.Surface; sf != nil {
+		out.Surface = &loomcyclepb.SurfaceInfo{
+			ExposureId: sf.ExposureID, Workspace: sf.Workspace, Title: sf.Title, Kind: sf.Kind,
+			BasePath: sf.BasePath, Reason: sf.Reason,
+		}
+		if sf.ExpiresAt != nil {
+			out.Surface.ExpiresAt = timestamppb.New(*sf.ExpiresAt)
+		}
+	}
 	if tr := ev.Transcription; tr != nil {
 		out.Transcription = &loomcyclepb.TranscriptionInfo{
 			Ref: tr.Ref, Out: tr.Out, Purpose: tr.Purpose, Engine: tr.Engine, Provider: tr.Provider, Model: tr.Model,

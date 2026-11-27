@@ -821,6 +821,30 @@ func (m *httpMockConnector) PlanOntology(context.Context, connector.PlanOntology
 	return connector.PlanOntologyResult{}, nil
 }
 
+func (m *httpMockConnector) ListOntologyReleases(context.Context, connector.ListOntologyReleasesRequest) (connector.ListOntologyReleasesResult, error) {
+	return connector.ListOntologyReleasesResult{}, nil
+}
+
+func (m *httpMockConnector) GetOntologyRelease(context.Context, connector.GetOntologyReleaseRequest) (connector.GetOntologyReleaseResult, error) {
+	return connector.GetOntologyReleaseResult{}, nil
+}
+
+func (m *httpMockConnector) DiffOntologyReleases(context.Context, connector.DiffOntologyReleasesRequest) (connector.DiffOntologyReleasesResult, error) {
+	return connector.DiffOntologyReleasesResult{}, nil
+}
+
+func (m *httpMockConnector) GetOntologyJob(context.Context, connector.GetOntologyJobRequest) (connector.OntologyJobResult, error) {
+	return connector.OntologyJobResult{}, nil
+}
+
+func (m *httpMockConnector) ResumeOntologyJob(context.Context, connector.ResumeOntologyJobRequest) (connector.OntologyJobResult, error) {
+	return connector.OntologyJobResult{}, nil
+}
+
+func (m *httpMockConnector) ApplyOntologyRollback(context.Context, connector.ApplyOntologyRollbackRequest) (connector.ApplyOntologyRollbackResult, error) {
+	return connector.ApplyOntologyRollbackResult{}, nil
+}
+
 func (m *httpMockConnector) ListReviewQueue(context.Context, connector.ListReviewQueueRequest) (connector.ListReviewQueueResult, error) {
 	return connector.ListReviewQueueResult{}, nil
 }

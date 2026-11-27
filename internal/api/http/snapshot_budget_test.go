@@ -224,7 +224,19 @@ func TestRestore_CarriedUsageIsNotInTheUsageReport(t *testing.T) {
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("GET /v1/_usage: %d %s", resp.StatusCode, b)
 		}
-		return string(b)
+		// detail_since is now minus the retention window, to the second:
+		// it moves with the clock, not with what was restored, so two
+		// reports either side of a second boundary differ in it alone.
+		var body map[string]json.RawMessage
+		if err := json.Unmarshal(b, &body); err != nil {
+			t.Fatalf("GET /v1/_usage: %v: %s", err, b)
+		}
+		delete(body, "detail_since")
+		out, err := json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(out)
 	}
 
 	before := report()

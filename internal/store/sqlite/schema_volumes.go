@@ -117,6 +117,8 @@ func volumesSection() schemaPlan {
 			opened_token   TEXT NOT NULL DEFAULT '',
 			last_used_at   INTEGER NOT NULL DEFAULT 0,
 			egress         TEXT NOT NULL DEFAULT '[]',
+			root           TEXT NOT NULL DEFAULT '',
+			git            TEXT NOT NULL DEFAULT '',
 			created_at     INTEGER NOT NULL,
 			updated_at     INTEGER NOT NULL,
 			UNIQUE (owner_run_id, name)
@@ -126,6 +128,28 @@ func volumesSection() schemaPlan {
 		// RFC GW P8: how a peer names a shared workspace, <name>@<agent_id>.
 		// Mirrors postgres migration 0136.
 		`CREATE INDEX IF NOT EXISTS workspaces_by_owner_agent ON workspaces (tenant_id, owner_agent_id, name)`,
+		// RFC GW P12: a durable workspace is one per (tenant, user, name).
+		// Mirrors postgres migration 0143.
+		`CREATE UNIQUE INDEX IF NOT EXISTS workspaces_durable_name ON workspaces (tenant_id, user_id, name) WHERE lifetime = 'durable'`,
+		// RFC GW P6 — workspace templates (§5.5): one row per template, its
+		// archive under the data directory. scope_id is the author's user id
+		// for a user template, '' for a tenant one. Mirrors postgres
+		// migration 0142.
+		`CREATE TABLE IF NOT EXISTS workspace_templates (
+			id          TEXT NOT NULL UNIQUE,
+			tenant_id   TEXT NOT NULL DEFAULT '',
+			scope       TEXT NOT NULL,
+			scope_id    TEXT NOT NULL DEFAULT '',
+			name        TEXT NOT NULL,
+			toolchains  TEXT NOT NULL DEFAULT '[]',
+			engine      TEXT NOT NULL DEFAULT '',
+			digest      TEXT NOT NULL,
+			bytes       INTEGER NOT NULL,
+			author_user TEXT NOT NULL DEFAULT '',
+			author_run  TEXT NOT NULL DEFAULT '',
+			created_at  INTEGER NOT NULL,
+			PRIMARY KEY (tenant_id, scope, scope_id, name)
+		)`,
 		// RFC GW P9 PR 4: a workspace's exposed ports (§5.3). Who may open
 		// one is read from its workspace's row on every request. Mirrors
 		// postgres migration 0141.

@@ -484,6 +484,118 @@ func OntologyPlanCode(err error) string {
 	return ""
 }
 
+// Reading ontology releases (Connector.ListOntologyReleases,
+// GetOntologyRelease, DiffOntologyReleases). Returned wrapped WithMessage;
+// OntologyReleaseCode names them.
+var (
+	// ErrOntologyReleaseInvalid — a malformed request: a sequence number that
+	// is not a positive integer, a diff without its from side.
+	ErrOntologyReleaseInvalid = errors.New("connector: invalid ontology release request")
+	// ErrOntologyReleaseForbidden — the caller is not an admin or a tenant
+	// operator: a release keeps the ontology's text after it was edited or
+	// erased, so it is read by the operator only.
+	ErrOntologyReleaseForbidden = errors.New("connector: ontology releases not permitted")
+	// ErrOntologyReleaseNotFound — no complete release has that sequence
+	// number, or (diff to current) the tenant has no ontology document.
+	ErrOntologyReleaseNotFound = errors.New("connector: no such ontology release")
+	// ErrOntologyReleaseUnavailable — this deployment has no SQL Memory.
+	ErrOntologyReleaseUnavailable = errors.New("connector: ontology releases need SQL Memory")
+)
+
+// OntologyReleaseCode is the stable wire code for a release-read refusal. ""
+// for an error that is none of the sentinels (an internal failure).
+func OntologyReleaseCode(err error) string {
+	for _, c := range []struct {
+		sentinel error
+		code     string
+	}{
+		{ErrOntologyReleaseInvalid, "invalid_request"},
+		{ErrOntologyReleaseForbidden, "forbidden"},
+		{ErrOntologyReleaseNotFound, "release_not_found"},
+		{ErrOntologyReleaseUnavailable, "unavailable"},
+	} {
+		if errors.Is(err, c.sentinel) {
+			return c.code
+		}
+	}
+	return ""
+}
+
+// Reading and resuming the tenant's ontology job (Connector.GetOntologyJob,
+// ResumeOntologyJob). Returned wrapped WithMessage; OntologyJobCode names them.
+var (
+	// ErrOntologyJobForbidden — the caller is not an admin or a tenant operator:
+	// the job rewrites stored rows in every scope of the tenant, the operator's to
+	// drive.
+	ErrOntologyJobForbidden = errors.New("connector: ontology jobs not permitted")
+	// ErrOntologyJobNotFound — a resume found no unfinished job, or not the one
+	// its id named.
+	ErrOntologyJobNotFound = errors.New("connector: no such unfinished ontology job")
+	// ErrOntologyJobBusy — another call holds the ontology rename lease (a rename
+	// is being checked or written, or the job is being given a slice).
+	ErrOntologyJobBusy = errors.New("connector: the ontology job is busy")
+	// ErrOntologyJobUnavailable — this deployment has no SQL Memory.
+	ErrOntologyJobUnavailable = errors.New("connector: ontology jobs need SQL Memory")
+	// ErrOntologyJobIDRequired — a resume named no job. It must: a resume aimed at a
+	// job that has since finished would otherwise carry on a newer one.
+	ErrOntologyJobIDRequired = errors.New("connector: a resume needs the job's id")
+)
+
+// OntologyJobCode is the stable wire code for a job refusal. "" for an error that
+// is none of the sentinels (an internal failure).
+func OntologyJobCode(err error) string {
+	for _, c := range []struct {
+		sentinel error
+		code     string
+	}{
+		{ErrOntologyJobForbidden, "forbidden"},
+		{ErrOntologyJobNotFound, "job_not_found"},
+		{ErrOntologyJobBusy, "job_busy"},
+		{ErrOntologyJobUnavailable, "unavailable"},
+		{ErrOntologyJobIDRequired, "invalid_request"},
+	} {
+		if errors.Is(err, c.sentinel) {
+			return c.code
+		}
+	}
+	return ""
+}
+
+// A rollback that did not complete (Connector.ApplyOntologyRollback,
+// OntologyRollbackRefusal.Code). The plan's own refusals — a release that does
+// not exist, a caller that may not plan, no SQL Memory — are the ErrOntologyPlan*
+// sentinels instead.
+const (
+	// RollbackPlanRequired / RollbackPlanStale — no fingerprint, or not the
+	// ontology's current one; the refusal carries the current one. Nothing was
+	// written.
+	RollbackPlanRequired = "plan_required"
+	RollbackPlanStale    = "plan_stale"
+	// RollbackRenameJobPending — a class rename of the rollback the rename job
+	// cannot carry now, or that would collide stored keys. Nothing was written.
+	RollbackRenameJobPending = "rename_job_pending"
+	// RollbackEntryLocked — an entry the rollback would change is locked.
+	RollbackEntryLocked = "entry_locked"
+	// RollbackInvalid — a write of the rollback was refused before anything was
+	// written (HTTP 422).
+	RollbackInvalid = "invalid_request"
+	// RollbackPartiallyApplied — some writes were made, then one was refused or
+	// the ontology changed under the rollback; the refusal lists those made.
+	RollbackPartiallyApplied = "partially_applied"
+)
+
+// OntologyRollbackRefusal is a rollback that did not complete, with what every
+// transport answers about it beside the code: Fingerprint (plan_required,
+// plan_stale) and Applied (partially_applied).
+type OntologyRollbackRefusal struct {
+	Code        string
+	Message     string
+	Fingerprint string
+	Applied     []OntologyRollbackStep
+}
+
+func (e *OntologyRollbackRefusal) Error() string { return e.Message }
+
 // Reviewing statements in bulk (Connector.ListReviewQueue, RuleStatements,
 // RevertRuling). Each is returned wrapped WithMessage; StatementReviewCode
 // names the sentinel for the wire.

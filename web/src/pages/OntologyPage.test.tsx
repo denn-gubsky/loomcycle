@@ -81,13 +81,13 @@ async function settle() {
   for (let i = 0; i < 5; i++) await act(async () => new Promise((r) => setTimeout(r, 0)));
 }
 
-async function mount(principal: Principal): Promise<{ root: Root; el: HTMLElement }> {
+async function mount(principal: Principal, entry = "/"): Promise<{ root: Root; el: HTMLElement }> {
   const el = document.createElement("div");
   document.body.appendChild(el);
   const root = createRoot(el);
   await act(async () =>
     root.render(
-      <MemoryRouter>
+      <MemoryRouter initialEntries={[entry]}>
         <Routes>
           <Route element={<Outlet context={{ principal, userId: "" }} />}>
             <Route path="/" element={<OntologySection />} />
@@ -275,5 +275,443 @@ describe("OntologySection change proposal accept (RFC GQ P4.3)", () => {
     await act(async () => acceptButton(mounted!.el).click());
     await settle();
     expect(calls.some((c) => c.url.startsWith("/v1/_ontology/proposals"))).toBe(false);
+  });
+});
+
+describe("OntologySection releases (RFC GQ P3.7)", () => {
+  let mounted: { root: Root; el: HTMLElement } | null = null;
+  afterEach(() => {
+    if (mounted) act(() => mounted!.root.unmount());
+    mounted?.el.remove();
+    mounted = null;
+    vi.unstubAllGlobals();
+  });
+
+  const releases = [
+    { seq: 3, content_version: "cccccccccccccccc", fingerprint: "f3", reason: "apply", actor: "ops", created_at: 1764000000000000000, entries: 12 },
+    { seq: 2, content_version: "bbbbbbbbbbbbbbbb", fingerprint: "f2", reason: "confirm", created_at: 1763990000000000000, entries: 11, redacted: true },
+  ];
+  const diffAnswer = {
+    tenant: "t",
+    from: { seq: 2, content_version: "bbbbbbbbbbbbbbbb" },
+    to: { seq: 3, content_version: "cccccccccccccccc" },
+    changes: [
+      {
+        chunk_id: "c-memo",
+        kind: "class",
+        change: "changed",
+        changed: ["renamed", "meaning"],
+        before: { name: "Memo", meaning: "a note", directives: {} },
+        after: { name: "Note", meaning: "a short note", directives: {} },
+      },
+    ],
+    issues: [],
+  };
+
+  // stubReleases answers the ontology and its release routes; refuse makes every
+  // release route answer 403 forbidden, as the runtime does for a member.
+  function stubReleases(calls: string[], refuse = false) {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        calls.push(url);
+        if (url.startsWith("/v1/_ontology/releases")) {
+          if (refuse) {
+            return new Response(JSON.stringify({ code: "forbidden", error: "ontology releases: operator only" }), {
+              status: 403,
+              statusText: "Forbidden",
+            });
+          }
+          if (url.startsWith("/v1/_ontology/releases/diff")) return new Response(JSON.stringify(diffAnswer), { status: 200 });
+          if (url === "/v1/_ontology/releases") return new Response(JSON.stringify({ tenant: "t", releases }), { status: 200 });
+          return new Response(
+            JSON.stringify({ tenant: "t", release: releases[0], export_md: "# Ontology\n\n## Note\n" }),
+            { status: 200 },
+          );
+        }
+        if (url.startsWith("/v1/_ontology")) {
+          return new Response(JSON.stringify({ ...state, content_version: "cccccccccccccccc" }), { status: 200 });
+        }
+        return new Response("404 page not found", { status: 404 });
+      }),
+    );
+  }
+
+  function buttonByText(el: HTMLElement, label: string): HTMLButtonElement {
+    const b = Array.from(el.querySelectorAll("button")).find((x) => x.textContent === label);
+    if (!b) throw new Error(`no button ${label}`);
+    return b;
+  }
+
+  it("lists each release with its reason, content version and actor, marking the one in force", async () => {
+    const calls: string[] = [];
+    stubReleases(calls);
+    mounted = await mount(operator, "/?section=releases");
+    const rows = Array.from(mounted.el.querySelectorAll("table.ontology-releases tbody tr"));
+    expect(rows.map((r) => r.querySelector("td")?.textContent)).toEqual(["3", "2"]);
+    expect(rows[0].textContent).toContain("change applied");
+    expect(rows[0].textContent).toContain("cccccccccccccccc in force");
+    expect(rows[0].textContent).toContain("ops");
+    expect(rows[1].textContent).toContain("confirmed");
+    expect(rows[1].textContent).not.toContain("in force");
+  });
+
+  it("marks a release a subject erasure redacted, and no other", async () => {
+    const calls: string[] = [];
+    stubReleases(calls);
+    mounted = await mount(operator, "/?section=releases");
+    const rows = Array.from(mounted.el.querySelectorAll("table.ontology-releases tbody tr"));
+    expect(rows[1].querySelector(".chunk-badge")?.textContent).toBe("redacted");
+    expect(rows[0].querySelector(".chunk-badge")).toBeNull();
+  });
+
+  it("diffs a release from the one before it and shows each changed field before and after", async () => {
+    const calls: string[] = [];
+    stubReleases(calls);
+    mounted = await mount(operator, "/?section=releases");
+    await act(async () => buttonByText(mounted!.el, "diff from 2").click());
+    await settle();
+    expect(calls).toContain("/v1/_ontology/releases/diff?from=2&to=3");
+    const diff = mounted.el.querySelector(".ontology-release-diff")!;
+    expect(diff.querySelector("h4")?.textContent).toBe("From release 2 to release 3: 1 changed, 0 added, 0 removed");
+    const cells = Array.from(diff.querySelectorAll("tbody tr")).map((tr) =>
+      Array.from(tr.querySelectorAll("td")).map((td) => td.textContent),
+    );
+    expect(cells).toEqual([
+      ["Note class · changed", "name", "Memo", "Note"],
+      ["meaning", "a note", "a short note"],
+    ]);
+  });
+
+  it("compares a release with the ontology in force and opens one as Markdown", async () => {
+    const calls: string[] = [];
+    stubReleases(calls);
+    mounted = await mount(operator, "/?section=releases");
+    await act(async () => buttonByText(mounted!.el, "Compare").click());
+    await settle();
+    expect(calls).toContain("/v1/_ontology/releases/diff?from=3&to=current");
+    await act(async () => Array.from(mounted!.el.querySelectorAll("button")).find((b) => b.textContent === "view")!.click());
+    await settle();
+    expect(calls).toContain("/v1/_ontology/releases/3");
+    expect(mounted.el.querySelector(".ontology-release-md")?.textContent).toContain("## Note");
+  });
+
+  it("shows a refusal as not permitted and offers no release", async () => {
+    stubReleases([], true);
+    mounted = await mount(member, "/?section=releases");
+    const alert = mounted.el.querySelector(".acl-denied");
+    expect(alert?.querySelector(".acl-denied-head")?.textContent).toBe("Not permitted");
+    expect(alert?.querySelector(".settings-muted")?.textContent).toBe("ontology releases: operator only");
+    expect(mounted.el.querySelector("table.ontology-releases")).toBeNull();
+    expect(mounted.el.querySelector(".settings-error")).toBeNull();
+  });
+
+  it("reads no release until the tab is opened", async () => {
+    const calls: string[] = [];
+    stubReleases(calls);
+    mounted = await mount(operator);
+    expect(calls.some((u) => u.startsWith("/v1/_ontology/releases"))).toBe(false);
+    expect(Array.from(mounted.el.querySelectorAll("[role=tab]")).map((t) => t.textContent)).toContain("releases");
+  });
+});
+
+describe("OntologySection rename job (RFC GQ P5.6)", () => {
+  let mounted: { root: Root; el: HTMLElement } | null = null;
+  afterEach(() => {
+    if (mounted) act(() => mounted!.root.unmount());
+    mounted?.el.remove();
+    mounted = null;
+    vi.unstubAllGlobals();
+  });
+
+  const running = {
+    id: "j1",
+    kind: "class_rename",
+    entry: "c-memo",
+    from: ["Memo"],
+    to: "Note",
+    state: "running",
+    step: "chunks_type",
+    done: { documents_type: 4 },
+    remaining: 12,
+    scope: "user",
+    scopes_done: 1,
+    scopes_total: 3,
+  };
+
+  // stubJob answers the ontology and its job routes: the status with job, a resume
+  // with resumed (or a 409 job_busy when resumed is null).
+  function stubJob(calls: Call[], job: unknown, resumed: unknown = { ...running, state: "done", step: "", scopes_done: 3 }) {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        calls.push({ url, body: init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : undefined });
+        if (url === "/v1/_ontology/job") return new Response(JSON.stringify({ tenant: "t", job }), { status: 200 });
+        if (url === "/v1/_ontology/job/resume") {
+          if (resumed === null) {
+            return new Response(JSON.stringify({ code: "job_busy", error: "a class rename is being checked right now" }), {
+              status: 409,
+              statusText: "Conflict",
+            });
+          }
+          return new Response(JSON.stringify({ tenant: "t", job: resumed }), { status: 200 });
+        }
+        if (url.startsWith("/v1/_ontology")) return new Response(JSON.stringify(state), { status: 200 });
+        return new Response("404 page not found", { status: 404 });
+      }),
+    );
+  }
+
+  const panel = (el: HTMLElement) => el.querySelector("[aria-label='ontology job']");
+
+  it("shows an unfinished job's progress to an operator and resumes it with its id", async () => {
+    const calls: Call[] = [];
+    stubJob(calls, running);
+    mounted = await mount(operator);
+    const p = panel(mounted.el);
+    expect(p?.textContent).toContain("Class rename: Memo → Note");
+    expect(p?.textContent).toContain("step chunks_type in the user scope · 1 of 3 scopes done · 12 rows left in this scope");
+    const resume = Array.from(p!.querySelectorAll("button")).find((b) => b.textContent === "Resume");
+    expect(resume).toBeDefined();
+    await act(async () => resume!.click());
+    await settle();
+    const post = calls.find((c) => c.url === "/v1/_ontology/job/resume");
+    expect(post?.body).toEqual({ id: "j1" });
+    expect(panel(mounted.el)?.textContent).toContain("finished");
+    expect(Array.from(panel(mounted.el)!.querySelectorAll("button")).map((b) => b.textContent)).not.toContain("Resume");
+  });
+
+  it("shows a blocked job's reason and a refused resume's code", async () => {
+    stubJob([], { ...running, state: "blocked", error: "a user scope: identity_keys: a row could not be rewritten" }, null);
+    mounted = await mount(operator);
+    expect(panel(mounted.el)?.textContent).toContain("a row could not be rewritten");
+    const resume = Array.from(panel(mounted.el)!.querySelectorAll("button")).find((b) => b.textContent === "Resume");
+    await act(async () => resume!.click());
+    await settle();
+    expect(panel(mounted.el)?.textContent).toContain("a class rename is being checked right now");
+  });
+
+  it("offers no resume for a finished job, and shows nothing without one", async () => {
+    stubJob([], { ...running, state: "done", step: "", scopes_done: 3 });
+    mounted = await mount(operator);
+    expect(panel(mounted.el)?.textContent).toContain("Last rename job");
+    expect(panel(mounted.el)?.querySelector("button")).toBeNull();
+    act(() => mounted!.root.unmount());
+    mounted.el.remove();
+    vi.unstubAllGlobals();
+
+    stubJob([], null);
+    mounted = await mount(operator);
+    expect(panel(mounted.el)).toBeNull();
+  });
+
+  it("reads no job for a member", async () => {
+    const calls: Call[] = [];
+    stubJob(calls, running);
+    mounted = await mount(member);
+    expect(calls.some((c) => c.url.startsWith("/v1/_ontology/job"))).toBe(false);
+    expect(panel(mounted.el)).toBeNull();
+  });
+});
+
+describe("OntologySection rollback to a release (RFC GQ P5.7)", () => {
+  let mounted: { root: Root; el: HTMLElement } | null = null;
+  afterEach(() => {
+    if (mounted) act(() => mounted!.root.unmount());
+    mounted?.el.remove();
+    mounted = null;
+    vi.unstubAllGlobals();
+  });
+
+  const releases = [
+    { seq: 3, content_version: "cccccccccccccccc", fingerprint: "f3", reason: "apply", created_at: 1764000000000000000, entries: 12 },
+    { seq: 2, content_version: "bbbbbbbbbbbbbbbb", fingerprint: "f2", reason: "confirm", created_at: 1763990000000000000, entries: 11 },
+  ];
+  const applied = [
+    { op: "rename", entry: "c-note", name: "Memo" },
+    { op: "add", entry: "c-old", name: "Ticket", new_id: "c-new" },
+  ];
+
+  // stubRollback answers the release list, each plan with the next fingerprint (fp1,
+  // fp2, …), and the rollback with rollback(fingerprint): a status and a body.
+  function stubRollback(calls: Call[], rollback: (fp: string) => [number, unknown]) {
+    let plans = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : undefined;
+        calls.push({ url, body });
+        if (url === "/v1/_ontology/releases") return new Response(JSON.stringify({ tenant: "t", releases }), { status: 200 });
+        if (url === "/v1/_ontology/job") return new Response(JSON.stringify({ tenant: "t", job: null }), { status: 200 });
+        if (url === "/v1/_ontology/plan") {
+          plans++;
+          const counts = { typed_documents: { n: 4, effect: "stale", tenant_scope: 4 } };
+          const changes = [
+            {
+              op: "rename",
+              entry: { chunk_id: "c-note", name: "Note", section: "classes", kind: "class" },
+              risk: "stales",
+              counts,
+              release: 2,
+            },
+            {
+              op: "add",
+              entry: { chunk_id: "c-old", name: "Ticket", section: "classes", kind: "class" },
+              risk: "none",
+              counts: {},
+              release: 2,
+              notes: ["added back under a new chunk id: no writer keeps a removed chunk's id (RFC GQ ruling Q6)"],
+            },
+          ];
+          return new Response(JSON.stringify({ tenant: "t", fingerprint: `fp${plans}`, complete: true, changes }), { status: 200 });
+        }
+        if (url === "/v1/_ontology/rollback") {
+          const [status, answer] = rollback(String(body?.plan_fingerprint));
+          return new Response(JSON.stringify(answer), { status });
+        }
+        if (url.startsWith("/v1/_ontology")) return new Response(JSON.stringify(state), { status: 200 });
+        return new Response("404 page not found", { status: 404 });
+      }),
+    );
+  }
+
+  const ok = (): [number, unknown] => [
+    200,
+    {
+      tenant: "t",
+      rollback: {
+        release: 2,
+        release_content_version: "bbbbbbbbbbbbbbbb",
+        content_version: "dddddddddddddddd",
+        matches: false,
+        risk: "stales",
+        applied,
+        rename_jobs: [{ id: "j9", kind: "class_rename", entry: "c-note", from: ["Note"], to: "Memo", state: "running", remaining: 4 }],
+        rollback_release: 5,
+      },
+    },
+  ];
+
+  function buttonByText(el: Element, label: string): HTMLButtonElement | undefined {
+    return Array.from(el.querySelectorAll("button")).find((x) => x.textContent === label);
+  }
+  const rowOfRelease = (el: HTMLElement, seq: number) =>
+    Array.from(el.querySelectorAll("table.ontology-releases tbody tr")).find(
+      (r) => r.querySelector("td")?.textContent === String(seq),
+    )!;
+  const planView = (el: HTMLElement) => el.querySelector("[aria-label='rollback plan']");
+  const result = (el: HTMLElement) => el.querySelector("[aria-label='rollback result']");
+
+  async function planTo2(el: HTMLElement) {
+    await act(async () => buttonByText(rowOfRelease(el, 2), "roll back to this release")!.click());
+    await settle();
+  }
+  async function apply(el: HTMLElement) {
+    await act(async () => buttonByText(planView(el)!, "Apply rollback to release 2")!.click());
+    await settle();
+  }
+
+  it("plans the rollback and shows every change with its risk and counts before anything is applied", async () => {
+    const calls: Call[] = [];
+    stubRollback(calls, ok);
+    mounted = await mount(operator, "/?section=releases");
+    await planTo2(mounted.el);
+    expect(calls.find((c) => c.url === "/v1/_ontology/plan")?.body).toEqual({ changes: [{ op: "release", seq: 2 }] });
+    expect(calls.some((c) => c.url === "/v1/_ontology/rollback")).toBe(false);
+    const p = planView(mounted.el)!;
+    const cells = Array.from(p.querySelectorAll("tbody tr")).map((tr) =>
+      Array.from(tr.querySelectorAll("td")).map((td) => td.textContent),
+    );
+    expect(cells[0].slice(0, 4)).toEqual(["rename", "Note class", "stales", "stale: typed documents 4"]);
+    expect(cells[1].slice(0, 4)).toEqual(["add", "Ticket class", "none", "nothing"]);
+    expect(cells[1][4]).toContain("added back under a new chunk id");
+    expect(p.querySelector("[role=alert]")?.textContent).toContain("stale");
+  });
+
+  it("applies with the fingerprint of the plan shown, and reports the release taken and why the version differs", async () => {
+    const calls: Call[] = [];
+    stubRollback(calls, ok);
+    mounted = await mount(operator, "/?section=releases");
+    const listReads = () => calls.filter((c) => c.url === "/v1/_ontology/releases").length;
+    const jobReads = () => calls.filter((c) => c.url === "/v1/_ontology/job").length;
+    const [lists, jobs] = [listReads(), jobReads()];
+    await planTo2(mounted.el);
+    await apply(mounted.el);
+    const posts = calls.filter((c) => c.url === "/v1/_ontology/rollback");
+    expect(posts.map((c) => c.body)).toEqual([{ seq: 2, plan_fingerprint: "fp1" }]);
+    const r = result(mounted.el)!;
+    expect(r.textContent).toContain("Rolled back to release 2");
+    expect(r.textContent).toContain("Release 5 was taken");
+    expect(r.textContent).toContain("added back under a new id");
+    expect(r.textContent).toContain("rename job");
+    expect(Array.from(r.querySelectorAll("li")).map((li) => li.textContent)).toEqual([
+      "rename Memo",
+      "add Ticket (added back as c-new)",
+    ]);
+    expect(planView(mounted.el)).toBeNull();
+    // The list and the job panel are read again: the rollback took a release and its
+    // class rename started a job.
+    expect(listReads()).toBe(lists + 1);
+    expect(jobReads()).toBe(jobs + 1);
+  });
+
+  it("plans again on plan_stale and shows the new plan without applying it", async () => {
+    const calls: Call[] = [];
+    stubRollback(calls, (fp) =>
+      fp === "fp1" ? [409, { code: "plan_stale", error: "the ontology changed since the plan", fingerprint: "fp-now" }] : ok(),
+    );
+    mounted = await mount(operator, "/?section=releases");
+    await planTo2(mounted.el);
+    await apply(mounted.el);
+    expect(calls.filter((c) => c.url === "/v1/_ontology/rollback")).toHaveLength(1);
+    expect(calls.filter((c) => c.url === "/v1/_ontology/plan")).toHaveLength(2);
+    const p = planView(mounted.el)!;
+    expect(p.querySelector("[role=status]")?.textContent).toContain("was not applied");
+    expect(result(mounted.el)).toBeNull();
+    // The confirm now carries the new plan's fingerprint.
+    await apply(mounted.el);
+    expect(calls.filter((c) => c.url === "/v1/_ontology/rollback").map((c) => c.body?.plan_fingerprint)).toEqual([
+      "fp1",
+      "fp2",
+    ]);
+  });
+
+  it("shows what a partly applied rollback wrote and why it stopped", async () => {
+    stubRollback([], () => [
+      409,
+      { code: "partially_applied", error: "another write changed the ontology; plan it again", applied: [applied[0]] },
+    ]);
+    mounted = await mount(operator, "/?section=releases");
+    await planTo2(mounted.el);
+    await apply(mounted.el);
+    const r = result(mounted.el)!;
+    expect(r.querySelector("h4")?.textContent).toContain("stopped part of the way");
+    expect(r.querySelector(".settings-error")?.textContent).toBe(
+      "partially_applied — another write changed the ontology; plan it again",
+    );
+    expect(Array.from(r.querySelectorAll("li")).map((li) => li.textContent)).toEqual(["rename Memo"]);
+  });
+
+  it("shows any other refusal's code", async () => {
+    stubRollback([], () => [409, { code: "rename_job_pending", error: "a class rename job is unfinished" }]);
+    mounted = await mount(operator, "/?section=releases");
+    await planTo2(mounted.el);
+    await apply(mounted.el);
+    const r = result(mounted.el)!;
+    expect(r.querySelector("h4")?.textContent).toContain("refused");
+    expect(r.querySelector(".settings-error code")?.textContent).toBe("rename_job_pending");
+    expect(r.querySelector("li")).toBeNull();
+  });
+
+  it("offers a member no rollback", async () => {
+    stubRollback([], ok);
+    mounted = await mount(member, "/?section=releases");
+    expect(mounted.el.querySelectorAll("table.ontology-releases tbody tr")).toHaveLength(2);
+    expect(
+      Array.from(mounted.el.querySelectorAll("button")).some((b) => b.textContent === "roll back to this release"),
+    ).toBe(false);
   });
 });

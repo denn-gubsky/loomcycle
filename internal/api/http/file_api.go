@@ -82,7 +82,11 @@ type fileTwinArgs struct {
 	PageSize   string `json:"page_size,omitempty"`
 	Language   string `json:"language,omitempty"`
 	Metadata   string `json:"metadata,omitempty"`
-	Style      string `json:"style,omitempty"`
+	// Style is a Path, none, or the style JSON itself (RFC HB D5), and
+	// PageText the call's header and footer (D3): passed through as given,
+	// the File tool checks them.
+	Style    json.RawMessage `json:"style,omitempty"`
+	PageText json.RawMessage `json:"page_text,omitempty"`
 	// unpack's filter and dry run; the File tool reads them.
 	All    bool `json:"all,omitempty"`
 	DryRun bool `json:"dry_run,omitempty"`

@@ -12,7 +12,9 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/config"
 	convworker "github.com/denn-gubsky/loomcycle/internal/conversion/worker"
 	"github.com/denn-gubsky/loomcycle/internal/workspace/engine"
 	wsworker "github.com/denn-gubsky/loomcycle/internal/workspace/worker"
@@ -23,7 +25,7 @@ import (
 // the core sends. Like the conversion worker it loads no config, opens no
 // store and holds no provider key; its token is an operator token holding
 // only workers:attach.
-func runWorkspaceWorker(dispatcher, id string, parentPID int, stderr io.Writer) int {
+func runWorkspaceWorker(dispatcher, id string, parentPID int, personal bool, roots []wsworker.Root, stderr io.Writer) int {
 	capacity, err := envCount("LOOMCYCLE_WORKSPACE_CAPACITY", 1, 10000)
 	if err != nil {
 		fmt.Fprintf(stderr, "loomcycle worker: %v\n", err)
@@ -38,6 +40,16 @@ func runWorkspaceWorker(dispatcher, id string, parentPID int, stderr io.Writer) 
 	if err != nil {
 		fmt.Fprintf(stderr, "loomcycle worker: %v\n", err)
 		return 2
+	}
+	// A git mirror no workspace pins is removed once idle this long (RFC GW
+	// P11): the worker's side of workspace.git.mirror_idle_s.
+	mirrorIdle, err := envCount("LOOMCYCLE_WORKSPACE_MIRROR_IDLE_S", 1, config.MaxWorkspaceMirrorIdleS)
+	if err != nil {
+		fmt.Fprintf(stderr, "loomcycle worker: %v\n", err)
+		return 2
+	}
+	if mirrorIdle == 0 {
+		mirrorIdle = config.DefaultWorkspaceMirrorIdleS
 	}
 	convertMem, err := envCount("LOOMCYCLE_WORKSPACE_CONVERT_MEMORY_LIMIT_MB", 64, 1<<20)
 	if err != nil {
@@ -72,12 +84,15 @@ func runWorkspaceWorker(dispatcher, id string, parentPID int, stderr io.Writer) 
 		// secret, which this user's own processes can read.
 		HostEgress:   os.Getenv("LOOMCYCLE_WORKSPACE_HOST_EGRESS") == "1",
 		Capacity:     capacity,
+		MirrorIdle:   time.Duration(mirrorIdle) * time.Second,
 		IdleStreams:  streams,
 		Commands:     commands,
 		ConvertChild: child,
 		Labels:       labels,
 		TLS:          tlsCfg,
 		Insecure:     os.Getenv("LOOMCYCLE_WORKER_INSECURE") == "1",
+		Personal:     personal,
+		Roots:        roots,
 	})
 	switch {
 	case err == nil:
@@ -192,4 +207,28 @@ func workspaceCommands(v string) ([]string, error) {
 		out = append(out, name)
 	}
 	return out, nil
+}
+
+// parseWorkerRoot reads one --root, name=path. A leading ~ is the user's
+// home, and a relative path is made absolute against the working folder, so
+// the worker's start checks (wsworker.Run: it exists, nests with no other
+// root, keeps clear of the state folder) see the folder the user meant.
+func parseWorkerRoot(v string) (wsworker.Root, error) {
+	name, path, ok := strings.Cut(v, "=")
+	name, path = strings.TrimSpace(name), strings.TrimSpace(path)
+	if !ok || name == "" || path == "" {
+		return wsworker.Root{}, fmt.Errorf("want name=path, got %q", v)
+	}
+	if path == "~" || strings.HasPrefix(path, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return wsworker.Root{}, fmt.Errorf("root %q: %w", name, err)
+		}
+		path = filepath.Join(home, strings.TrimPrefix(path, "~"))
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return wsworker.Root{}, fmt.Errorf("root %q: %w", name, err)
+	}
+	return wsworker.Root{Name: name, Path: abs}, nil
 }

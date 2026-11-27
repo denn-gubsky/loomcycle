@@ -1,0 +1,277 @@
+# RFC GW P14 embedded bundle: dev-workspace
+#
+# The workspace successor of the `sandbox` + `dev-exec` pair (both deprecated:
+# RFC GW P15 removes them with the builder sidecar). A deterministic,
+# zero-token code-js agent, `dev/exec`, runs a caller's command envelope in a
+# WORKSPACE on a workspace worker (open -> write files -> run commands -> read
+# artifacts), and the `dev/exec-usage` skill tells a delegating agent how to
+# call it. Same agent name and the same result shape as the old dev/exec, so a
+# caller that delegates to `dev/exec` keeps working when it switches bundles.
+#
+# REQUIREMENTS
+#   - workspaces on: workspace.mode local, remote or local+remote, and a
+#     worker for the run's tenant (docs/WORKSPACES.md). With workspaces off,
+#     every envelope fails at open and says so.
+#   - nothing else: this bundle includes the `workspace` preset, whose
+#     read-only pypi, pypi-files and npm routes the agent's grant names, so pip
+#     and npm install packages through the core's egress (no other network).
+#   - (optional) an mcp__browser__* server, as before.
+#
+# SELECT ONE: LOOMCYCLE_PRESETS=...,dev-workspace, INSTEAD of sandbox,dev-exec.
+# Both define dev/exec; with both selected the later one in the list wins.
+#
+# What the old envelope had that a workspace does not:
+#   - session_id / keep_open / close: a workspace belongs to the run that
+#     opened it and is released when the run ends, so there is no session to
+#     keep for a later call. To carry files between calls, keep them in a
+#     volume (File copy), or fork the caller's own workspace into the child:
+#     `Agent op=spawn name="dev/exec" workspaces=[{fork: "<name>"}]` and send
+#     `"workspace": "<name>"` in the envelope.
+#   - network "none": a workspace reaches only the routes its grant names.
+#   - expose, cpu, mem_mb, pids, tmpfs_mb, git_setup: the operator's worker
+#     and the workspace limits govern these; a field sent is reported as
+#     ignored in final_text, never silently.
+
+include: [workspace]
+
+agents:
+  dev/exec:
+    provider: code-js
+    description: "Deterministically run a caller's command envelope in a workspace (open/write/exec/read) — zero-token, no LLM (RFC J, RFC GW). Optional browser passthrough."
+    tools: [Workspace, mcp__browser__*, -Calc]
+    # The narrowest grant the envelope needs (RFC GW P14 D-P14-6): it reads,
+    # writes and runs in workspaces of its own; no share, expose or templates.
+    # The routes are the `workspace` preset's read-only package registries.
+    workspace: {ops: [read, write, exec], open: true, egress: [pypi, pypi-files, npm]}
+    code: |
+      // dev/exec (RFC J code-js over RFC GW workspaces) — a DETERMINISTIC command
+      // executor. The caller sends a JSON "command envelope" as the run prompt;
+      // this runs it in a workspace and returns structured results. No LLM: the
+      // caller owns the judgment (read a failure -> decide the fix -> re-send).
+      //
+      // Envelope (JSON in the run prompt; you need commands, files, read, or
+      // browser for it to do anything):
+      //   workspace   string  the workspace's name in this run (default "exec");
+      //                       a fork the caller handed this run at spawn is
+      //                       opened by its name
+      //   toolchain   string  "python" | "node" (omit for a worker with both)
+      //   files       array   [{path, content}] written before commands
+      //   commands    array   ordered shell commands; stop at first failure unless continue_on_error
+      //   continue_on_error bool  run every command even after a failure (default false)
+      //   output_cap  number  per-command/artifact tail-cap in final_text (default 4000)
+      //   timeout_seconds  number  per-command bound (clamped by the operator)
+      //   read        array   artifacts to read back: "path" or {path}
+      //   browser     array   optional [{op, args}] steps against mcp__browser__*
+      //
+      // Returns { final_text, ok, session_id (the workspace's name), kept_open
+      //           (always false), exposed_host (always null), files_written,
+      //           results, artifacts, browser, ignored }.
+
+      var IGNORED = ["session_id", "keep_open", "close", "network", "expose", "cpu", "mem_mb", "pids", "tmpfs_mb", "git_setup", "max_output_bytes"];
+
+      function run(input) {
+        var env = parseEnvelope(input);
+        if (env._error) return { final_text: env._error, ok: false };
+        var ignored = [];
+        for (var x = 0; x < IGNORED.length; x++) if (env[IGNORED[x]] !== undefined) ignored.push(IGNORED[x]);
+
+        var name = (typeof env.workspace === "string" && env.workspace) ? env.workspace : "exec";
+        try {
+          var o = { op: "open", name: name };
+          if (env.toolchain) o.toolchain = env.toolchain;
+          Workspace(o);
+        } catch (e) { return { final_text: "Workspace open failed: " + errText(e), ok: false, ignored: ignored }; }
+
+        var wrote = [];
+        var files = env.files || [];
+        for (var i = 0; i < files.length; i++) {
+          var f = files[i] || {};
+          try { Workspace({ op: "write", name: name, path: f.path, content: f.content }); wrote.push(f.path); }
+          catch (e) { return { final_text: "write " + f.path + " failed: " + errText(e), ok: false, files_written: wrote, ignored: ignored }; }
+        }
+
+        var results = [], failed = false;
+        var cmds = env.commands || [];
+        for (var j = 0; j < cmds.length; j++) {
+          if (failed && !env.continue_on_error) { results.push({ command: cmds[j], skipped: true }); continue; }
+          var a = { op: "exec", name: name, command: cmds[j] };
+          if (env.timeout_seconds) a.timeout_s = env.timeout_seconds;
+          try { results.push({ command: cmds[j], ok: true, output: execOutput(Workspace(a)) }); }
+          catch (e) { results.push({ command: cmds[j], ok: false, output: failText(e) }); failed = true; }
+        }
+
+        var artifacts = [];
+        var reads = env.read || [];
+        for (var k = 0; k < reads.length; k++) {
+          var r = (typeof reads[k] === "string") ? { path: reads[k] } : (reads[k] || {});
+          if (!r.path) continue;
+          try { artifacts.push({ path: r.path, ok: true, content: asText(Workspace({ op: "read", name: name, path: r.path })) }); }
+          catch (e) { artifacts.push({ path: r.path, ok: false, error: errText(e) }); }
+        }
+
+        var browser = runBrowser(env.browser);
+        var cap = (typeof env.output_cap === "number" && env.output_cap > 0) ? env.output_cap : 4000;
+        return {
+          final_text: report(results, artifacts, browser, name, failed, ignored, cap),
+          ok: !failed, session_id: name, kept_open: false, exposed_host: null,
+          files_written: wrote, results: results, artifacts: artifacts, browser: browser, ignored: ignored
+        };
+      }
+
+      function parseEnvelope(input) {
+        var raw = (input && typeof input.prompt === "string") ? input.prompt : "";
+        var env = {};
+        if (raw && raw.length) {
+          try { env = JSON.parse(raw); }
+          catch (e) { return { _error: "dev/exec expects a JSON command envelope in the prompt, e.g. {\"commands\":[\"go build ./...\"]}. Parse error: " + errText(e) }; }
+        }
+        if (typeof env !== "object" || env === null) return { _error: "envelope must be a JSON object" };
+        var hasWork = (env.commands && env.commands.length) || (env.files && env.files.length) ||
+                      (env.read && env.read.length) || (env.browser && env.browser.length);
+        if (!hasWork) return { _error: "nothing to do: provide commands, files, read, or browser in the envelope" };
+        return env;
+      }
+
+      // execOutput is a command's output from Workspace exec's JSON answer.
+      function execOutput(x) {
+        var s = asText(x);
+        try { var o = JSON.parse(s); if (o && typeof o.output === "string") return o.output; } catch (e) {}
+        return s;
+      }
+
+      // failText is a failed command's exit code and output. A non-zero exit is a
+      // failed tool call whose message wraps exec's own {exit_code, output} answer
+      // (with a help hint for the model); the caller wants the command's output.
+      function failText(e) {
+        var msg = errText(e), o = null;
+        try { o = JSON.parse(msg); } catch (x) { return msg; }
+        var inner = (o && typeof o.error === "string") ? o.error : null;
+        if (inner === null) return msg;
+        try {
+          var r = JSON.parse(inner);
+          if (r && typeof r.output === "string") {
+            return (r.timed_out ? "[timed out]\n" : "[exit: " + r.exit_code + "]\n") + r.output;
+          }
+        } catch (x) {}
+        return inner;
+      }
+
+      function runBrowser(steps) {
+        if (!steps || !steps.length) return null;
+        var fns = browserFns();
+        var out = [];
+        for (var i = 0; i < steps.length; i++) {
+          var s = steps[i] || {};
+          var fn = fns[s.op];
+          if (!fn) { out.push({ op: s.op, ok: false, error: "unavailable/unsupported browser op (needs an mcp__browser__* server)" }); continue; }
+          try { out.push({ op: s.op, ok: true, result: asText(fn(s.args || {})) }); }
+          catch (e) { out.push({ op: s.op, ok: false, error: errText(e) }); }
+        }
+        return out;
+      }
+
+      function browserFns() {
+        var m = {};
+        if (typeof mcp__browser__pinchtab_navigate   !== "undefined") m.navigate   = mcp__browser__pinchtab_navigate;
+        if (typeof mcp__browser__pinchtab_get_text   !== "undefined") m.get_text   = mcp__browser__pinchtab_get_text;
+        if (typeof mcp__browser__pinchtab_snapshot   !== "undefined") m.snapshot   = mcp__browser__pinchtab_snapshot;
+        if (typeof mcp__browser__pinchtab_screenshot !== "undefined") m.screenshot = mcp__browser__pinchtab_screenshot;
+        if (typeof mcp__browser__pinchtab_click      !== "undefined") m.click      = mcp__browser__pinchtab_click;
+        if (typeof mcp__browser__pinchtab_type       !== "undefined") m.type       = mcp__browser__pinchtab_type;
+        if (typeof mcp__browser__pinchtab_press      !== "undefined") m.press      = mcp__browser__pinchtab_press;
+        if (typeof mcp__browser__pinchtab_wait       !== "undefined") m.wait       = mcp__browser__pinchtab_wait;
+        return m;
+      }
+
+      // report renders the full result INTO final_text: a summary header, then each
+      // command with its OUTPUT (tail-capped), then any read artifacts and browser
+      // results. The code-js provider surfaces ONLY final_text to a blocking caller.
+      function report(results, artifacts, browser, name, failed, ignored, cap) {
+        var ok = 0, bad = 0, skip = 0;
+        for (var i = 0; i < results.length; i++) {
+          if (results[i].skipped) skip++; else if (results[i].ok) ok++; else bad++;
+        }
+        var lines = ["ran " + results.length + " command(s): " + ok + " ok, " + bad + " failed" +
+          (skip ? (", " + skip + " skipped") : "") +
+          "; workspace " + name + " (released when this run ends)"];
+        if (ignored.length) lines.push("ignored (a workspace has no such setting): " + ignored.join(", "));
+        for (var j = 0; j < results.length; j++) {
+          var r = results[j];
+          var tag = r.skipped ? "SKIPPED" : (r.ok ? "ok" : "FAILED");
+          lines.push("");
+          lines.push("$ " + r.command + "   [" + tag + "]");
+          if (!r.skipped) lines.push(tailCap(r.output, cap));
+        }
+        for (var a = 0; artifacts && a < artifacts.length; a++) {
+          var art = artifacts[a];
+          lines.push("");
+          if (art.ok) {
+            lines.push("# read " + art.path + " (" + String(art.content || "").length + " bytes)");
+            lines.push(tailCap(art.content, cap));
+          } else {
+            lines.push("# read " + art.path + "   [FAILED] " + (art.error || ""));
+          }
+        }
+        for (var b = 0; browser && b < browser.length; b++) {
+          var bs = browser[b];
+          lines.push("");
+          lines.push("[browser " + bs.op + "]   [" + (bs.ok ? "ok" : "FAILED") + "] " + (bs.ok ? "" : (bs.error || "")));
+          if (bs.ok && bs.result) lines.push(tailCap(bs.result, cap));
+        }
+        return lines.join("\n");
+      }
+
+      function tailCap(s, n) {
+        s = (s === undefined || s === null) ? "" : String(s);
+        if (s.length <= n) return s;
+        return "…[truncated: showing last " + n + " of " + s.length + " chars]\n" + s.substring(s.length - n);
+      }
+
+      function asText(x) {
+        if (x === undefined || x === null) return "";
+        return (typeof x === "string") ? x : JSON.stringify(x);
+      }
+
+      function errText(e) { return (e && e.message) ? String(e.message) : String(e); }
+
+skills:
+  dev/exec-usage:
+    description: How to run/compile/test code by delegating to the deterministic dev/exec agent on a workspace — send a JSON command envelope, read structured results, iterate on failures. For agents that have the Agent tool but not the Workspace tool.
+    tools: [Agent]
+    body: |
+      # Running code in a workspace (delegate to dev/exec)
+
+      `dev/exec` is a deterministic agent (no model) that runs a command envelope
+      in a workspace on a workspace worker and returns what each command printed.
+      You keep the judgment: read a failure, decide the fix, send again.
+
+      ## Call it
+      `Agent op=spawn name="dev/exec" prompt='<the envelope as JSON>'`
+
+      ```json
+      {"toolchain": "python",
+       "files": [{"path": "main.py", "content": "print(6 * 7)\n"}],
+       "commands": ["python3 main.py"],
+       "read": ["main.py"]}
+      ```
+
+      - `files` are written first, then `commands` run in order; the first failing
+        command stops the rest unless `continue_on_error` is true.
+      - `read` returns files the commands wrote.
+      - `pip install` and `npm install` work through the package-registry routes;
+        no other network is reachable.
+      - The workspace is released when dev/exec's run ends: nothing carries over to
+        the next call. Send every file the commands need, every time, or keep your
+        own workspace and hand dev/exec a fork of it:
+        `Agent op=spawn name="dev/exec" workspaces=[{"fork": "build"}] prompt='{"workspace": "build", "commands": ["make test"]}'`.
+
+      ## Read the answer
+      The answer starts with `ran N command(s): A ok, B failed`, then each command
+      with its output (the last 4000 characters; raise `output_cap` for more), then
+      each file read. A line `ignored (...)` lists fields of the old sandbox
+      envelope (`session_id`, `keep_open`, `network`, `expose`, …) that a
+      workspace has no setting for.
+
+      If the first line is `Workspace open failed`, this install runs no
+      workspaces, or has no worker for your tenant: tell the user rather than
+      retrying.

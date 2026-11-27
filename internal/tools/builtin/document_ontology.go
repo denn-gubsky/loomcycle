@@ -151,6 +151,13 @@ const sectionOutOfForce = "\x00out-of-force"
 // ov, when not nil, changes the chunks in memory before they are parsed (a plan's
 // changes, document_ontology_plan.go); nil reads the document as stored.
 func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, path string, ov *ontologyOverlay) (OntologyRead, error) {
+	read, _, err := d.ontologyTreeForKey(ctx, key, mscope, path, ov)
+	return read, err
+}
+
+// ontologyTreeForKey is ontologyForKey that also returns each read chunk's parent chunk
+// (nil without a document), which a release diff needs to place an entry.
+func (d *Document) ontologyTreeForKey(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, path string, ov *ontologyOverlay) (OntologyRead, map[string]string, error) {
 	// DELIBERATELY NO ensureSchema. Reading must not provision.
 	//
 	// This is called from a query path, so ensuring here would mean an agent running
@@ -176,14 +183,14 @@ func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, msco
 		docID, err = d.docIDFromInput(ctx, key, docInput{Path: path})
 	}
 	if err != nil {
-		return OntologyRead{}, nil // no such document — no tenant layer
+		return OntologyRead{}, nil, nil // no such document — no tenant layer
 	}
 	var rootID, status string
 	if res, qerr := d.query(ctx, key,
 		`SELECT root_chunk_id, coalesce(status, '') FROM documents WHERE id = ? LIMIT 1`, docID); qerr != nil {
-		return OntologyRead{}, qerr
+		return OntologyRead{}, nil, qerr
 	} else if len(res.Rows) == 0 || len(res.Rows[0]) < 2 {
-		return OntologyRead{}, nil
+		return OntologyRead{}, nil, nil
 	} else {
 		rootID, status = asStr(res.Rows[0][0]), asStr(res.Rows[0][1])
 	}
@@ -193,10 +200,10 @@ func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, msco
 		`SELECT id, coalesce(parent_id, ''), coalesce(title, ''), position, coalesce(status, ''), revision
 		   FROM chunks WHERE document_id = ? ORDER BY position`, docID)
 	if err != nil {
-		return OntologyRead{Confirmed: confirmed}, err
+		return OntologyRead{Confirmed: confirmed}, nil, err
 	}
-	kids := map[string][]ontologyChunk{}
-	rootRevision := 0
+	src := ontologySource{docID: docID, rootID: rootID, confirmed: confirmed,
+		body: func(id string) (chunkBody, error) { return d.readBody(ctx, mscope, key, id) }}
 	for _, row := range res.Rows {
 		if len(row) < 6 {
 			continue
@@ -206,8 +213,33 @@ func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, msco
 			title: asStr(row[2]), position: asInt(row[3]), status: asStr(row[4]),
 		}
 		if c.id == rootID {
-			rootRevision = asInt(row[5])
+			src.rootRevision = asInt(row[5])
 		}
+		src.rows = append(src.rows, c)
+	}
+	read, treeParent := parseOntology(src, ov)
+	return read, treeParent, nil
+}
+
+// ontologySource is the ontology document's chunks as the reader parses them: the
+// stored document (ontologyForKey) or a release's copy of it (RFC GQ P3.4,
+// document_ontology_release_diff.go). One parser for both, so a release reads exactly
+// as the document it copied did.
+type ontologySource struct {
+	docID, rootID string
+	confirmed     bool
+	rootRevision  int
+	rows          []ontologyChunk
+	// body reads one chunk's body and fields; an error marks the read partial.
+	body func(id string) (chunkBody, error)
+}
+
+// parseOntology is the reader proper over a source's chunks, with ov applied in memory.
+// It also returns each read chunk's parent chunk, as the content version counts it.
+func parseOntology(src ontologySource, ov *ontologyOverlay) (OntologyRead, map[string]string) {
+	docID, rootID, confirmed, rootRevision := src.docID, src.rootID, src.confirmed, src.rootRevision
+	kids := map[string][]ontologyChunk{}
+	for _, c := range src.rows {
 		if !ov.rewrite(&c) {
 			continue // a planned delete or retire: read as if gone
 		}
@@ -231,7 +263,7 @@ func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, msco
 			bodies[id] = b
 			return b
 		}
-		got, err := d.readBody(ctx, mscope, key, id)
+		got, err := src.body(id)
 		if err != nil {
 			partial = true
 		}
@@ -524,22 +556,22 @@ func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, msco
 	issues = append(issues, memrank.FormerClassNameIssues(memrank.EffectiveClasses(out, true))...)
 	read := OntologyRead{
 		Terms: out, Confirmed: confirmed, DepthCapped: depthCapped,
-		Proposals: withChangeMarks(proposals, chunkOf), DocumentID: docID, RootChunkID: rootID,
+		Proposals: withEntryMarks(withChangeMarks(proposals, chunkOf), chunkOf), DocumentID: docID, RootChunkID: rootID,
 		Sections: sections, Grammars: grammars, Issues: issues, RootRevision: rootRevision,
 		Relations: relations, SectionChunks: sectionChunks, partial: partial,
 		Schemes: checkedSchemes(schemes, out, instances), Instances: instances, Review: review,
 		classChunks: classChunks,
 	}
-	if !read.partial {
-		treeParent := make(map[string]string, len(res.Rows))
-		for parent, cs := range kids {
-			for _, c := range cs {
-				treeParent[c.id] = parent
-			}
+	treeParent := make(map[string]string, len(src.rows))
+	for parent, cs := range kids {
+		for _, c := range cs {
+			treeParent[c.id] = parent
 		}
+	}
+	if !read.partial {
 		read.ContentVersion = ontologyContentVersion(read, treeParent)
 	}
-	return read, nil
+	return read, treeParent
 }
 
 // checkedSchemes adds the scheme advisories only the whole document can give (RFC GM):

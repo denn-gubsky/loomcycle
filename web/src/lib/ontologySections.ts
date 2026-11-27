@@ -174,13 +174,15 @@ export type OntologyTabId =
   | "schemes"
   | "instances"
   | "grammars"
-  | "health";
+  | "health"
+  | "releases";
 
 export interface OntologyTab {
   id: OntologyTabId;
   label: string;
-  /** What the tab holds, shown beside its label. */
-  count: number;
+  /** What the tab holds, shown beside its label; absent when the page does not
+   *  know it before the tab is opened (releases are read on opening). */
+  count?: number;
   /** Something in it needs the operator: a disabled grammar, a stale concept tag… */
   warn: boolean;
 }

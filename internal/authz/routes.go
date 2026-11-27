@@ -416,13 +416,20 @@ var httpRoutes = []Route{
 	rowOpen("POST /v1/_oauth/revoke", ScopeAdmin, false),
 	rowOpen("OPTIONS /v1/_oauth/token", ScopeAdmin, false),
 	rowOpen("POST /v1/_oauth/token", ScopeAdmin, false),
-	// The tenant ontology. Its writes and the plan are carved out of the
-	// member path.
+	// The tenant ontology. Its writes, the plan and its releases are carved
+	// out of the member path.
 	row("GET /v1/_ontology", ScopeTenant, false, q("read", "document", "*")),
 	row("POST /v1/_ontology", ScopeTenant, false, q("read", "document", "*")),
 	row("POST /v1/_ontology/adopt", ScopeTenant, false, q("write", "document", "*")),
 	row("POST /v1/_ontology/plan", ScopeTenant, false, q("read", "document", "*")),
 	row("POST /v1/_ontology/proposals", ScopeTenant, false, q("write", "document", "*")),
+	row("GET /v1/_ontology/releases", ScopeTenant, false, q("read", "document", "*")),
+	row("GET /v1/_ontology/releases/diff", ScopeTenant, false, q("read", "document", "*")),
+	row("GET /v1/_ontology/releases/{seq}", ScopeTenant, false, q("read", "document", "*")),
+	row("POST /v1/_ontology/rollback", ScopeTenant, false, q("write", "document", "*")),
+	// RFC GQ P5.6: the ontology job's status and its resume, the operator's as the rename is.
+	row("GET /v1/_ontology/job", ScopeTenant, false, q("read", "document", "*")),
+	row("POST /v1/_ontology/job/resume", ScopeTenant, false, q("write", "document", "*")),
 	row("POST /v1/_ontology/subjects/merge", ScopeTenant, false, q("write", "document", "*")),
 	row("POST /v1/_ontology/subjects/principal", ScopeTenant, false, q("write", "document", "*")),
 	// Token minting: a tenant operator only for its own tenant's scrape
@@ -577,4 +584,6 @@ var httpRoutes = []Route{
 	// Off the run plane, so a token limited to certain agents reaches no
 	// page (P9 plan D-P9-26).
 	row("/v1/workspaces/exposures/{id}/{path...}", ScopeRunsRead, false, q("read", "run", "*")),
+	// Its socket's one-time ticket (D-P9-42 as ruled): gated as the page.
+	row("POST /v1/workspaces/exposure-tickets/{id}", ScopeRunsRead, false, q("read", "run", "*")),
 }

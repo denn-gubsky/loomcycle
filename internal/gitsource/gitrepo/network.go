@@ -476,6 +476,9 @@ func refUpdates(before, after map[plumbing.ReferenceName]plumbing.Hash) []RefUpd
 
 // Fetch fetches from n.URL, keeping the books of the named remote.
 func (r *Repo) Fetch(ctx context.Context, n Network, o FetchOptions) (FetchResult, error) {
+	if r.workspace {
+		return FetchResult{}, errWorkspaceNetwork
+	}
 	remote, err := r.remoteName(o.Remote)
 	if err != nil {
 		return FetchResult{}, err
@@ -605,6 +608,9 @@ func (r *Repo) keepTags(before map[plumbing.ReferenceName]plumbing.Hash, specs [
 // as is one that would overwrite local changes (ErrWorktreeDirty); the
 // fetched commits are kept either way.
 func (r *Repo) Pull(ctx context.Context, n Network, o PullOptions) (PullResult, error) {
+	if r.workspace {
+		return PullResult{}, errWorkspaceNetwork
+	}
 	remote, err := r.remoteName(o.Remote)
 	if err != nil {
 		return PullResult{}, err

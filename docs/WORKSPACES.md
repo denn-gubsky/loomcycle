@@ -14,6 +14,12 @@ A **workspace** is a directory on a *workspace worker*, a process apart from the
 - **No durable, git or shared workspaces.** Every workspace is ephemeral, empty when opened and gone when its run ends, and owned by one run. A reference into another agent's workspace (`workspace:<name>@<agent_id>:<path>`) comes with sharing, phase 8; checking a Document out into a workspace and committing it back, phase 7.
 - **Not on loomcycle's MCP server.** A workspace is pinned to a run, and an MCP session has none: the MCP `file` tool refuses a workspace reference.
 
+## Coming from Bash, Bashbox or the builder sidecar
+
+Workspaces replace the `Bash` tool, Bashbox and its host-command fallback, the builder sidecar's `mcp__sandbox__*` tools and the `shell_credentials` field. All of these still work, and a future release removes them (RFC GW P15). Boot and `loomcycle doctor` warn about each use. [MIGRATING-FROM-BASH.md](MIGRATING-FROM-BASH.md) maps each tool, variable and field to its replacement.
+
+The embedded bundles have moved already. `sdlc/coder`, `sdlc/reviewer`, `team/orchestrator` and the three `chat` agents hold `Workspace` with a `{ops: [read, write, exec], open: true}` grant, and fall back to their old shell tool only when this install runs no workspaces. The `dev-workspace` bundle's `dev/exec` runs the old sandbox command envelope in a workspace.
+
 ## Running a remote worker
 
 A remote worker is `loomcycle worker --role workspace` on a machine of its own, attached to the runtime's worker endpoint.
@@ -58,6 +64,30 @@ The worker reads:
 | `LOOMCYCLE_WORKER_TLS_CA`, `_CERT`, `_KEY`, `_SERVER_NAME`, `LOOMCYCLE_WORKER_INSECURE` | — | TLS to the endpoint, as for conversion workers. |
 
 A worker is known by its token's grant and its name (`--id`, by default the host name): `tenant:<tenant>/<name>` or `shared/<name>`. Keep the name the same across restarts, or the runtime will read every workspace on its disk as unknown and remove it. On `host` the worker reports `python` and `node` when it finds them on its `PATH`, on `container` when its session image has them; a workspace opened without a `toolchain` goes only to a worker with both. [WORKERS.md](WORKERS.md#workspace-workers) and [CONFIGURATION.md](CONFIGURATION.md#workspace-workers-workspace) have the full settings.
+
+### A personal worker's roots
+
+A personal worker (RFC GW §4.5) runs on a user's own machine and offers folders of it, its roots, by name:
+
+```sh
+loomcycle worker --role workspace --personal \
+  --root code=~/code/myproject --root notes=~/notes
+```
+
+`--root name=path` may be repeated; `~` is the home folder and a relative path is taken from the current folder. The worker refuses to start when a root does not exist or is not a folder, when one root lies inside another, when a root is, holds or lies inside its own `LOOMCYCLE_WORKSPACE_ROOT`, when a name is used twice, and when `--personal` is given without a root, with the `container` engine, or `--root` without `--personal`. It reports each root to the runtime as a label carrying its name only; a root's path never leaves the machine, and no answer names it.
+
+A workspace opened on a root is that folder, not a copy. One workspace is open on a root at a time; a second is refused as busy. Releasing the workspace, or the runtime removing it, only unbinds the folder: the worker never deletes a root or anything in it. Checkpoints, restores, forks and templates are refused on a root, and the disk quota does not apply to it. The worker stages uploads in a `.loomcycle-work` folder inside the root, as in any workspace, and never clears it: what a worker killed mid-upload left there stays for the user to remove. A personal worker runs the `host` engine, so a command runs with the user's own rights and can reach the rest of that user's files by absolute path; the worker logs this at start.
+
+**Setting one up.**
+
+1. The operator turns personal workers on in the runtime's yaml: `workspace.personal_workers: true`, with `workspace.mode: remote` (or `local+remote`) and `worker_endpoint.listen` on a loopback address. A runtime whose worker endpoint is reachable from the network refuses to start with the setting on, and a personal worker attaches only from loopback: personal workers are for a runtime on the user's own machine.
+2. A tenant operator mints the user's personal worker token: `POST /v1/_users/{subject}/tokens` with `{"purpose": "personal_worker"}` (an admin may also use `OperatorTokenDef create` with `worker_personal: true` and the user as `subject`). The token holds `workers:attach` alone and serves that user's runs and no one else's; a user cannot mint their own. Disabling or erasing the user retires it.
+3. The user runs the worker with that token in `LOOMCYCLE_WORKER_TOKEN`, as above.
+4. An agent with `workspace: {open: true, roots: true}` opens the folder: `Workspace {"op": "open", "name": "src", "root": "code"}`. Only that user's runs are placed on the worker, and only for a root it offers; an ordinary open never lands there. `list` and `status` name the root.
+
+`open` takes `root` or `repo`, never both, and a root is not opened with a template, a toolchain or `lifetime: "durable"`, nor over loomcycle's MCP server. Shares are refused on a root workspace, as are checkpoints, forks and templates (`not_on_root`). Retiring the token, or turning `workspace.personal_workers` off, detaches the worker within a minute; its workspaces go lost and the folders stay.
+
+**What it gives an agent.** The `host` engine is not a sandbox: an agent with exec on a root has what the user's shell has in that folder and, by absolute path, beyond it. Give `roots` only to agents you would let work in your own files. `loomcycle doctor` says so when the setting is on.
 
 ## The container engine
 
@@ -135,10 +165,14 @@ agents:
     workspace:
       ops: [read, write, exec]   # any of read, write, exec
       open: true                 # may open workspaces of its own
+      templates: true            # may save and delete templates (default false)
+      connect: true              # may reach a peer's exposed ports through a share, and share with connect (default false)
+      durable: true              # may open durable workspaces, kept for the user's next run (default false)
+      roots: true                # may open a workspace on a folder of the user's own machine (default false)
       engine: host               # least isolating engine it accepts; unset = any
 ```
 
-`exec`, `run_cell`, `reset_kernel`, `start`, `stop`, `logs` and `request` need `exec`; `write` and `edit` need `write`; `read`, `view`, `glob`, `grep`, `list` and `status` need `read`; `open` needs `open: true`; `expose` and `unexpose` need `expose: true`. A sub-agent holds only what both it and its parent hold, before and after a resume. The grant is not per-run overridable, and an agent a tenant member authors may not set it. A grant on an agent without the tool, or while `workspace.mode` is off, does nothing; the boot log and `loomcycle doctor` name such agents.
+`exec`, `run_cell`, `reset_kernel`, `start`, `stop`, `logs`, `request` and `await` need `exec`; `write` and `edit` need `write`; `read`, `view`, `glob`, `grep`, `list` and `status` need `read`; `open` needs `open: true`; `expose` and `unexpose` need `expose: true`; `open` with `lifetime: "durable"` needs `durable: true`; `open` with `root` needs `roots: true`; `request` on a workspace shared with the run needs `connect: true` instead of `exec`. A sub-agent holds only what both it and its parent hold, before and after a resume. The grant is not per-run overridable, and an agent a tenant member authors may not set it. A grant on an agent without the tool, or while `workspace.mode` is off, does nothing; the boot log and `loomcycle doctor` name such agents.
 
 ## Egress
 
@@ -212,14 +246,15 @@ One tool, `Workspace`, with an `op`:
 
 | op | What it does | Arguments |
 |---|---|---|
-| `open` | open (or return) a workspace of this run | `name`, `toolchain` (`python` or `node`; omit for a worker with both) |
+| `open` | open (or return) a workspace of this run | `name`, `toolchain` (`python` or `node`; omit for a worker with both), `lifetime` (`durable`: see Durable workspaces) |
 | `list` | this run's workspaces | — |
 | `status` | its state, and whether its directory is on the worker | `name` |
-| `release` | delete it now | `name` |
+| `release` | delete it now; a durable one is kept for the user's next run unless `discard` | `name`, `discard` |
 | `exec` | run a shell command in it (`/bin/sh -c`) | `name`, `command`, `cwd`, `timeout_s` |
 | `run_cell` | run code in an interpreter that keeps its variables between calls | `name`, `code`, `kernel` (`python` or `node`), `timeout_s` |
 | `reset_kernel` | stop the interpreter; the next cell starts clean | `name`, `kernel` |
 | `checkpoint`, `checkpoints`, `restore`, `delete_checkpoint`, `fork` | record the files, put them back, open a copy; see "Checkpoints and forks" | `name`, `label`, `checkpoint`, `as` |
+| `save_template`, `templates`, `delete_template` | keep a checkpoint as a template, list them, delete one; `open` takes `template`; see "Templates" | `name`, `checkpoint`, `as`, `scope`, `template` |
 | `view` | return a picture in it to the model as an image | `name`, `path` |
 | `start` | run a command that keeps running after the call, a server (see Servers) | `name`, `command`, `cwd`, `port` |
 | `stop` | end a server and what it started | `name`, `server` |
@@ -319,6 +354,33 @@ The read returns `144`. When the run ends, the workspace is deleted. A command t
 - **Results.** The parent reads what the children made through a share each child makes (`workspace.share`), or the children copy it back with `File`.
 - **Audit.** Every fork made, by `Workspace op=fork` or at spawn, writes one `workspace_fork` audit line: the source workspace and its run, the copy's id and name and the run that owns it, the tenant, and the path (`fork` or `fork at spawn`). Never a file's content. A refused fork writes none.
 
+## Templates
+
+A template is a named starting state: a checkpoint's files, installed packages included, kept by the runtime after the run that saved it ends (RFC GW §5.5, P6). `open` with `template` starts a new workspace as a copy of it, on any worker that has its toolchains.
+
+```json
+{"op": "save_template", "name": "py", "checkpoint": "ck_3f9a1c0e5b7d2a64", "as": "pandas-ready", "scope": "user"}
+```
+```json
+{"op": "open", "name": "analysis", "template": "pandas-ready"}
+```
+
+| op | What it does | Grant | Arguments |
+|---|---|---|---|
+| `save_template` | keep a checkpoint of the run's own workspace as a template | `templates` | `name`, `checkpoint`, `as`, `scope` |
+| `templates` | the templates the run may open | `open` or `templates` | `all_users` (a tenant operator's session) |
+| `delete_template` | delete a template | `templates` | `template`, `scope`, `owner` (a tenant operator's session) |
+| `open` with `template` | a new workspace as a copy of a template | `open` | `name`, `template` (not with `toolchain`) |
+
+- **Who sees one.** A `user` template is open to its author's runs only (runs of the same user); a `tenant` one to every run of the tenant. Saving or deleting a `tenant` template also needs the tenant value in the agent's `memory_scopes`. A template never leaves its tenant; a run with no user id sees tenant templates only and cannot save a user one. An isolated member (`substrate:user`) lists and opens its tenant's templates, but cannot save or delete one. `open` takes the user's own template of a name first, then the tenant's. Over the MCP server a session uses templates as its token's tenant and subject (the subject in the user's place, so a run of that user and the session share user templates); saving or deleting a tenant template there needs a tenant-operator token (`substrate:tenant` or `substrate:admin`). Such a session may also clean up its tenant's user templates: `templates` with `all_users: true` lists every user's (each with its `owner`), and `delete_template` with `scope: user` and `owner` deletes one; the audit line names both the operator and the owner. Never another tenant's, never a member token, and never from inside a run, whatever bearer started it.
+- **Never overwritten.** A name already in that scope is refused with `exists`: delete it first, or save as another name.
+- **Where it is kept.** As one archive (tar, gzip) under the core's data directory (`<LOOMCYCLE_DATA_DIR>/workspace-templates/`), with its tenant, scope, toolchains and SHA-256 on a row (`workspace_templates`). The core copies the bytes and never opens them. A worker that opens a template it does not hold is sent the archive once, checks its digest, unpacks it into a cache beside its workspaces (`.loomcycle-templates/<digest>/`, at most 8 kept, the least recently used removed) and copies each new workspace from there by its checkpoint mechanism. Unpacking refuses a name that leaves the template and never follows a link.
+- **Bounds.** `workspace.template.max_mb` (default 1024) bounds one archive; a save past it keeps nothing (`template_too_large`). `workspace.template.max_per_tenant` (default 20) bounds a tenant's templates, user and tenant ones together, and `workspace.template.max_per_user` (default 5) one user's user templates, a run's and an MCP session's of that subject together, so one member cannot fill the tenant's bound (`template_limit` for either). A workspace opened from a template is held to its own `disk_quota_mb`.
+- **Python environments.** On the `host` engine an environment's paths are moved to the new workspace's folder, and on the `container` engine to `/workspace`, as for a fork; the answer's `rewritten` is not shown for an open.
+- **Audit.** A save and a delete each write an audit line (`workspace_template_save`, `workspace_template_delete`) naming the template, its scope, digest and size, the run, and for a user template its owner. Never a file's content.
+- **Erasure.** A subject's erasure (`POST /v1/_erasure` and its twins) reports the subject's user templates in tier 1 (`workspace_templates`) and deletes each row and its archive; a dry run only counts them. A tenant template the subject saved is the tenant's and stays: the report's notes and the result's `retained` (`workspace_templates_tenant`) count it, and a tenant operator removes it with `delete_template`.
+- **Not yet.** The worker image ships no templates of its own yet.
+
 ## Servers
 
 `start` runs a command that keeps running after the call: a web server, a file watcher, anything that does not end by itself (RFC GW §5.3). `exec` stays what it is, one command and one result. Servers need the `exec` grant, as commands do; a share never reaches them.
@@ -368,10 +430,13 @@ The read returns `144`. When the run ends, the workspace is deleted. A command t
 
 - **Who opens it.** `/v1/workspaces/exposures/<id>/…` (every method) serves it to one person: a bearer in the `Authorization` header whose tenant and subject are the workspace's tenant and user. Anyone else, an admin, the legacy token, open mode and a token limited to certain agents included, gets the answer an unknown id gets, so an id cannot be probed. A Web UI cookie, a token in the address and a request with no `Authorization` header are refused, so a browser sent to the address runs nothing.
 - **What reaches the application.** The prefix is removed (the application receives `/…`); `Host` and `Origin` arrive as the client sent them; `Authorization`, `Proxy-Authorization` and `Cookie` are removed. Each request travels down its own tunnel to the worker, which reaches the port only while a running server of the workspace declared it and, on the `host` engine, its own processes listen on it; anything else is a `502`.
-- **What reaches the client.** Every answer, errors included, carries `Content-Security-Policy: sandbox allow-scripts allow-forms; connect-src 'self'` (in place of the application's own) and `X-Content-Type-Options: nosniff`; `Set-Cookie` is dropped; a redirect to `/x` is rewritten under the prefix. Links inside a page are the application's: make them relative, or start them with `base_path`.
+- **What reaches the client.** Of the application's headers only `Content-Type`, `Content-Encoding`, `Content-Length`, `Content-Disposition`, `ETag`, `Last-Modified`, `Accept-Ranges` and `Content-Range` (every other header, `Set-Cookie` and the origin-wide ones such as `Clear-Site-Data` and `Strict-Transport-Security` among them, is dropped, as are trailers and any `1xx`); `Cache-Control` is `private, no-store`; a redirect to `/x` is rewritten under the prefix, and one to another site, or whose second character is `/` or `\`, is left as it is. Every answer, errors included, carries `Content-Security-Policy: sandbox allow-scripts allow-forms; connect-src 'self'` (in place of the application's own) and `X-Content-Type-Options: nosniff`. Links inside a page are the application's: make them relative, or start them with `base_path`.
 - **When it closes.** With `unexpose {name, port}`, with the workspace's release and the owning run's end, when no request used it for `workspace.expose.idle_timeout_s` (default 15 minutes), and, all at once, when the operator turns `workspace.expose` off. A server that stops leaves the page answering `502` until a server listens on the port again.
-- **Limits.** Per workspace: `max_per_workspace` ports (default 2), `max_connections` requests open at once (32), `requests_per_second` (20, burst twice that) and `bytes_per_second` (8 MiB), the last three kept per replica. Over a bound the route answers `429`.
-- **Not yet.** WebSocket (an upgrade is answered `501`), the `surface` event that tells loomboard of a page, `await`, and a peer's `connect` arrive in later P9 PRs. `expose` is a run's: a workspace opened over the MCP server and a shared one take none.
+- **WebSocket.** A page's socket opens on the same address. A browser cannot set an `Authorization` header on a socket, so it offers the bearer as the subprotocol `bearer.<token>`, beside the marker `loomcycle.surface.v1` and the application's own protocols (as the client-tools socket does). A cookie never opens one, so a page of another site cannot open a socket in the user's name; the `Origin` is passed to the application as sent, for it to judge. The core dials the application first, through the same tunnel and listener check (an application that is not there, or refuses the upgrade, is a plain `502`, never a half-open socket). It offers the application only the client's protocols for it, never the marker or the bearer, and answers the client with the application's choice or the marker. Nothing else of the application's `101` reaches the client. Messages cross one by one, text and binary, with their close codes; each hop answers its own pings. Bounds: a message is at most `max_message_bytes` (16 MiB) each way, the byte rate holds both ways, a socket counts as one of `max_connections` while open, and it closes after `idle_timeout_s` with no message (1001), after `socket_lifetime_s` (4 hours, 1001), and within 15 seconds of an `unexpose` or the workspace's release (1008). A browser may instead present a one-time ticket as the subprotocol `ticket.<t>`: `POST /v1/workspaces/exposure-tickets/<id>` with the bearer in the `Authorization` header mints one for the page (a cookie never mints one), good once and for 30 seconds, on any replica sharing `LOOMCYCLE_SECRET_KEY`; the socket it opens follows the credential that minted it. In strict sign-in mode no bearer is read from a subprotocol, so a browser opens a page's socket there with a ticket (or a client that can set the header, with the header). Any other upgrade (`h2c`) is `501`.
+- **Limits.** Per workspace: `max_per_workspace` ports (default 2), `max_connections` requests and sockets open at once (32), `requests_per_second` (20, burst twice that) and `bytes_per_second` (8 MiB), the last three kept per replica. Over a bound the route answers `429`.
+- **How the user learns of it.** `expose` puts a `surface` event on the run's own stream: `{exposure_id, workspace, title, kind, base_path, expires_at}`, where `expires_at` is the idle deadline at that moment and moves on with every use. A `surface_closed` event, `{exposure_id, reason}`, follows when it goes: `unexposed` (the run's `unexpose`), `released` (the workspace's release or the run's end), `idle` (the idle timeout, met by the sweep or by the next request) or `lost` (its worker went away: the workspace was marked lost). Both are on SSE, gRPC (`Event.surface`), the stored transcript and both adapters (`SurfaceInfo`); neither carries a bearer, a ticket or a host path, and the model never sees either. A close the run did not make in a tool call (a sweep, the run's end) is written to the run's transcript, which a re-attached stream (`GET /v1/runs/{id}/stream`) reads; it is not pushed to a stream already open. A sub-agent's page is told on the sub-agent's own stream, not its parent's. Turning the operator's switch off tells nothing at that moment; each page is told `idle` when the sweep removes its row.
+- **What the person did (`await`).** A server the workspace started finds an address in `LOOMCYCLE_UPDATE_URL`; the application posts an update there (a `POST` whose body is the update, up to 64 KiB) when a person does something in the page, and `Workspace op=await {name, timeout_s?}` returns the next one, once, in order, or `timed_out` (RFC GW §5.3, P9 plan §3.4). The answer is `{name, update, pending}` (`update_base64` for a body that is not text; `dropped` when posts were refused). The post is answered `202` when queued, `413` past 64 KiB and `429` when 64 updates already wait, so a server cannot flood the run. `await` needs `exec`, is the owner's alone (not through a share, not over the MCP server), and waits at most the operator's command timeout and never over an hour. On the `container` engine the address is a small relay inside the session (`python3`), on the session's own loopback, which nothing outside the session reaches. On the `host` engine it is a loopback port of the worker with a secret path of 256 random bits, compared in constant time; a wrong path is answered `404` with nothing else, and one workspace's path never posts into another's queue. That is a check, not isolation: every process of the worker's user shares the loopback and can read a server's environment (see the host engine's limits). The address is given only to the workspace's servers, never to a command, the model, an event or a log, and it closes with the workspace's release, a restore and the worker's stop.
+- **A peer.** A peer reaches a page with `request` through a share made with `connect` (see Sharing a workspace). `expose` is a run's: a workspace opened over the MCP server and a shared one take none.
 
 ## Looking at a picture
 
@@ -388,7 +453,20 @@ The read returns `144`. When the run ends, the workspace is deleted. A command t
 - **Bounds.** The file may be at most 20 MiB (`too_large` otherwise); a picture as sent at most 3,750,000 bytes.
 - **A model that cannot see images.** The picture is not sent and the call fails saying so; the run goes on. The same applies to any tool that returns a picture.
 - **Kept with the run.** The picture is stored with the run's transcript, so a resumed run shows the model the same picture. The live event carries only the line naming it.
-- **Not yet:** `screenshot`, which loads a page of the workspace's own server in a headless browser, arrives with servers (RFC GW P9) and a worker image that carries a browser.
+
+**`screenshot`** loads a page a running server of the workspace serves in a headless browser and returns the picture the same way, so an agent can see the web page it built (RFC GW §5.8). It needs both the `exec` and the `connect` grant (the page's scripts run in the session, as a command does), and only the run's own workspace: never one shared with it, and not over the MCP server.
+
+```json
+{"op": "screenshot", "name": "site", "port": 8000, "path": "/report", "width": 1280, "height": 800}
+```
+```json
+{"bytes": 61204, "height": 800, "name": "site", "path": "/report", "port": 8000, "width": 1280}
+```
+
+- **Where the browser runs.** Inside the workspace's own container session, so only on a `container`-engine worker whose session image carries the browser: build it with `docker build -f Dockerfile.workspace --target browser .` (the plain session image with Chromium; a second image, so a general workspace stays the size it is), and name it in `LOOMCYCLE_WORKSPACE_CONTAINER_IMAGE`. Once its release step lands it is also published as `denngubsky/loomcycle-workspace-browser:<version>`. The worker finds `chromium` in its image when it starts and then reports the `browser` label. A worker without it, and every `host`-engine worker, answers `browser_unavailable`; the runtime does not send the op to one.
+- **What it reaches.** Only `http://127.0.0.1:<port><path>`, the session's own loopback, at a port a running server of the workspace declared (`port_not_served` otherwise). `path` is a path, never a URL: it starts with one `/`, holds printable ASCII without spaces or `\`, and is at most 2048 bytes. Every request the page makes goes to a proxy that is not there except that one port on `127.0.0.1`, so another loopback port, the egress gateway or any other address, even written as a number, is not reached. Host names other than `127.0.0.1` also resolve to nothing; WebRTC sends no UDP, and QUIC and the browser's own background requests are off.
+- **What it carries.** Nothing of the user's: the page is loaded directly, never through the exposure route, with no cookie, header or bearer. Each shot starts with a fresh profile in the session's `/tmp`, removed when it ends, so no cookie or storage survives it.
+- **Bounds.** A viewport of at most 1920 by 1080 (default 1280 by 800); one shot at most 30 seconds, after which the browser is killed (`browser_timed_out`); one at a time per workspace (`browser_busy`); the picture at most 20 MiB from the worker (`too_large`), then scaled and bounded as `view`'s is.
 
 ## Moving files
 
@@ -481,7 +559,7 @@ agents:
       ops: [read]                # reads what it is given; opens nothing
 ```
 
-**Making a share.** `Workspace op=share {name, with, access}`: `with` is the other run's agent id (a parent, a child, a sibling, or a run of another tree of the same user); `access` is `read` or `read_write`. `op=unshare {name, with}` ends it. `Agent op=spawn` and each entry of `op=parallel_spawn` take `workspaces: [{name, access}]`, shared with the child before its first turn (an entry `{fork, as?}` gives the child its own copy instead; see "Checkpoints and forks"):
+**Making a share.** `Workspace op=share {name, with, access, connect?}`: `with` is the other run's agent id (a parent, a child, a sibling, or a run of another tree of the same user); `access` is `read` or `read_write`. `op=unshare {name, with}` ends it. `Agent op=spawn` and each entry of `op=parallel_spawn` take `workspaces: [{name, access, connect?}]`, shared with the child before its first turn (an entry `{fork, as?}` gives the child its own copy instead; see "Checkpoints and forks"):
 
 ```json
 {"op": "spawn", "name": "reviewer", "prompt": "Review the change in build.",
@@ -490,20 +568,52 @@ agents:
 
 **Using one.** The peer names the workspace `<name>@<owner agent id>`; its `Workspace op=list` shows it under `shared_with_me`. With `read` it may use `Workspace read`, `view`, `glob` and `grep` on it, and `File` ops that read from `workspace:<name>@<agent id>:<path>` (copy out, stat, ls, extract, import). `read_write` adds `File` writes into it and `Workspace write` and `edit`.
 
-**What a share never allows:** `exec`, a release, a status, and sharing it on. Commands in a workspace are its owner's alone, so two agents never race in one session.
+**Reaching its pages (`connect`).** A share made with `connect: true` (in `op=share` or a spawn's `workspaces` entry) lets the peer send single HTTP requests to the ports its owner **exposed**, with `Workspace op=request {name: "<name>@<owner agent id>", port, method, path, headers?, body?}` (RFC GW §5.2, D20, D26). The owner needs `workspace.connect` to hand it over, the peer needs `workspace.connect` to use it (not `exec`), and the port must be one the owner exposed with `expose`, while the operator's `workspace.expose` is on and the page has not gone idle; a port a server listens on but the owner did not expose is refused `not_exposed`. The request then travels as the owner's does: down the tunnel, to a port a running server of the workspace declared and, on the `host` engine, its own processes listen on. A request through a share keeps the page from going idle, as a use by its user does. The owner's own `request` still needs `exec`, and reaches its servers' ports whether exposed or not.
+
+**What a share never allows:** `exec`, a release, a status, and sharing it on; and, with `connect`, never `expose`, `start`, `stop` or `logs`. Commands in a workspace are its owner's alone, so two agents never race in one session.
 
 **Who may share with whom.**
 
-- The owner needs `workspace.share` and the operations it hands over: `read` for a read share, `read` and `write` for `read_write`.
+- The owner needs `workspace.share` and the operations it hands over: `read` for a read share, `read` and `write` for `read_write`, and `connect` for a share with connect.
 - The peer needs the `workspace` operation each use asks for, in its own grant: a share never gives an agent more than its definition does.
 - The peer is a live run of the same user, in the same tenant. A run of another user, an ended run and an unknown agent id are refused alike; a run with no user id neither shares nor is shared with.
 - A workspace is shared with at most 16 runs.
 
 **How long it lasts.** A share is stored on the workspace's row, so every replica honours it and it survives a pause and a resume of either run. It ends with `unshare`, with the workspace's release, or when either run ends.
 
-**Audit.** Each share, unshare and each tool call through a share writes an audit event (`workspace_share`, `workspace_unshare`, `workspace_share_use`) naming the workspace, both runs and the access.
+**Audit.** Each share, unshare and each tool call through a share writes an audit event (`workspace_share`, `workspace_unshare`, `workspace_share_use`) naming the workspace, both runs and the access; a share with connect says so (`connect`), and each request through one is a use naming the port (`request :<port> via Workspace`).
 
-Not yet: `connect` (a share's reach to a workspace's exposed ports) arrives with servers; a share asking for it is refused.
+## Durable workspaces
+
+A durable workspace is kept after its run ends, under the tenant, the user and its name (RFC GW §4.2, P12). A later run of the same user opens it again and finds its files, on the worker that holds them.
+
+```yaml
+workspace:
+  durable:
+    enabled: true          # off unless set
+    max_per_user: 8        # durable workspaces a user keeps, pinned or parked (default 8)
+agents:
+  builder:
+    tools: [Workspace]
+    workspace:
+      ops: [read, write, exec]
+      open: true
+      durable: true        # may open durable workspaces (default false)
+```
+
+```json
+{"op": "open", "name": "site", "lifetime": "durable"}
+```
+
+- **Who reaches it.** Only runs of the user who opened it, in its tenant, by its name and `lifetime: "durable"`. An `open` without `lifetime` never reaches it: it makes an ephemeral workspace of its own. Another user of the tenant who opens the same name gets a workspace of their own.
+- **One run at a time.** A run that opens it holds it (its pin). A second live run of the user is refused `held`, naming the holder's agent id. The pin is taken by a compare-and-set on the workspace's row, so two runs on two replicas never both hold it. A run that holds it and is paused keeps it.
+- **When its run ends, or releases it,** it is parked: its files stay; what runs in it ends (servers, interpreters, the session); its shares end, its pages close, and a Documents checkout in it is forgotten, so commit before you release. A parked workspace is reached by no run, takes no place in its worker's capacity, and sends nothing out through egress.
+- **Opening it again** pins it to the new run on its worker. The worker must be attached to the replica the run is on (else `worker_lost`; try again), and the run's grant must cover the engine and the egress routes it was opened with (else `not_granted`). Its routes stay the ones it was opened with; a template is for a new one only.
+- **Removing it.** `release {name, discard: true}` deletes it, files and all; it also deletes, by name, a durable workspace of the user that no live run holds. Discarding needs `workspace.durable` and a grant that covers the engine and routes it was opened with, as re-opening it does; otherwise it is refused `not_granted` and nothing is touched. Otherwise it is kept until the user's erasure: nothing deletes a parked workspace by age. A subject's erasure (`POST /v1/_erasure` and its twins) counts their durable workspaces in tier 1 (`workspaces_durable`) and removes each, held or parked, row and files; a worker that is away removes the files when it next attaches. A dry run only counts them. A transport with no workspace layer removes none and names them in `retained`.
+- **Its worker.** A durable workspace lives on one worker's disk. If the worker goes away, the workspace is marked lost after `lost_after_s` and `open` answers `lost`; when the worker comes back with its disk, the workspace is ready again, whatever became of its last run.
+- **Several replicas.** A worker attaches to every replica, and the workspace's row is shared, so a run on any replica the worker is attached to opens, uses and releases it. An op is never forwarded between replicas: on a replica the worker is not attached to it answers `worker_lost`. A release made there is finished, within a minute, by a replica the worker is attached to.
+- **Not over the MCP server.** A workspace opened over loomcycle's MCP server is never durable; it ends by the session's release rule.
+- **In a snapshot.** A workspace's row travels in a snapshot; its files never do. Captured: run-owned and parked workspaces that are ready or lost, with their shares and egress routes. Not captured: workspaces opened over the MCP server, ones opening or releasing, pages, templates and checkouts. On restore a row is kept only where it points at what is its own: a worker of its own tenant (or a shared worker; a personal worker only if it is its own user's), a run of its own tenant and user, routes the target defines, and a git credential that is a reference. A durable row whose run was not restored is parked; an ephemeral one is skipped, as is a row the target already holds. Every restored row is `lost` until its worker attaches holding it. The restore result counts `workspaces_restored` and `workspaces_skipped`.
 
 ## Documents as a working tree
 
@@ -531,13 +641,49 @@ A set of Documents can be checked out into a workspace as Markdown files, change
 - **Only in a workspace the run owns.** checkout and commit refuse a shared workspace's name (`<name>@<agent id>`): the record is the owner's, and a share hands over file reads and writes only.
 - **Grants.** checkout: the Document tool and the scope's read grants, the `workspace` grant `write`. commit: the Document tool and the scope's write grants (tenant scope: `tenant` in both `memory_scopes` and `sql_scopes`), the `workspace` grant `read`, and `write` for a real commit, which updates the manifest. The `Document` hooks judge every Document call either op makes (the exports, the lookups, each import, its tags), the `Workspace` hooks each file, all before anything is written: one refusal refuses the whole call.
 
+## Git workspaces
+
+A git workspace is a repository checked out on its own branch (RFC GW P11). `Workspace open {name, repo, credential?, branch?, base?}` opens one. `repo` is an `https` URL on a host the operator lists (`LOOMCYCLE_GIT_SOURCE_HOSTS`). The agent needs `git_remote: [fetch]`, and the access-control rules of the run's user must allow `fetch` of `git:<host>/<path>`. `credential` is a `$cred:<name>` reference, restricted (`allowed_urls`) to URLs covering the repository; it is resolved in the run, and its value never reaches the worker. The answer names the repository, the workspace's own branch, the commit it started at and the forge's default branch.
+
+**How it is made.** The worker keeps one bare mirror per (tenant, repository), beside its workspaces, filled only from the forge. The workspace is a working tree with its own git directory over that mirror; a container session sees the mirror read-only at `/mirror/objects`. Every git request the worker makes goes to the runtime on the worker's own connection, carrying a ticket of the op that asked for it. The runtime sends it to the forge with the credential, through the same dial guard as egress. A ticket opens only that op's requests and ends with the op.
+
+**Access is proved on every open.** An open succeeds only if the forge answered the opener's credential, as the runtime read the forge's answers: one user's open never links another user of the same tenant to a mirror the forge would not give them.
+
+**The own branch.** `branch` defaults to `loom/<name>-<6 hex>`, under the first `workspace.push.ref_prefixes` entry. It is never the forge's default branch. One the forge already has is refused unless the operator sets `workspace.push.adopt_existing`, since a forced push of the own branch is accepted. `base` is a full ref (`refs/heads/…`, `refs/tags/…`) or a commit; it defaults to the forge's default branch, or to the adopted branch.
+
+**The ops.**
+
+| Op | Needs | What it does |
+|---|---|---|
+| `git_status` | `read` | the branch and the changed files |
+| `git_diff {path?, staged?, rev?}` | `read` | a patch, cut at 1 MiB |
+| `git_log {rev?, max?}` | `read` | commits, 50 by default, at most 200 |
+| `git_commit {message, paths?, all?}` | `write` | a commit by the operator's author (`LOOMCYCLE_GIT_AUTHOR_NAME`/`_EMAIL`) or the agent's name, with a `Loomcycle-Run:` line |
+| `git_branch {create?, from?}` | `read`; `write` to create | local branches |
+| `git_checkout {branch \| rev}` | `write` | switch branch, or a commit detached |
+| `git_fetch` | `write`, `git_remote` fetch | the forge's branches as `origin/*` |
+| `git_pull` | `write`, `git_remote` fetch | a fetch, then a fast-forward of the current branch; diverged answers `non_fast_forward` |
+| `git_push {force?}` | `read`, `git_remote` push, a host on `LOOMCYCLE_GIT_PUSH_HOSTS` | the own branch to the same name; a rewrite needs `force` |
+
+Git in `exec` works too, in the same directory. The typed ops read the repository with the row's configuration, never the session's: an `insteadOf`, a `pushurl`, a hook or a filter set by git in the session changes nothing they do, and they run no hook. A feature they cannot read (a sparse checkout, a split index, an included config file) is refused by name with the command that undoes it. A workspace shared with a run answers `git_status`, `git_diff` and `git_log` to it, and nothing else of git.
+
+**The push.** The runtime reads every push's ref updates before anything reaches the forge. It refuses any update but the own branch's, and also a deletion, the default branch, push options, and a tag unless `ref_prefixes` lists `refs/tags/`. A refused push sends nothing. The forge's words in a failure go to the operator's log, never to the model.
+
+**Forks, checkpoints, templates.** A fork of a git workspace (`fork {name, as, checkpoint?, branch?}`, or at spawn) is a git workspace of its own, with its own branch (default `loom/<as>-<6 hex>`) and its own pins. A named branch needs `adopt_existing`, because a fork cannot ask the forge whether it exists. Checkpoints and restores work as for any workspace. A git workspace is never saved as a template, and is never durable in this release.
+
+**Audit.** Each open with `repo`, `git_fetch`, `git_pull` and `git_push`, refused or not, writes one `workspace_git` line: the op, the host, the repository path, the run, the agent, the credential's reference (never its value), the refs moved and the outcome.
+
+**Mirrors.** A mirror is capped at `workspace.git.mirror_max_mb` (default 4096): a fetch that would pass the cap is refused `mirror_too_large` and leaves the mirror as it was. A mirror no workspace pins is removed `workspace.git.mirror_idle_s` (default 3600) after its last use; a remote worker reads `LOOMCYCLE_WORKSPACE_MIRROR_IDLE_S`.
+
+Over loomcycle's MCP server a session opens no git workspace (`not_over_mcp`): a principal has no run, no `git_remote` and no agent for the credential.
+
 ## Workspaces over the MCP server
 
 A session of loomcycle's MCP server (`loomcycle mcp`, `/v1/_mcp`) has no run, so the `workspace` meta-tool gives it workspaces of its own (RFC GW D35). A workspace opened there **belongs to the token identity the session signed in with: its tenant and subject**, not to a run.
 
 - **Off unless the operator turns it on.** `workspace.mcp.enabled: true`, with `workspace.mode` serving workspaces. Every call needs a principal with a tenant and a subject (open mode and the shared `LOOMCYCLE_AUTH_TOKEN` have none and are refused `no_principal`) and the `runs:create` scope. Each call takes one unit of the token's run rate.
 - **An operator's grant.** An admin and a tenant operator (`substrate:tenant`) reach the tool. A member does not by default: a tenant operator grants it to a member, a group or the whole tenant with an access-control list that allows `invoke` on `mcp-tool:workspace` (see [CONFIGURATION.md](CONFIGURATION.md#managing-groups-acl-lists-and-bindings)). The grant does not lift the switch or the scope above.
-- **What it may do** is the operator's `workspace.mcp.ops`: `read` and `write` by default; `exec` only when listed. Opening is implied. The ops are `open`, `release`, `list`, `status`, `exec`, `read`, `write`, `edit`, `glob` and `grep`; sharing, interpreters and servers are a run's (`not_over_mcp`).
+- **What it may do** is the operator's `workspace.mcp.ops`: `read` and `write` by default; `exec` only when listed. Opening is implied. The ops are `open` (with `template` too), `release`, `list`, `status`, `exec`, `read`, `write`, `edit`, `glob`, `grep`, `checkpoint`, `checkpoints`, `delete_checkpoint`, `save_template`, `templates` and `delete_template` (see Templates); sharing, `restore`, `fork`, interpreters and servers are a run's (`not_over_mcp`).
 - **Who reaches it.** Every session and token of the same tenant and subject reaches the same workspaces by name; another subject of the tenant, the same subject in another tenant, an admin and every run get `not_found`, as for a name nobody uses. A workspace opened over MCP cannot be shared, and reaches no share.
 - **When it is released.** At the first of: `release`; no op on it for `workspace.mcp.idle_release_s` (default 3600); `workspace.mcp.max_lifetime_s` after it opened, however busy (default 86400); the token definition that opened it retired, expired or deleted. The workspace sweeper applies the last three on every tick, whether or not the tool is on now, so turning the tool off still ends what it opened. A token that cannot be read (a store outage) keeps the workspace until the next tick. A principal declared in config (`principals:`) has no token definition, so only the two times end its workspaces.
 - **Egress.** None unless the operator lists routes in `workspace.mcp.egress`. Each name must be one of the operator's own routes (`workspace.egress.routes`). A tenant's routes are not offered here, because a session's workspace has no run. `open` takes every listed route, or a subset named in `egress`. A route the list does not name is refused (`not_granted`). The list is read again at each request, so removing a route from it stops that route for workspaces already open. A route's credential resolves for the session's tenant and subject, from its user scope and then its tenant scope. A session has no agent, so an agent-scope credential is never used.
@@ -563,7 +709,16 @@ A session of loomcycle's MCP server (`loomcycle mcp`, `/v1/_mcp`) has no run, so
 | `workspace.checkout.max_documents` | 500 | The documents one `File op=checkout` writes. |
 | `workspace.checkout.max_bytes` | 256 MiB | The bytes one checkout writes. |
 | `workspace.checkpoint.max_per_workspace` | 8 | The checkpoints one workspace holds (1 to 100); each also counts against its disk quota. |
+| `workspace.personal_workers` | false | Let a user's own machine attach as a worker of that user's runs (RFC GW §4.5). Refused unless the mode is `remote` or `local+remote` and `worker_endpoint.listen` is on loopback. |
+| `workspace.template.max_mb` | 1024 | One template's archive, in MiB (1 to 65536). |
+| `workspace.template.max_per_tenant` | 20 | The templates a tenant holds, user and tenant ones together (1 to 1000). |
+| `workspace.template.max_per_user` | 5 | One user's user templates, runs and MCP sessions of the subject together (1 to `max_per_tenant`). |
 | `workspace.convert.memory_limit_mb` | 1024 | The local worker's conversion child (`LOOMCYCLE_WORKSPACE_CONVERT_MEMORY_LIMIT_MB` on a remote worker). |
+| `workspace.push.ref_prefixes` | `[refs/heads/]` | Where a git workspace's own branch may be named; `refs/tags/` also allows pushing new tags. |
+| `workspace.push.max_bytes` | 64 MiB | One push's body (1 byte to 1 GiB). |
+| `workspace.push.adopt_existing` | false | May a git workspace own a branch the forge already has. |
+| `workspace.git.mirror_max_mb` | 4096 | One git mirror on a worker; a fetch that would pass it is refused `mirror_too_large` (1 to 1048576). |
+| `workspace.git.mirror_idle_s` | 3600 | How long a mirror no workspace pins is kept after its last use (`LOOMCYCLE_WORKSPACE_MIRROR_IDLE_S` on a remote worker; 1 to 2592000). |
 | worker capacity | 8 | Workspaces a worker holds (`LOOMCYCLE_WORKSPACE_CAPACITY`). |
 
 A command and everything it started is killed at its timeout. Its output is kept up to 1 MiB. `write` takes a file of up to 1 MiB; `read` returns what the Read tool would. A file `File` moves is bounded by `LOOMCYCLE_FILE_MAX_BYTES` (64 MiB), as any file it handles.
@@ -597,7 +752,7 @@ A command and everything it started is killed at its timeout. Its output is kept
 
 **`worker_lost`.** The worker went away during the call (killed, restarted, its connection dropped). Whether the op took effect is unknown, and the workspace may be gone. The run itself goes on; the agent can check with `status`, or open a new workspace. `worker_revoked` is the same, when the operator retired or re-bound the worker's token.
 
-**`lost` workspaces.** When no replica has seen a worker for `workspace.lost_after_s`, its workspaces are marked `lost`. If the worker comes back while the owning run is still going, the workspace is put back in service; if the run has ended, it is removed. A lost workspace is never removed on a guess: the directory goes only when its worker says so.
+**`lost` workspaces.** When no replica has seen a worker for `workspace.lost_after_s`, its workspaces are marked `lost`. If the worker comes back while the owning run is still going, the workspace is put back in service; if the run has ended, it is removed, except a durable one, which comes back whatever became of its last run (the sweeper parks it). A worker that comes back without a ready workspace's directory (a new disk) leaves it lost: its files are gone, and it never answers ready again (one made in the last two minutes is left alone, since another replica may still be opening it). A workspace marked lost closes its pages, and its run is told `surface_closed` with the reason `lost`. A lost workspace is never removed on a guess: the directory goes only when its worker says so.
 
 **A worker that keeps reconnecting.** A token the runtime cannot verify (unknown, revoked, retired, or checked while the store was down) is never final: the worker logs `could not verify this worker's token` and retries with backoff, and is served only once the token verifies again. A token that verifies but may not attach a worker (an admin token, the legacy secret, a token with other scopes, a shared token on the host engine) is refused for good, and the worker exits saying why. The runtime checks an attached worker's token again every minute, and detaches it when the token no longer holds.
 

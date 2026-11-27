@@ -237,17 +237,16 @@ while True:
 	}
 }
 
-// A share never carries the tunnel: a peer holding a read_write share is
-// refused request on the shared name, and a share with connect is still
-// refused (connect arrives with P9 PR 7).
+// A share without connect never carries the tunnel: a peer holding a
+// read_write share, and exec, is refused request on the shared name (a
+// peer's request is connect's, not exec's).
 func TestWorkspaceRequest_AShareWithoutConnectCannotUseTheTunnel(t *testing.T) {
 	f := newShareFixture(t, wsFull)
 	f.ws.mustOK(t, f.ctx, `{"op":"share","name":"w","with":"a_peer","access":"read_write"}`)
 	res := f.wsCall(t, f.peer, `{"op":"request","name":"w@a_alice","port":8000,"method":"GET","path":"/"}`)
-	if c := refusalClass(res); c != "not_shared_op" {
-		t.Errorf("request through a read_write share = %q %s, want not_shared_op", c, res.Text)
+	if c := refusalClass(res); c != "not_granted" {
+		t.Errorf("request through a read_write share = %q %s, want not_granted", c, res.Text)
 	}
-	wantShareRefusal(t, "connect", f.wsCall(t, f.ctx, `{"op":"share","name":"w","with":"a_peer","access":"read","connect":true}`), "not_yet")
 }
 
 // request is a command's grant (exec): an agent without it is refused

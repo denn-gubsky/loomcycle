@@ -57,9 +57,16 @@ again (with `to`, copied there).
 - `provenance` — for an imported document, say under the title where it came
   from. Default true.
 - `style` — the house style to write the file in: the Path of a style
-  document in the tenant's tree, or `none` for the built-in look. Default:
-  the tenant's `/render/styles/default` when it exists. See "House styles"
-  below.
+  document in the tenant's tree, `none` for the built-in look, or the style
+  JSON itself as an object, which needs no document (and so works on a
+  server without SQL Memory). Default: the tenant's `/render/styles/default`
+  when it exists. See "House styles" below.
+- `page_text` — the header and footer for this render only, replacing the
+  style's: `{"header": …, "footer": …, "date": …}`, each line a string or
+  `{left, center, right}` with the placeholders below. `date` is what
+  `{date}` prints (one line, at most 40 characters; default today as
+  `YYYY-MM-DD`). Works with or without a style. The text is printed, never
+  kept: the render log holds only a hash of what the file is made of.
 - `metadata` — `embed` writes loomcycle's record of the document into the
   file: each chunk's id, type, status, tags and fields, and the relations
   inside the document, never its provenance. `File op=import` of such a file
@@ -149,10 +156,37 @@ shown above the title. Every key but `loomcycle_style` is optional:
   Mono). `size`: 8–14 points. `heading_scale`: 0.8–1.5.
 - `colors`: `#rrggbb`. `page.size`: `a4` or `letter` (the call's `page_size`
   wins). `page.margin_mm`: 10–50.
-- `header`, `footer`: one line of at most 120 characters, printed on every
-  page of a PDF, Word or ODT file and at the top and bottom of an HTML page
-  or e-book page. `page_numbers` (default true) ends a paged file's footer
-  with the page number. `logo_width_mm`: 10–80.
+- `header`, `footer`: one line of at most 120 characters, or three slots
+  `{"left": …, "center": …, "right": …}` (each one such line), printed on
+  every page of a PDF, Word or ODT file and at the top and bottom of an HTML
+  page or e-book page. `page_numbers` (default true) ends a paged file's
+  footer with the page number. `logo_width_mm`: 10–80.
+
+A header or footer line may hold four placeholders:
+
+| Placeholder | Prints |
+|---|---|
+| `{page}` | this page's number (a PDF, Word or ODT file) |
+| `{pages}` | the number of pages (a PDF, Word or ODT file) |
+| `{title}` | the document's title |
+| `{date}` | `page_text.date`, else the render day as `YYYY-MM-DD` |
+
+`{{` and `}}` print a brace; any other `{name}` refuses the render. When a
+line shows `{page}`, no page number is added at the footer's end. HTML and
+e-book pages have no page numbers: a slot holding `{page}` or `{pages}` keeps
+only its text before the separator (` · `, ` | `, ` — `, ` – `, ` - ` or
+`, `) that leads up to the first of them, so `Ann Lee · Page {page} of
+{pages}` prints `Ann Lee` there, and `Page {page}` prints nothing.
+
+```json
+{"loomcycle_style": 1, "font": "serif",
+ "header": {"left": "{title}", "right": "{date}"},
+ "footer": {"right": "Page {page} of {pages}"}}
+```
+
+A style passed on the call (`style` as an object) is held to the same keys
+and ranges as a style document. It has no logo, since a logo is a style
+document's picture.
 
 An unknown key or a value out of range refuses the render and names the key;
 a style never falls back to the built-in look. Markdown is never styled. A

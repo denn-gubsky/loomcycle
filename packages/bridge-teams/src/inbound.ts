@@ -3,9 +3,9 @@
 // for other attached files with files on, its file path (RFC HE). Kept
 // apart from the SDK so it is tested without one.
 
-import { sentAtOf, type ConversationRouter, type Identified, type MessageOptions } from "@loomcycle/bridge-core";
+import { sentAtOf, type ConversationRouter, type FileIn, type Identified, type MessageOptions } from "@loomcycle/bridge-core";
 
-import { audioFileOf, filesOf, type TeamsAttachment } from "./voice.js";
+import { audioFileOf, FILE_DOWNLOAD_INFO, filesOf, type TeamsAttachment } from "./voice.js";
 
 /** The subset of a message activity this module reads. */
 export interface MessageFields {
@@ -39,7 +39,10 @@ export type MessageRouter<TRef> = Pick<ConversationRouter<TRef>, "onMessage" | "
  *  text typed beside it, so the agent gets both in one message. Files from
  *  a group chat or a channel go there too: the core takes files only in a
  *  1:1 chat, and says so in plain words rather than drop them unseen. With
- *  files off nothing changes. */
+ *  files off nothing changes.
+ *
+ *  graphFiles are the files the Graph fallback found for the message (RFC
+ *  HF), taken like attached ones with files on. */
 export async function routeMessage<TRef>(
   router: MessageRouter<TRef>,
   id: Identified,
@@ -48,9 +51,10 @@ export async function routeMessage<TRef>(
   activity: MessageFields,
   voiceOn: boolean,
   filesOn = false,
+  graphFiles: readonly FileIn[] = [],
 ): Promise<void> {
   const audio = voiceOn && id.ok && id.scope === "personal" ? audioFileOf(activity.attachments) : undefined;
-  const files = filesOn && id.ok ? filesOf(activity.attachments, voiceOn) : [];
+  const files = filesOn && id.ok ? [...filesOf(activity.attachments, voiceOn), ...graphFiles] : [];
   const seen = seenOf(activity);
   if (audio) await router.onVoice(id, ref, audio, seen);
   if (files.length > 0) {
@@ -62,4 +66,60 @@ export async function routeMessage<TRef>(
     return;
   }
   if (text.trim()) await router.onMessage(id, ref, text, seen);
+}
+
+/** What the bridge answers a message that looked like a file and brought
+ *  none (RFC HF D6). */
+export const NO_FILE_TEXT = "I didn't receive a file. Teams didn't pass it to me.";
+
+/** noFileText is that answer, with the operator's hint
+ *  (TEAMS_BRIDGE_NO_FILE_HINT) after it when one is set. */
+export function noFileText(hint?: string): string {
+  return hint ? `${NO_FILE_TEXT} ${hint}` : NO_FILE_TEXT;
+}
+
+/** hasFileDownloadInfo says Teams sent a file the bot downloads itself, so
+ *  there is nothing for Graph to find. */
+export function hasFileDownloadInfo(attachments: readonly TeamsAttachment[] | undefined): boolean {
+  return (attachments ?? []).some((a) => a.contentType === FILE_DOWNLOAD_INFO);
+}
+
+/** looksLikeFile is the shape a file attached in a 1:1 chat reached the bot
+ *  as on a live tenant (RFC HF §1): no text, and only text/html attachments
+ *  that hold no text either. A caption leaves the same trace as any typed
+ *  message, so a captioned file does not look like one. */
+export function looksLikeFile(text: string, attachments: readonly TeamsAttachment[] | undefined): boolean {
+  const atts = attachments ?? [];
+  if (text.trim() || atts.length === 0) return false;
+  return atts.every((a) => (a.contentType ?? "").toLowerCase().startsWith("text/html") && htmlIsEmpty(a.content));
+}
+
+const NBSP = ["&nbsp;", "&#160;"];
+
+/** htmlIsEmpty says an HTML body shows no text: outside its tags there is
+ *  only whitespace and non-breaking spaces. One linear pass that only
+ *  decides yes or no; it builds no text, so nothing it reads is ever used
+ *  as HTML. An unclosed tag counts as text, so it is not empty. */
+export function htmlIsEmpty(content: unknown): boolean {
+  if (content === undefined || content === null) return true;
+  if (typeof content !== "string") return false;
+  let i = 0;
+  while (i < content.length) {
+    const c = content[i]!;
+    if (c === "<") {
+      const end = content.indexOf(">", i + 1);
+      if (end < 0) return false;
+      i = end + 1;
+      continue;
+    }
+    if (c === "&") {
+      const entity = NBSP.find((e) => content.slice(i, i + e.length).toLowerCase() === e);
+      if (!entity) return false;
+      i += entity.length;
+      continue;
+    }
+    if (c.trim() !== "") return false;
+    i++;
+  }
+  return true;
 }

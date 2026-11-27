@@ -583,9 +583,7 @@ func (c *Context) execSelf(ctx context.Context) (tools.Result, error) {
 			"source":        "operator_default",
 		}
 	}
-	if sc := shellCredentialsReport(c.Cfg, tools.PolicyOf(ctx).ShellCreds); sc != nil {
-		out["shell_credentials"] = sc
-	}
+	reportShellUse(out, c.Cfg, tools.PolicyOf(ctx))
 	reportReachGrants(out, tools.PolicyOf(ctx))
 	// The statement grants this run holds, so an agent can tell before writing
 	// whether a rule: stamp is accepted, whether its tenant link_chunks is

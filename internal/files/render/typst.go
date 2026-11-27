@@ -555,6 +555,19 @@ func typNum(v float64) string { return strconv.FormatFloat(v, 'f', -1, 64) }
 func (t *typWriter) stylePage(st *Style, paper string) {
 	t.s("#set page(paper: " + paper + ", margin: " + typNum(st.marginMM()) + "mm")
 	small := `text(size: 8pt, fill: luma(110))`
+	if !st.pageTextPlain() {
+		// Slots and placeholders (RFC HB D3): a three-column grid, text as
+		// string literals and the counters as Typst's own.
+		header, footer := t.d.pageText()
+		if !header.empty() {
+			t.s(", header: " + small + "[" + typSlots(header) + "]")
+		}
+		if !footer.empty() {
+			t.s(", footer: " + small + "[" + typSlots(footer) + "]")
+		}
+		t.s(")\n")
+		return
+	}
 	if h := st.header(); h != "" {
 		t.s(", header: align(right, " + small + "[#" + typString(h) + "])")
 	}
@@ -567,4 +580,30 @@ func (t *typWriter) stylePage(st *Style, paper string) {
 		t.s(`, numbering: "1"`)
 	}
 	t.s(")\n")
+}
+
+// typSlots is a header or footer's three slots as a Typst grid. Text is a
+// string literal; {page} and {pages} are the page counter, read in context.
+func typSlots(p pageSlots) string {
+	var b strings.Builder
+	b.WriteString("#grid(columns: (1fr, auto, 1fr), ")
+	for i, align := range []string{"left", "center", "right"} {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString("align(" + align + ")[")
+		for _, seg := range p[i] {
+			switch seg.Field {
+			case fieldPage:
+				b.WriteString("#context counter(page).display()")
+			case fieldPages:
+				b.WriteString("#context counter(page).final().first()")
+			default:
+				b.WriteString("#" + typString(seg.Text))
+			}
+		}
+		b.WriteString("]")
+	}
+	b.WriteString(")")
+	return b.String()
 }

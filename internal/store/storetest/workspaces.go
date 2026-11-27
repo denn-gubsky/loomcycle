@@ -28,8 +28,17 @@ func RunWorkspaces(t *testing.T, factory Factory) {
 		"ListByOwnerAgentAndSharedWith":         testWorkspaceListByOwnerAgentAndSharedWith,
 		"PrincipalOwnedRowsAreNeverSwept":       testWorkspacePrincipalOwnedRowsAreNeverSwept,
 		"EgressIsKeptOnEveryRead":               testWorkspaceEgressIsKeptOnEveryRead,
+		"RootIsKeptOnEveryRead":                 testWorkspaceRootIsKeptOnEveryRead,
+		"GitIsKeptOnEveryRead":                  testWorkspaceGitIsKeptOnEveryRead,
+		"SetGitIsTenantScoped":                  testWorkspaceSetGitIsTenantScoped,
+		"RootNeedsAUserAndIsNotDurable":         testWorkspaceRootNeedsAUserAndIsNotDurable,
 		"ExposuresAreBoundedAndTenantScoped":    testWorkspaceExposuresAreBoundedAndTenantScoped,
 		"ExposuresGoWithTheirWorkspace":         testWorkspaceExposuresGoWithTheirWorkspace,
+		"DurableNameIsUniquePerUser":            testWorkspaceDurableNameIsUniquePerUser,
+		"PinAndUnpinAreCompareAndSet":           testWorkspacePinAndUnpinAreCompareAndSet,
+		"ParkedRowIsReachedByNoRun":             testWorkspaceParkedRowIsReachedByNoRun,
+		"CountDurableByUser":                    testWorkspaceCountDurableByUser,
+		"ParkingKeepsTheGitRecord":              testWorkspaceParkingKeepsTheGitRecord,
 	} {
 		t.Run(name, func(t *testing.T) {
 			s, cleanup := factory(t)
@@ -563,5 +572,136 @@ func testWorkspacePrincipalOwnedRowsAreNeverSwept(t *testing.T, s store.Store) {
 	bad.OwnerKind = "agent"
 	if _, err := s.WorkspaceCreate(ctx, bad); err == nil {
 		t.Error("an unknown owner kind was written")
+	}
+}
+
+// testWorkspaceRootIsKeptOnEveryRead: the root a workspace was opened on
+// (RFC GW P13) comes back from every read the dispatcher, the tool and the
+// sweeper make, and a row with none reads back empty.
+func testWorkspaceRootIsKeptOnEveryRead(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	row := mkWorkspace("ws_r", "acme", "run-1", "code", "user:acme/0123456789abcdef/laptop")
+	row.Root = "code"
+	if got := createWorkspace(t, s, row); got.Root != "code" {
+		t.Errorf("create returned root %q, want code", got.Root)
+	}
+	if ok, err := s.WorkspaceSetState(ctx, "acme", row.ID, store.WorkspaceOpening, store.WorkspaceReady); err != nil || !ok {
+		t.Fatalf("set ready = %v, %v", ok, err)
+	}
+	reads := map[string]func() ([]store.WorkspaceRow, error){
+		"get": func() ([]store.WorkspaceRow, error) {
+			r, err := s.WorkspaceGet(ctx, "acme", row.ID)
+			return []store.WorkspaceRow{r}, err
+		},
+		"get by name": func() ([]store.WorkspaceRow, error) {
+			r, err := s.WorkspaceGetByName(ctx, "acme", "run-1", "code")
+			return []store.WorkspaceRow{r}, err
+		},
+		"list by owner run": func() ([]store.WorkspaceRow, error) { return s.WorkspaceListByOwnerRun(ctx, "acme", "run-1") },
+		"list by worker (ready)": func() ([]store.WorkspaceRow, error) {
+			return s.WorkspaceListByWorker(ctx, row.WorkerID, store.WorkspaceReady)
+		},
+	}
+	for name, read := range reads {
+		rows, err := read()
+		if err != nil || len(rows) != 1 || rows[0].Root != "code" {
+			t.Errorf("%s: rows %v, %v; want one with root code", name, rows, err)
+		}
+	}
+	if none := createWorkspace(t, s, mkWorkspace("ws_p", "acme", "run-1", "plain", "w1")); none.Root != "" {
+		t.Errorf("a row created with no root reads back root %q", none.Root)
+	}
+}
+
+// testWorkspaceRootNeedsAUserAndIsNotDurable: a root is one user's folder,
+// so a root row with no user is refused (it would match every user-less
+// run), and a root is already kept on the user's disk, so a durable root row
+// is refused too (RFC GW P13 plan §1).
+func testWorkspaceRootNeedsAUserAndIsNotDurable(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	noUser := mkWorkspace("ws_u", "acme", "run-1", "code", "w1")
+	noUser.UserID, noUser.Root = "", "code"
+	if _, err := s.WorkspaceCreate(ctx, noUser); err == nil {
+		t.Error("a root row with no user was created")
+	}
+	// Its own name, so no unique key refuses it in the root's stead.
+	durable := mkWorkspace("ws_d", "acme", "run-1", "code-durable", "w1")
+	durable.Root, durable.Lifetime = "code", store.WorkspaceLifetimeDurable
+	if _, err := s.WorkspaceCreate(ctx, durable); err == nil {
+		t.Error("a durable root row was created")
+	}
+	for _, id := range []string{"ws_u", "ws_d"} {
+		if _, err := s.WorkspaceGet(ctx, "acme", id); err == nil {
+			t.Errorf("refused row %s is in the store", id)
+		}
+	}
+}
+
+func gitOf(branch string) *store.WorkspaceGit {
+	return &store.WorkspaceGit{URL: "https://forge.example/acme/app.git", Branch: branch, BaseRef: "refs/heads/main",
+		Credential: "$cred:forge", Mirror: "0123456789abcdef0123456789abcdef"}
+}
+
+// testWorkspaceGitIsKeptOnEveryRead: a git workspace's repository, branch,
+// credential name and mirror key (RFC GW P11) come back from every read the
+// dispatcher, the tool and the sweeper make; a general workspace reads back
+// none.
+func testWorkspaceGitIsKeptOnEveryRead(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	row := mkWorkspace("ws_g", "acme", "run-1", "repo", "w1")
+	row.Kind, row.Git = store.WorkspaceKindGit, gitOf("loom/repo-1")
+	if got := createWorkspace(t, s, row); got.Git == nil || *got.Git != *row.Git {
+		t.Errorf("create returned git %+v, want %+v", got.Git, row.Git)
+	}
+	if ok, err := s.WorkspaceSetState(ctx, "acme", row.ID, store.WorkspaceOpening, store.WorkspaceReady); err != nil || !ok {
+		t.Fatalf("set ready = %v, %v", ok, err)
+	}
+	reads := map[string]func() ([]store.WorkspaceRow, error){
+		"get": func() ([]store.WorkspaceRow, error) {
+			r, err := s.WorkspaceGet(ctx, "acme", row.ID)
+			return []store.WorkspaceRow{r}, err
+		},
+		"get by name": func() ([]store.WorkspaceRow, error) {
+			r, err := s.WorkspaceGetByName(ctx, "acme", "run-1", "repo")
+			return []store.WorkspaceRow{r}, err
+		},
+		"list by owner run": func() ([]store.WorkspaceRow, error) { return s.WorkspaceListByOwnerRun(ctx, "acme", "run-1") },
+		"list by worker (ready)": func() ([]store.WorkspaceRow, error) {
+			return s.WorkspaceListByWorker(ctx, row.WorkerID, store.WorkspaceReady)
+		},
+	}
+	for name, read := range reads {
+		rows, err := read()
+		if err != nil || len(rows) != 1 || rows[0].Git == nil || *rows[0].Git != *row.Git || rows[0].Kind != store.WorkspaceKindGit {
+			t.Errorf("%s: rows %+v, %v; want the git workspace with its repository", name, rows, err)
+		}
+	}
+	if none := createWorkspace(t, s, mkWorkspace("ws_p", "acme", "run-1", "plain", "w1")); none.Git != nil {
+		t.Errorf("a general workspace reads back git %+v", none.Git)
+	}
+}
+
+// testWorkspaceSetGitIsTenantScoped: the core records what it learns of a git
+// workspace (the forge's default branch, the base commit) on the row of its
+// own tenant only.
+func testWorkspaceSetGitIsTenantScoped(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	row := mkWorkspace("ws_g", "acme", "run-1", "repo", "w1")
+	row.Kind, row.Git = store.WorkspaceKindGit, gitOf("loom/repo-1")
+	createWorkspace(t, s, row)
+	next := *row.Git
+	next.DefaultBranch, next.Base = "refs/heads/trunk", "1111111111111111111111111111111111111111"
+	if ok, err := s.WorkspaceSetGit(ctx, "other", row.ID, next); err != nil || ok {
+		t.Fatalf("another tenant set it: %v, %v", ok, err)
+	}
+	if ok, err := s.WorkspaceSetGit(ctx, "acme", row.ID, next); err != nil || !ok {
+		t.Fatalf("set git = %v, %v", ok, err)
+	}
+	got, err := s.WorkspaceGet(ctx, "acme", row.ID)
+	if err != nil || got.Git == nil || *got.Git != next {
+		t.Fatalf("read back %+v, %v; want %+v", got.Git, err, next)
+	}
+	if ok, err := s.WorkspaceSetGit(ctx, "acme", "ws_nope", next); err != nil || ok {
+		t.Fatalf("a missing row: %v, %v", ok, err)
 	}
 }

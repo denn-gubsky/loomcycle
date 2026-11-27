@@ -40,8 +40,9 @@ package builtin
 //
 // THE PLAN. The changes the accept makes are planned as the direct changes they are
 // (retire; rename, move, edit). A class rename that anything rests on is refused with
-// rename_job_pending until P5's rename job can carry it through stored rows (RFC GQ Q4);
-// relation and concept renames apply with the plan. A change the plan classes destroys or
+// rename_job_pending while the rename job cannot carry it through stored rows (RFC GQ Q4,
+// P5.3); one it can is applied by the update, which starts the job. Relation and concept
+// renames apply with the plan. A change the plan classes destroys or
 // stales needs the plan's fingerprint (P2.4, ontologyPlanGate), passed by the caller.
 // The writes carry the caller's fingerprint and never one the accept computed, so a
 // write the caller sent none for is planned again by update_chunk's own gate.
@@ -59,6 +60,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"reflect"
 	"strconv"
 	"strings"
@@ -78,7 +80,8 @@ var (
 	ErrChangeProposalInvalid = errors.New("invalid_proposal")
 	// ErrChangeEntryLocked: the target, or an entry under it, carries @locked.
 	ErrChangeEntryLocked = errors.New("entry_locked")
-	// ErrChangeRenameJobPending: a class rename with dependents (RFC GQ Q4).
+	// ErrChangeRenameJobPending: a class rename with dependents the rename job cannot
+	// carry yet (RFC GQ Q4, P5.3).
 	ErrChangeRenameJobPending = errors.New("rename_job_pending")
 	// ErrChangeTargetChanged: the target was edited between the checks and the write.
 	ErrChangeTargetChanged = errors.New("target_changed")
@@ -179,13 +182,29 @@ func (d *Document) AcceptChangeProposal(ctx context.Context, scope, chunkID, pla
 			return true, rep, err
 		}
 	}
-	if err := d.applyChangeAccept(ctx, a, fp, &rep); err != nil {
+	// The ontology as it stands before the change, when no release holds it yet (owner
+	// ruling Q2): otherwise the apply release's diff would carry every direct edit made
+	// since the last release as part of this change. A record, not a gate.
+	var releaseWarnings []string
+	if _, _, err := d.CatchUpOntologyRelease(ctx); err != nil {
+		slog.WarnContext(ctx, "ontology: catch_up release before an accept failed", "proposal", chunkID, "err", err)
+		releaseWarnings = append(releaseWarnings, "No release was taken of the ontology before this change: "+err.Error())
+	}
+	// A class rename's job may finish inside the write; this accept takes the release.
+	if err := d.applyChangeAccept(withRenameReleaseByCaller(ctx), a, fp, &rep); err != nil {
 		return true, rep, err
 	}
 	rep.Superseded, rep.Warnings = d.supersedeChangeProposals(ctx, a)
+	rep.Warnings = append(rep.Warnings, releaseWarnings...)
 	if _, err := d.execOp(ctx, map[string]any{"op": "delete_chunk", "scope": "tenant", "id": chunkID}); err != nil {
 		return true, rep, fmt.Errorf("the change was applied to %s, but the proposal could not be removed (reject it): %w",
 			strconv.Quote(a.mark.TargetName), err)
+	}
+	// After the proposal is gone, so the release's fingerprint is the ontology the accept
+	// left. Taken with the report so far as its plan summary.
+	if _, err := d.TakeOntologyRelease(ctx, OntologyReleaseApply, rep); err != nil {
+		slog.WarnContext(ctx, "ontology: apply release failed", "proposal", chunkID, "err", err)
+		rep.Warnings = append(rep.Warnings, "The change was applied, but no release of it was taken: "+err.Error())
 	}
 	return true, rep, nil
 }

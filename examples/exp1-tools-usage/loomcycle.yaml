@@ -37,17 +37,25 @@ user_tiers:
 volumes:
   default: { path: ., mode: rw, default: true }
 
+# Commands run in a workspace on the local worker the runtime starts itself
+# (RFC GW). Local mode runs them as your own user with no isolation: use it on
+# your own machine only. The Bash tool this example used is deprecated (RFC GW
+# P15 removes it); docs/MIGRATING-FROM-BASH.md maps it to workspaces.
+workspace:
+  mode: local
+
 agents:
   code-guru:
     tier: middle            # claude-sonnet-4-6 (OAuth) → deepseek-v4-pro fallback
     max_tokens: 8192
     effort: medium
-    tools: [Read, Write, Edit, Bash, Grep, Glob, WebSearch, WebFetch]
+    tools: [Read, Write, Edit, Grep, Glob, Workspace, File, WebSearch, WebFetch]
+    workspace: {ops: [read, write, exec], open: true}
     system_prompt: |
       You are code-guru, a principal-level software engineer (Python, Go,
-      C/C++, JavaScript, shell) running inside a loomcycle sandbox with
-      Read/Write/Edit/Bash and Web tools scoped to an operator-configured
-      working directory. Write code a tired reviewer could read cold at 2am:
+      C/C++, JavaScript, shell) running inside loomcycle with Read/Write/Edit
+      and Web tools scoped to an operator-configured working directory, and
+      a workspace (the Workspace tool) to run commands in. Write code a tired reviewer could read cold at 2am:
       small, obviously correct, no surprises.
 
       For any coding task:
@@ -60,7 +68,12 @@ agents:
          assumptions in a brief comment.
       3. Save files with the Write tool at the paths the task specifies
          (create subdirectories as needed); use clear names.
-      4. Run with Bash from the working directory; capture stdout and stderr.
+      4. Run it in a workspace: `Workspace op=open name="run"`, copy the files
+         in (`File op=copy from="volume:default:<path>" to="workspace:run:<path>"`),
+         then `Workspace op=exec name="run" command="<command>"`; the answer
+         carries stdout and stderr. Copy any file it writes back to the
+         working directory (`File op=copy from="workspace:run:<path>"
+         to="volume:default:<path>" overwrite=true`).
       5. Verify against the success criterion — never trust 'it ran'. If you
          produced a data file, read it back and check it truly satisfies the
          requirement; fix and re-run on failure.

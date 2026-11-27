@@ -129,6 +129,10 @@ GET /v1/_metrics/summary	substrate:admin	false	read runtime:metrics
 GET /v1/_models	substrate:tenant	false	read runtime:routing
 GET /v1/_oauth/authorize	substrate:admin	false	-
 GET /v1/_ontology	substrate:tenant	false	read document:*
+GET /v1/_ontology/job	substrate:tenant	false	read document:*
+GET /v1/_ontology/releases	substrate:tenant	false	read document:*
+GET /v1/_ontology/releases/diff	substrate:tenant	false	read document:*
+GET /v1/_ontology/releases/x	substrate:tenant	false	read document:*
 GET /v1/_operatortokendef/names	substrate:admin	false	read principal:token:*
 GET /v1/_presets	substrate:admin	false	read runtime:config
 GET /v1/_presets/x	substrate:admin	false	read runtime:config
@@ -297,6 +301,10 @@ HEAD /v1/_metrics/summary	substrate:admin	false	read runtime:metrics
 HEAD /v1/_models	substrate:tenant	false	read runtime:routing
 HEAD /v1/_oauth/authorize	substrate:admin	false	-
 HEAD /v1/_ontology	substrate:tenant	false	read document:*
+HEAD /v1/_ontology/job	substrate:tenant	false	read document:*
+HEAD /v1/_ontology/releases	substrate:tenant	false	read document:*
+HEAD /v1/_ontology/releases/diff	substrate:tenant	false	read document:*
+HEAD /v1/_ontology/releases/x	substrate:tenant	false	read document:*
 HEAD /v1/_operatortokendef/names	substrate:admin	false	read principal:token:*
 HEAD /v1/_presets	substrate:admin	false	read runtime:config
 HEAD /v1/_presets/x	substrate:admin	false	read runtime:config
@@ -522,8 +530,10 @@ POST /v1/_oauth/revoke	substrate:admin	false	-
 POST /v1/_oauth/token	substrate:admin	false	-
 POST /v1/_ontology	substrate:tenant	false	read document:*
 POST /v1/_ontology/adopt	substrate:tenant	false	write document:*
+POST /v1/_ontology/job/resume	substrate:tenant	false	write document:*
 POST /v1/_ontology/plan	substrate:tenant	false	read document:*
 POST /v1/_ontology/proposals	substrate:tenant	false	write document:*
+POST /v1/_ontology/rollback	substrate:tenant	false	write document:*
 POST /v1/_ontology/subjects/merge	substrate:tenant	false	write document:*
 POST /v1/_ontology/subjects/principal	substrate:tenant	false	write document:*
 POST /v1/_operatortokendef	substrate:tenant	false	read principal:token:*
@@ -603,6 +613,7 @@ POST /v1/sessions/x/replay	runs:create	true	run agent:*
 POST /v1/users/x/channels/x/ack	channel:publish	false	ack channel:x
 POST /v1/users/x/channels/x/publish	channel:publish	false	publish channel:x
 POST /v1/users/x/channels/x/subscribe	channel:publish	false	subscribe channel:x
+POST /v1/workspaces/exposure-tickets/x	runs:read	false	read run:*
 POST /v1/workspaces/exposures/x/x	runs:read	false	read run:*
 POST /v1/workspaces/exposures/x/x/x	runs:read	false	read run:*
 POST /v1/workspaces/exposures/x/x/x/y	runs:read	false	read run:*

@@ -27,6 +27,7 @@ type stubConfig struct {
 	dataDir        string
 	listen         string
 	configWarnings []string
+	deprecations   []string
 	awsProviders   map[string]AWSAuthProvider
 	hostShell      bool
 	tokenEnv       config.Env
@@ -65,6 +66,7 @@ func (s *stubConfig) HostShellEnabled() bool                       { return s.ho
 
 func (s *stubConfig) ProviderPriorityList() []string  { return s.providers }
 func (s *stubConfig) ConfigWarnings() []string        { return s.configWarnings }
+func (s *stubConfig) DeprecationWarnings() []string   { return s.deprecations }
 func (s *stubConfig) AgentProviderHints() []string    { return s.agentProviders }
 func (s *stubConfig) UserTierProviderHints() []string { return s.tierProviders }
 func (s *stubConfig) ProviderAPIKeyEnv(id string) string {
@@ -186,6 +188,7 @@ func TestDoctor_AllPass(t *testing.T) {
 		"[PASS]  Provider anthropic",
 		"[PASS]  Storage backend",
 		"[PASS]  Listen address",
+		"[PASS]  Deprecated",
 		"0 warnings, 0 failures.",
 	} {
 		if !strings.Contains(out, want) {
@@ -643,6 +646,12 @@ func TestDoctor_ReportsTheWorkspaceModeAndInertGrants(t *testing.T) {
 			want: []string{"[PASS]  Workspaces", "0.0.0.0:7788", "workers:attach", "configuration only"}},
 		{ws: DoctorWorkspaces{Mode: config.WorkspaceModeOff, InertGrants: []string{"builder", "tester"}},
 			want: []string{"[WARN]  Workspace grants", "2 agents", "builder, tester"}},
+		// RFC GW P13: personal workers put a user's own folders in front of
+		// agents, on the host engine; doctor says so plainly.
+		{ws: DoctorWorkspaces{Mode: config.WorkspaceModeRemote, Endpoint: "127.0.0.1:7788", PersonalWorkers: true},
+			want: []string{"[WARN]  Personal workers", "workspace.personal_workers on", "not a sandbox", "workspace.roots", "127.0.0.1:7788"}},
+		{ws: DoctorWorkspaces{Mode: config.WorkspaceModeRemote, Endpoint: "127.0.0.1:7788"},
+			wantNot: []string{"Personal workers"}},
 	} {
 		t.Run(c.ws.Mode+strings.Join(c.ws.InertGrants, ","), func(t *testing.T) {
 			withTempHome(t)

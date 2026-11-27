@@ -11,11 +11,14 @@ type ontologyOverlay struct {
 	parents map[string]string    // move: the chunk's new parent chunk
 	bodies  map[string]chunkBody // edit: the chunk's new body (fields kept)
 	gone    map[string]bool      // delete or retire: the chunk is read as absent
+	// statuses is a chunk's new status (unretire: ""). Only set by an unretire, so an
+	// overlay without one reads every status as stored.
+	statuses map[string]string
 }
 
 func newOntologyOverlay() *ontologyOverlay {
 	return &ontologyOverlay{titles: map[string]string{}, parents: map[string]string{},
-		bodies: map[string]chunkBody{}, gone: map[string]bool{}}
+		bodies: map[string]chunkBody{}, gone: map[string]bool{}, statuses: map[string]string{}}
 }
 
 // rewrite applies the overlay to one chunk row and reports whether the row is still
@@ -33,6 +36,9 @@ func (ov *ontologyOverlay) rewrite(c *ontologyChunk) bool {
 	}
 	if p, ok := ov.parents[c.id]; ok {
 		c.parentID = p
+	}
+	if s, ok := ov.statuses[c.id]; ok {
+		c.status = s
 	}
 	return true
 }

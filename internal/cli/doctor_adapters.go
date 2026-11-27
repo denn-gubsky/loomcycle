@@ -21,7 +21,23 @@ type realConfig struct {
 
 func (r *realConfig) ProviderPriorityList() []string { return r.cfg.ProviderPriority }
 
-func (r *realConfig) ConfigWarnings() []string { return r.cfg.Warnings }
+// ConfigWarnings are the load's advisories but its deprecations, which
+// DeprecationWarnings reports.
+func (r *realConfig) ConfigWarnings() []string {
+	deprecated := make(map[string]bool, len(r.cfg.Deprecations))
+	for _, d := range r.cfg.Deprecations {
+		deprecated[d] = true
+	}
+	out := make([]string, 0, len(r.cfg.Warnings))
+	for _, w := range r.cfg.Warnings {
+		if !deprecated[w] {
+			out = append(out, w)
+		}
+	}
+	return out
+}
+
+func (r *realConfig) DeprecationWarnings() []string { return r.cfg.Deprecations }
 
 func (r *realConfig) AgentProviderHints() []string {
 	out := []string{}
@@ -90,7 +106,7 @@ func (r *realConfig) EdgeGateProbes() []DoctorEdgeProbe {
 
 func (r *realConfig) Workspaces() DoctorWorkspaces {
 	ws := r.cfg.Workspace.Resolved()
-	out := DoctorWorkspaces{Mode: ws.Mode, InertGrants: r.cfg.InertWorkspaceGrants()}
+	out := DoctorWorkspaces{Mode: ws.Mode, InertGrants: r.cfg.InertWorkspaceGrants(), PersonalWorkers: r.cfg.Workspace.PersonalWorkers}
 	if ws.LocalWorker() {
 		out.LocalTenant, out.LocalTenantWhy = r.cfg.WorkspaceLocalTenant()
 		out.LocalRoot = r.cfg.WorkspaceLocalRoot()

@@ -357,6 +357,16 @@ type Config struct {
 	// but its capability gate is unset, so every call default-denies" footgun
 	// (e.g. Memory without memory_scopes — F21). Not in YAML.
 	Warnings []string `yaml:"-"`
+	// Deprecations are the warnings among Warnings about what a future
+	// release removes (RFC GW §9, deprecated.go), kept apart so `doctor` can
+	// report them under their own check rather than as advisories.
+	Deprecations []string `yaml:"-"`
+	// bundledWorkspace names the agents whose workspace grant an embedded
+	// bundle gave and no operator layer changed (bundledWorkspaceGrants).
+	bundledWorkspace map[string]bool
+	// bundledGitRemote names the agents whose git_remote an embedded bundle
+	// gave and no operator layer changed (bundledGitRemotes).
+	bundledGitRemote map[string]bool
 
 	// UndrainedMemory lists the memory scopes agents can enqueue into with
 	// Memory op=add (or by banking evicted context) while no enabled schedule
@@ -2402,7 +2412,9 @@ type AgentDef struct {
 	// Document op=mark_source). "annotate" stamps nothing either: it lets the
 	// run write annotations (Document op=set_annotation, annotation_inputs,
 	// delete_annotation) and hold the scope's "annotator" lease, and grants no
-	// other write.
+	// other write. "ontology" stamps nothing and grants no write: it lets the
+	// run read the tenant's ontology signals (Document op=ontology_signals, RFC
+	// GQ P6.2) and hold the scope's "ontologist" lease.
 	//
 	// Honoured only for `provider: code-js`, because only a code-js body is
 	// code: a model-driven agent declaring it is refused at load and at
@@ -5175,6 +5187,11 @@ func LoadLayersWith(opts LoadOptions, layers ...Layer) (*Config, error) {
 		return nil, fmt.Errorf("retired environment variables are set to something this version does not apply (a tighter bound, a feature kept off, another store, data kept or deleted differently, or a setting that moved to the yaml and is not there), and ignoring them would change this deployment; act on each, then remove its line: %s", strings.Join(refused, " | "))
 	}
 	cfg.Warnings = append(cfg.Warnings, retiredEnvWarnings(os.Environ())...)
+	// What a later release removes, while it still works (RFC GW §9).
+	cfg.Deprecations = append(deprecatedEnvWarnings(os.Environ()), deprecationWarnings(cfg, layers)...)
+	cfg.Warnings = append(cfg.Warnings, cfg.Deprecations...)
+	cfg.bundledWorkspace = bundledWorkspaceGrants(cfg, layers)
+	cfg.bundledGitRemote = bundledGitRemotes(cfg, layers)
 
 	if err := applyEnvStorage(cfg, opts.OfflineTool); err != nil {
 		return nil, err
@@ -7316,10 +7333,9 @@ func ValidateGitRemote(ops []string) error {
 const CodeJSProvider = "code-js"
 
 // ValidateStatementMethods refuses a statement_methods list holding a value
-// other than "rule", "extractor", "judge", "link", "remember" or "annotate", a
-// duplicate, or a code-only value (rule, extractor, judge, annotate) on an agent
-// whose provider is not
-// code-js. One function for every place a definition is authored — operator
+// other than "rule", "extractor", "judge", "link", "remember", "annotate" or
+// "ontology", a duplicate, or a code-only value (rule, extractor, judge,
+// annotate, ontology) on an agent whose provider is not code-js. One function for every place a definition is authored — operator
 // yaml and the AgentDef create/fork overlay — so a grant refused at boot is not
 // quietly kept by a runtime write. provider is the definition's own `provider:`
 // field, after any fork has been merged.
@@ -7327,7 +7343,7 @@ func ValidateStatementMethods(provider string, methods []string) error {
 	seen := map[string]bool{}
 	for i, m := range methods {
 		if !StatementMethodKnown(m) {
-			return fmt.Errorf("statement_methods[%d]: unknown method %q (want rule, extractor, judge, link, remember and/or annotate)", i, m)
+			return fmt.Errorf("statement_methods[%d]: unknown method %q (want rule, extractor, judge, link, remember, annotate and/or ontology)", i, m)
 		}
 		if seen[m] {
 			return fmt.Errorf("statement_methods[%d]: %q is listed twice", i, m)
@@ -7343,7 +7359,7 @@ func ValidateStatementMethods(provider string, methods []string) error {
 // StatementMethodKnown reports a statement_methods value this build knows.
 func StatementMethodKnown(m string) bool {
 	switch m {
-	case "rule", "extractor", "judge", "link", "remember", "annotate":
+	case "rule", "extractor", "judge", "link", "remember", "annotate", "ontology":
 		return true
 	}
 	return false
@@ -7353,12 +7369,13 @@ func StatementMethodKnown(m string) bool {
 // agent may hold: rule and extractor stamp a method that says code made the
 // statement, judge rules above the policy's floor, and annotate writes the text
 // shown to every reader about a document, which only the driver that computes
-// its inputs hash should write. link (a run's link_chunks
-// in the tenant scope is asserted, not filed as a proposal) and remember (a run
+// its inputs hash should write. ontology reads counts over every user's scope
+// of the tenant, which a model run could carry into its answer. link (a run's
+// link_chunks in the tenant scope is asserted, not filed as a proposal) and remember (a run
 // may file a fact as a person's statement) stamp nothing and claim no code, so
 // any agent may be granted them.
 func StatementMethodCodeOnly(m string) bool {
-	return m == "rule" || m == "extractor" || m == "judge" || m == "annotate"
+	return m == "rule" || m == "extractor" || m == "judge" || m == "annotate" || m == "ontology"
 }
 
 // InertShellCredentials returns the names in an agent's shell_credentials
@@ -8682,18 +8699,22 @@ func shellCredentialWarnings(name string, a AgentDef, env Env) []string {
 }
 
 // gitRemoteWarnings advises on an agent's git_remote (RFC FB), never fatally:
-// it reaches nothing on an agent without the Git tool, and a push needs a
-// host in LOOMCYCLE_GIT_PUSH_HOSTS, so with that list empty every push is
-// refused whatever the agent lists.
-func gitRemoteWarnings(name string, a AgentDef, env Env) []string {
+// it reaches nothing on an agent with neither the Git tool nor Workspace
+// (whose git workspaces it governs too, RFC GW P11), and a push needs a host
+// in LOOMCYCLE_GIT_PUSH_HOSTS, so with that list empty every push is refused
+// whatever the agent lists. bundled says an embedded bundle gave the agent
+// this git_remote and no operator layer changed it: a default install loads
+// without advising on what the operator has not asked for (RFC GW P14, as
+// D-P14-18 for a bundle's workspace grant).
+func gitRemoteWarnings(name string, a AgentDef, env Env, bundled bool) []string {
 	if len(a.GitRemote) == 0 {
 		return nil
 	}
 	var out []string
-	if !slices.Contains(a.Tools, "Git") {
-		out = append(out, fmt.Sprintf("agent %q: git_remote is set but Git is not in tools, so it allows nothing", name))
+	if !slices.Contains(a.Tools, "Git") && !slices.Contains(a.Tools, "Workspace") {
+		out = append(out, fmt.Sprintf("agent %q: git_remote is set but neither Git nor Workspace is in tools, so it allows nothing", name))
 	}
-	if slices.Contains(a.GitRemote, "push") && len(env.GitPushHosts) == 0 {
+	if slices.Contains(a.GitRemote, "push") && len(env.GitPushHosts) == 0 && !bundled {
 		out = append(out, fmt.Sprintf("agent %q: git_remote lists push but LOOMCYCLE_GIT_PUSH_HOSTS is empty, so every push will be refused", name))
 	}
 	return out
@@ -8739,8 +8760,8 @@ func workspaceFromDiscovered(w *agents.AgentWorkspace) *AgentWorkspace {
 	if w == nil {
 		return nil
 	}
-	return &AgentWorkspace{Ops: append([]string(nil), w.Ops...), Open: w.Open, Share: w.Share, Expose: w.Expose,
-		Egress: append([]string(nil), w.Egress...), Engine: w.Engine}
+	return &AgentWorkspace{Ops: append([]string(nil), w.Ops...), Open: w.Open, Share: w.Share, Expose: w.Expose, Connect: w.Connect, Durable: w.Durable, Templates: w.Templates,
+		Roots: w.Roots, Egress: append([]string(nil), w.Egress...), Engine: w.Engine}
 }
 
 // NetPolicy is the operator's private-address policy (netguard.Policy), the

@@ -31,6 +31,14 @@ export interface RunClient {
   ): Promise<unknown>;
   cancelInterrupt(runId: string, interruptId: string, opts?: { resolvedBy?: string }): Promise<unknown>;
   reviewRun(runId: string, decision: "approve" | "reject", opts?: { feedback?: string }): Promise<unknown>;
+  /** The run's questions with the given status, to check a question saved
+   *  before a restart (RFC HG §4.3). Optional, so a client double written
+   *  before it still fits; without it a saved question is not restored. */
+  listRunInterrupts?(runId: string, opts?: { status?: "pending" }): Promise<{ interrupts?: Array<{ interrupt_id: string; status?: string }> }>;
+  /** Re-attaches to a run's stream, replaying its events, then tailing. Used
+   *  only after a restart, to show what the run says once its saved question
+   *  is answered. Optional, as listRunInterrupts. */
+  streamRunByID?(runId: string, opts?: { signal?: AbortSignal }): AsyncIterable<AgentEvent>;
 }
 
 /** The two calls a bridge makes with its tenant-operator token. */

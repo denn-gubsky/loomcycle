@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -31,11 +32,13 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/safego"
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/workerid"
 	"github.com/denn-gubsky/loomcycle/internal/workerlink"
 	"github.com/denn-gubsky/loomcycle/internal/workspace"
 	"github.com/denn-gubsky/loomcycle/internal/workspace/workspacepb"
@@ -109,7 +112,11 @@ type Options struct {
 	// LocalTenant is the one tenant the local worker serves
 	// (workspace.local.tenant).
 	LocalTenant string
-	Logger      *slog.Logger
+	// PersonalWorkers reports whether workspace.personal_workers is on (RFC
+	// GW P13), read at every attach and recheck, so turning it off detaches
+	// every personal worker within one check. Nil is off.
+	PersonalWorkers func() bool
+	Logger          *slog.Logger
 }
 
 // Dispatcher is the workspace worker service and the registry behind it.
@@ -118,10 +125,13 @@ type Dispatcher struct {
 
 	opt Options
 	log *slog.Logger
+	// onLost is told of each row reconciliation marks lost (SetOnLost).
+	onLost func(context.Context, store.WorkspaceRow)
 	// deps are the store and the token resolver, set by Activate.
 	deps atomic.Pointer[deps]
 	// egress answers the Egress streams (SetEgress); nil refuses them.
 	egress atomic.Pointer[EgressFunc]
+	git    atomic.Pointer[GitEgressFunc]
 
 	mu      sync.Mutex
 	srv     *grpc.Server
@@ -138,8 +148,10 @@ type worker struct {
 	declared string
 	serves   auth.WorkerAttach
 	// local is the runtime's own child, attached on its private socket.
-	local    bool
-	engine   string
+	local  bool
+	engine string
+	// protocol is the version the worker attached with.
+	protocol uint32
 	tools    map[string]bool
 	labels   []string
 	capacity int
@@ -354,6 +366,19 @@ func (d *Dispatcher) authorize(ctx context.Context, bearer string) (owner string
 	if err != nil {
 		return "", att, status.Error(codes.PermissionDenied, err.Error())
 	}
+	// A personal worker (RFC GW P13) attaches only where the operator turned
+	// personal workers on, read at every attach and recheck, and only from
+	// a loopback peer (D-P13-8, behind the boot check on worker_endpoint):
+	// a proxy or a later listener change cannot carry a remote one in.
+	if att.Personal {
+		if d.opt.PersonalWorkers == nil || !d.opt.PersonalWorkers() {
+			return "", att, status.Error(codes.PermissionDenied, "personal workers are off on this runtime (workspace.personal_workers)")
+		}
+		pr, ok := peer.FromContext(ctx)
+		if !ok || !LoopbackPeer(pr.Addr) {
+			return "", att, status.Error(codes.PermissionDenied, "a personal worker attaches only from this machine (a loopback address)")
+		}
+	}
 	return grantKey(att), att, nil
 }
 
@@ -379,6 +404,13 @@ func (d *Dispatcher) stillAuthorized(ctx context.Context, bearer, owner string) 
 func grantKey(att auth.WorkerAttach) string {
 	if att.Shared {
 		return "shared"
+	}
+	if att.Personal {
+		// "user:<tenant>/<h>", h the first 16 hex of SHA-256 of the user
+		// (D-P13-5): a subject may hold bytes an id may not, and the id
+		// names the grant, never the token, so a rotated token keeps its
+		// worker's rows. No other prefix starts "user:".
+		return workerid.PersonalGrantKey(att.TenantID, att.UserID)
 	}
 	return "tenant:" + att.TenantID
 }
@@ -477,6 +509,15 @@ func (d *Dispatcher) Attach(stream workspacepb.WorkspaceService_AttachServer) er
 				return err
 			}
 			d.touch(ctx, w, log)
+			// A release made on a replica this worker is not attached to
+			// leaves its row releasing; this replica, which the worker is
+			// on, finishes it now rather than at the worker's next attach
+			// (RFC GW P12 plan §3.5, G-A).
+			if rm := d.releasingToRemove(ctx, w, log); len(rm) > 0 {
+				if err := stream.Send(&workspacepb.CoreControl{Msg: &workspacepb.CoreControl_Remove{Remove: &workspacepb.Remove{WorkspaceIds: rm}}}); err != nil {
+					return err
+				}
+			}
 		case m := <-in:
 			t.Reset(d.opt.HeartbeatTimeout)
 			if r := m.GetRemoved(); r != nil {
@@ -505,8 +546,8 @@ func (d *Dispatcher) admit(owner string, att auth.WorkerAttach, h *workspacepb.H
 	if h == nil {
 		return nil, nil, status.Error(codes.InvalidArgument, "the first Attach frame must be Hello")
 	}
-	if h.GetProtocolVersion() != workspace.ProtocolVersion {
-		return nil, nil, status.Errorf(codes.FailedPrecondition, "this runtime speaks workspace protocol %d, the worker %d: run the same loomcycle release on both", workspace.ProtocolVersion, h.GetProtocolVersion())
+	if v := h.GetProtocolVersion(); v < workspace.MinProtocolVersion || v > workspace.ProtocolVersion {
+		return nil, nil, status.Errorf(codes.FailedPrecondition, "this runtime serves workspace protocols %d to %d, the worker speaks %d: run the same loomcycle release on both", workspace.MinProtocolVersion, workspace.ProtocolVersion, v)
 	}
 	if !validDeclaredID(h.GetWorkerId()) {
 		return nil, nil, status.Error(codes.InvalidArgument, "a worker id of 1 to 128 letters, digits, '.', '-' or '_' is required")
@@ -527,7 +568,8 @@ func (d *Dispatcher) admit(owner string, att auth.WorkerAttach, h *workspacepb.H
 	}
 	w := &worker{
 		id: owner + "/" + h.GetWorkerId(), declared: h.GetWorkerId(), serves: att, engine: h.GetEngine(),
-		tools: map[string]bool{}, labels: append([]string(nil), h.GetLabels()...),
+		protocol: h.GetProtocolVersion(),
+		tools:    map[string]bool{}, labels: append([]string(nil), h.GetLabels()...),
 		capacity: min(max(int(h.GetCapacity()), 1), maxCapacity),
 		ctl:      make(chan *workspacepb.CoreControl, 16), lost: make(chan struct{}),
 		pending: map[string]store.WorkspaceRow{}, streams: map[*opStream]struct{}{},
@@ -563,6 +605,17 @@ func (w *worker) servesTenant(tenant string) bool {
 		return w.local && !w.serves.Shared && w.serves.TenantID == ""
 	}
 	return w.serves.Serves(tenant)
+}
+
+// servesUser is servesTenant for user of tenant: a personal worker (RFC GW
+// P13) serves its own (tenant, user) only, and a request that names no user
+// is refused there (D-P13-12), so a call site that forgot it is never
+// served. Every other worker is user-blind.
+func (w *worker) servesUser(tenant, user string) bool {
+	if w.serves.Personal {
+		return w.serves.ServesUser(tenant, user)
+	}
+	return w.servesTenant(tenant)
 }
 
 // engineServes reports whether a worker on engine may hold workspaces for the
@@ -615,6 +668,7 @@ func (d *Dispatcher) reconcile(ctx context.Context, w *worker, held []string, lo
 			d.deleteRow(ctx, r, log)
 		}
 	}
+	d.markAbsentLost(ctx, rows, onDisk, log)
 	if len(remove) > 0 {
 		log.Info("removing workspaces released or unknown while the worker was away", "count", len(remove))
 	}
@@ -645,10 +699,13 @@ func (d *Dispatcher) markPending(w *worker, r store.WorkspaceRow) {
 // confirms, which recoverLost reports by returning true. A run that cannot
 // be read changes nothing until the next attach.
 func (d *Dispatcher) recoverLost(ctx context.Context, w *worker, r store.WorkspaceRow, log *slog.Logger) (remove bool) {
-	if r.OwnerKind == store.WorkspaceOwnerPrincipal {
-		// No run owns it (RFC GW D35): it comes back into service, and the
-		// principal release pass decides when it ends, as for one never lost.
-		// Read as a run, its pin key names no run row, and it would be removed.
+	if r.OwnerKind == store.WorkspaceOwnerPrincipal || r.Lifetime == store.WorkspaceLifetimeDurable {
+		// No run owns it (RFC GW D35), or it outlives its run (a durable
+		// workspace, RFC GW §8 "Worker death": durable disks keep their
+		// workspaces): it comes back into service, and its own release rule
+		// decides when it ends (the principal pass; for a durable one pinned
+		// to an ended run, the sweeper parks it). Read as a run, its pin key
+		// names no run row, and it would be removed.
 		if ok, err := d.store().WorkspaceSetState(ctx, r.TenantID, r.ID, store.WorkspaceLost, store.WorkspaceReady); err != nil {
 			log.Warn("cannot mark a returned workspace ready", "workspace_id", r.ID, "err", err)
 		} else if ok {
@@ -906,13 +963,20 @@ type PlaceRequest struct {
 	// TenantID is the tenant the workspace is for; a worker is placed only
 	// when it serves that tenant.
 	TenantID string
-	// UserID is the user the workspace is for. Unused until personal
-	// workers (RFC GW §4.5) exist.
+	// UserID is the user the workspace is for: a personal worker (RFC GW
+	// §4.5) is placed only for its own user.
 	UserID string
+	// Root, set, asks for a workspace on the user's folder of that name: only
+	// a personal worker of (TenantID, UserID) offering it is placed. Unset,
+	// no personal worker is (D-P13-4).
+	Root string
 	// Toolchains are the toolchains the worker must carry, all of them.
 	Toolchains []string
 	// Engine is the least isolating engine accepted; "" accepts any.
 	Engine string
+	// Labels are the labels the worker must have reported, all of them.
+	// workspace.GitLabel also needs workspace.GitProtocolVersion.
+	Labels []string
 }
 
 // Place returns the attached workers a workspace may be opened on, least
@@ -932,12 +996,21 @@ func (d *Dispatcher) Place(ctx context.Context, req PlaceRequest) ([]string, err
 	for _, w := range d.workers {
 		// engineServes is checked at attach too; again here so a shared
 		// host worker can never be handed a workspace, whatever let it in.
-		if !w.servesTenant(req.TenantID) || !engineServes(w.serves, w.engine) || workspace.EngineRank(w.engine) < workspace.EngineRank(req.Engine) {
+		if !w.servesUser(req.TenantID, req.UserID) || !engineServes(w.serves, w.engine) || workspace.EngineRank(w.engine) < workspace.EngineRank(req.Engine) {
+			continue
+		}
+		// A personal worker takes only its user's root workspaces, on a
+		// root it offers; any other worker never takes one (D-P13-4).
+		if w.serves.Personal != (req.Root != "") ||
+			(req.Root != "" && !slices.Contains(w.labels, workspace.RootLabelPrefix+req.Root)) {
 			continue
 		}
 		ok := true
 		for _, t := range req.Toolchains {
 			ok = ok && w.tools[t]
+		}
+		for _, l := range req.Labels {
+			ok = ok && slices.Contains(w.labels, l) && (l != workspace.GitLabel || w.protocol >= workspace.GitProtocolVersion)
 		}
 		if ok {
 			matched = append(matched, cand{id: w.id, cap: w.capacity})
@@ -946,7 +1019,9 @@ func (d *Dispatcher) Place(ctx context.Context, req PlaceRequest) ([]string, err
 	d.mu.Unlock()
 	if len(matched) == 0 {
 		detail := "no attached workspace worker serves this tenant with the toolchains and engine asked"
-		if req.TenantID == "" {
+		if req.Root != "" {
+			detail = fmt.Sprintf("no personal worker of yours is attached offering root %q", req.Root)
+		} else if req.TenantID == "" {
 			detail = "the run has no tenant, and only a local worker configured for the empty tenant (workspace.mode local, workspace.local.tenant unset, no authentication) serves one"
 		}
 		return nil, &OpError{Class: workspace.ClassNoWorker, Detail: detail}
@@ -981,12 +1056,19 @@ func (d *Dispatcher) Place(ctx context.Context, req PlaceRequest) ([]string, err
 }
 
 // Attached reports whether a worker of this id is attached to this replica
-// and serves tenant.
-func (d *Dispatcher) Attached(workerID, tenant string) bool {
+// and serves user of tenant.
+func (d *Dispatcher) Attached(workerID, tenant, user string) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	w := d.workers[workerID]
-	return w != nil && w.servesTenant(tenant)
+	return w != nil && w.servesUser(tenant, user)
+}
+
+// LoopbackPeer reports whether a is a loopback TCP address. Anything else,
+// no address included, is not.
+func LoopbackPeer(a net.Addr) bool {
+	t, ok := a.(*net.TCPAddr)
+	return ok && t != nil && t.IP.IsLoopback()
 }
 
 // WorkerInfo is one attached worker as its Hello described it.
@@ -1052,4 +1134,68 @@ func (d *Dispatcher) count(opName, outcome string) {
 	d.mu.Lock()
 	d.ops[opName+"/"+outcome]++
 	d.mu.Unlock()
+}
+
+// releasingToRemove is the ids of w's releasing rows not yet named in a
+// Remove on this attachment, each recorded as pending so its row is deleted
+// once the worker says the directory is gone. Every replica the worker is
+// attached to may name one; the row is deleted by id once, and a worker
+// asked twice removes a directory once.
+func (d *Dispatcher) releasingToRemove(ctx context.Context, w *worker, log *slog.Logger) []string {
+	rows, err := d.store().WorkspaceListByWorker(ctx, w.id, store.WorkspaceReleasing)
+	if err != nil {
+		log.Warn("cannot read the worker's released workspaces; finishing them at the next recheck", "err", err)
+		return nil
+	}
+	var ids []string
+	d.mu.Lock()
+	for _, r := range rows {
+		if r.WorkerID != w.id {
+			continue
+		}
+		if _, named := w.pending[r.ID]; named {
+			continue
+		}
+		w.pending[r.ID] = r
+		ids = append(ids, r.ID)
+	}
+	d.mu.Unlock()
+	return ids
+}
+
+// SetOnLost sets who is told of a workspace reconciliation marked lost (its
+// pages close, RFC GW P12). Wiring only, before the first attach.
+func (d *Dispatcher) SetOnLost(fn func(context.Context, store.WorkspaceRow)) { d.onLost = fn }
+
+// absentGrace is how old a ready row must be before a worker that attaches
+// without its directory marks it lost: one made in the last minutes may be
+// one another replica is opening on this worker as it attaches, its
+// directory made after the worker listed what it holds.
+const absentGrace = 2 * time.Minute
+
+// markAbsentLost marks lost the ready rows of w whose directories w did not
+// come back with (RFC GW P12 plan §3.4, G-C): their files are gone, so they
+// must not answer ready. Opening and releasing rows are not touched.
+func (d *Dispatcher) markAbsentLost(ctx context.Context, rows []store.WorkspaceRow, onDisk map[string]bool, log *slog.Logger) {
+	now := time.Now()
+	for _, r := range rows {
+		// A row with no creation time says nothing of its age (every store
+		// stamps it): it is left, never marked lost on a guess.
+		if r.State != store.WorkspaceReady || onDisk[r.ID] || r.CreatedAt.IsZero() || now.Sub(r.CreatedAt) < absentGrace {
+			continue
+		}
+		ok, err := d.store().WorkspaceSetState(ctx, r.TenantID, r.ID, store.WorkspaceReady, store.WorkspaceLost)
+		if err != nil {
+			log.Warn("cannot mark lost a workspace its worker came back without", "workspace_id", r.ID, "err", err)
+			continue
+		}
+		if !ok {
+			continue
+		}
+		log.Warn("a worker came back without a workspace's directory; it is lost", "workspace_id", r.ID)
+		if d.onLost != nil {
+			r.State = store.WorkspaceLost
+			d.onLost(ctx, r)
+		}
+	}
 }

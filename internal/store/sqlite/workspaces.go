@@ -35,6 +35,10 @@ func (s *Store) WorkspaceSetState(ctx context.Context, tenantID, id string, from
 	return sqlshared.WorkspaceSetState(ctx, s.shared(), tenantID, id, from, to)
 }
 
+func (s *Store) WorkspaceSetGit(ctx context.Context, tenantID, id string, git store.WorkspaceGit) (bool, error) {
+	return sqlshared.WorkspaceSetGit(ctx, s.shared(), tenantID, id, git)
+}
+
 func (s *Store) WorkspaceDelete(ctx context.Context, tenantID, id string) (bool, error) {
 	return sqlshared.WorkspaceDelete(ctx, s.shared(), tenantID, id)
 }
@@ -77,4 +81,28 @@ func (s *Store) WorkspaceListPrincipalOwned(ctx context.Context) ([]store.Worksp
 
 func (s *Store) WorkspaceTouchUsed(ctx context.Context, tenantID, id string, at time.Time) error {
 	return sqlshared.WorkspaceTouchUsed(ctx, s.shared(), tenantID, id, at)
+}
+
+func (s *Store) WorkspaceGetDurable(ctx context.Context, tenantID, userID, name string) (store.WorkspaceRow, error) {
+	return sqlshared.WorkspaceGetDurable(ctx, s.shared(), tenantID, userID, name)
+}
+
+func (s *Store) WorkspacePin(ctx context.Context, tenantID, id, fromOwnerRunID string, to store.WorkspaceOwner) (bool, error) {
+	return sqlshared.WorkspacePin(ctx, s.shared(), tenantID, id, fromOwnerRunID, to)
+}
+
+func (s *Store) WorkspaceUnpin(ctx context.Context, tenantID, id, fromRunID string) (bool, error) {
+	return sqlshared.WorkspaceUnpin(ctx, s.shared(), tenantID, id, fromRunID)
+}
+
+func (s *Store) WorkspaceCountDurableByUser(ctx context.Context, tenantID, userID string) (int, error) {
+	return sqlshared.WorkspaceCountDurableByUser(ctx, s.shared(), tenantID, userID)
+}
+
+func (s *Store) WorkspaceListDurableByUser(ctx context.Context, tenantID, userID string) ([]store.WorkspaceRow, error) {
+	return sqlshared.WorkspaceListDurableByUser(ctx, s.shared(), tenantID, userID)
+}
+
+func (s *Store) SnapshotReadWorkspaces(ctx context.Context) ([]store.WorkspaceRow, error) {
+	return sqlshared.SnapshotReadWorkspaces(ctx, s.shared())
 }

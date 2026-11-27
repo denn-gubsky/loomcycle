@@ -15,6 +15,6 @@ var FileTwinFields = []string{
 	"run_id", "op", "path", "from", "to", "overwrite", "recursive", "prefix",
 	"images", "max_rows", "excerpt_chars", "pages", "max_chars", "structure", "title", "doc_path", "scope", "tags", "source", "headings",
 	"reimport", "work_key", "edition_date", "amending_document_id",
-	"document", "chunk", "format", "toc", "title_page", "provenance", "page_size", "language", "metadata", "style",
+	"document", "chunk", "format", "toc", "title_page", "provenance", "page_size", "language", "metadata", "style", "page_text",
 	"all", "dry_run",
 }

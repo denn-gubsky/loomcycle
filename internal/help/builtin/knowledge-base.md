@@ -80,6 +80,14 @@ fit is filed marked for review. Missing a class, a relation kind, a concept or
 an instance? Suggest it with `propose_entity` (`section: relations`, `schemes`
 or `instances`). An agent never edits the ontology document itself.
 
+To see what the corpus already uses and the ontology does not declare, an
+operator reads `ontology_signals`, or runs the knowledge-base bundle's
+`kb/ontologist` with `{"mode": "report"}`: it ranks the undeclared types and
+relation kinds a propose pass would suggest (at most ten, each on at least 3
+rows in 2 documents, or 3 live statements), drops names already proposed or
+rejected, and computes a relation's `domain` and `range` from its ends. It
+calls no model and writes nothing; the operator proposes what they agree with.
+
 ## Facts and subjects
 
 A fact is one claim, written with `upsert_chunk` under a `natural_key` so a
@@ -209,6 +217,9 @@ never change what a document says.
   annotation at or above the row's chunk. Read the briefs to choose what to
   open; read an abstract instead of opening a whole document when the
   question is about what it covers rather than its exact words.
+- `query_chunks` with `with_summary: true` labels a document's outline: each
+  chunk carries its OWN brief as `summary`, never one from a section above,
+  and never the abstract.
 - `stale: true` means the text changed after the annotation was written. It
   is still the best summary there is; quote the text, never the abstract.
 - An annotation is not evidence. Cite the chunk, never the summary.

@@ -172,6 +172,9 @@ type Server struct {
 	// toolPanics counts the tool calls recovered from a panic, on every
 	// dispatcher this server builds, for loomcycle_tool_panics_total.
 	toolPanics *tools.PanicCounter
+	// deprecatedUse counts the runs given what a future release removes
+	// (RFC GW §9, P14) and logs the first per tenant and agent.
+	deprecatedUse *deprecatedUse
 	// reviewAudit records bulk statement rulings and their reverts
 	// (SetStatementReviewAudit); nil = logged only.
 	reviewAudit audit.Sink
@@ -844,6 +847,7 @@ func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem
 		hookDispatcher: hooks.NewDispatcherWithPrivateHosts(nil, nil, cfg.Hooks.PrivateHostAllowlist),
 		startedAt:      time.Now(),
 		toolPanics:     tools.NewPanicCounter(),
+		deprecatedUse:  newDeprecatedUse(slog.Default()),
 	}
 	// RFC BH: the turn-cancel registry builds its cancel cause via loop.TurnCancelCause
 	// (the loop recognizes it to PARK the run instead of terminating). Injected here
@@ -1250,16 +1254,23 @@ func (s *Server) SetWorkspaceStats(f func() workspace.Stats) { s.workspaceStats 
 type workspaceReleaser interface {
 	ReleaseRun(ctx context.Context, runID string) error
 	// Share makes a spawn's workspace shares with its child (RFC GW P8).
-	Share(ctx context.Context, o lifecycle.Owner, name string, p lifecycle.Peer, access string) (store.WorkspaceRow, error)
+	Share(ctx context.Context, o lifecycle.Owner, name string, p lifecycle.Peer, access string, connect bool) (store.WorkspaceRow, error)
 	// ForkForChild makes a spawn's workspace forks for its child (RFC GW P6).
 	ForkForChild(ctx context.Context, parent lifecycle.Owner, f lifecycle.ChildFork) (store.WorkspaceRow, error)
+	// EraseDurable removes a user's durable workspaces: their erasure
+	// (RFC GW P12 ruling Q2).
+	EraseDurable(ctx context.Context, tenantID, userID string) (int, error)
 }
 
 // SetWorkspaceExposures serves the workspaces' exposed ports (RFC GW §5.3)
-// with workspace.expose's bounds. Boot wiring only.
-func (s *Server) SetWorkspaceExposures(x workspaceExposures, maxConnections, requestsPerSecond int, bytesPerSecond int64) {
-	s.exposures = newExposureHandler(x, exposeRouteLimits{MaxConnections: maxConnections,
-		RequestsPerSecond: requestsPerSecond, BytesPerSecond: bytesPerSecond})
+// with workspace.expose's bounds (resolved). Boot wiring only.
+func (s *Server) SetWorkspaceExposures(x workspaceExposures, c config.WorkspaceExposeConfig) {
+	s.exposures = newExposureHandler(x, exposeRouteLimits{MaxConnections: c.MaxConnections,
+		RequestsPerSecond: c.RequestsPerSecond, BytesPerSecond: c.BytesPerSecond, MaxMessageBytes: c.MaxMessageBytes,
+		SocketIdle: time.Duration(c.IdleTimeoutS) * time.Second, SocketLifetime: time.Duration(c.SocketLifetimeS) * time.Second})
+	// A page's socket re-checks its credential as the document feed does.
+	s.exposures.reauth = s.reauthenticateExposureSocket
+	s.exposures.expiry = s.exposureSocketExpiry
 }
 
 // handleWorkspaceExposure serves the route, or 404 with no bookkeeping.
@@ -3612,6 +3623,9 @@ func (s *Server) tenantTelemetryRoutes(mux *http.ServeMux) *http.ServeMux {
 // file see it.
 func (s *Server) exposureRoutes(mux *http.ServeMux) *http.ServeMux {
 	mux.Handle("/v1/workspaces/exposures/{id}/{path...}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleWorkspaceExposure))))
+	// A one-time ticket for a page's socket, for a browser in strict sign-in
+	// mode (P9 plan D-P9-42 as ruled 2026-11-25). Gated as the page is.
+	mux.Handle("POST /v1/workspaces/exposure-tickets/{id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleExposureTicket))))
 	return mux
 }
 
@@ -3630,6 +3644,20 @@ func (s *Server) egressRouteDefRoutes(mux *http.ServeMux) *http.ServeMux {
 // merge is; the connector checks the caller again.
 func (s *Server) ontologyPlanRoutes(mux *http.ServeMux) *http.ServeMux {
 	mux.Handle("POST /v1/_ontology/plan", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleOntologyPlan))))
+	// RFC GQ P3.4: the releases taken on confirm and apply, read only. Gated and
+	// carved out of the member path as the plan is; the connector checks again.
+	mux.Handle("GET /v1/_ontology/releases", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleOntologyReleases))))
+	mux.Handle("GET /v1/_ontology/releases/diff", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleOntologyReleaseDiff))))
+	mux.Handle("GET /v1/_ontology/releases/{seq}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleOntologyRelease))))
+	// RFC GQ P5.7: apply a plan of rolling back to a release. A write of the tenant's
+	// vocabulary: gated as the accept is and carved out of the member path; the handler
+	// checks the caller again.
+	mux.Handle("POST /v1/_ontology/rollback", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleOntologyRollback))))
+	// RFC GQ P5.6: the class-rename or re-tag job's status, and a slice of it on the
+	// operator's word. Gated and carved out of the member path as the plan is; the
+	// connector checks again.
+	mux.Handle("GET /v1/_ontology/job", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleOntologyJob))))
+	mux.Handle("POST /v1/_ontology/job/resume", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleOntologyJobResume))))
 	return mux
 }
 

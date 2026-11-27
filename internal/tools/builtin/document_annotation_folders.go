@@ -1003,13 +1003,14 @@ func (d *Document) setFolderAnnotation(ctx context.Context, key sqlmem.ScopeKey,
 		model = in.Model
 	}
 	if err := d.exec(ctx, key, `INSERT INTO chunk_annotations (chunk_id, level, brief, abstract, language, class,
-		ontology_version, inputs_sha256, prompt_version, model, manual, written_at, written_by, folder, covers)
-		VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?)
+		ontology_version, ontology_content, inputs_sha256, prompt_version, model, manual, written_at, written_by, folder, covers)
+		VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (chunk_id, level) DO UPDATE SET brief = excluded.brief, abstract = excluded.abstract,
-		language = excluded.language, inputs_sha256 = excluded.inputs_sha256, prompt_version = excluded.prompt_version,
+		language = excluded.language, ontology_content = excluded.ontology_content,
+		inputs_sha256 = excluded.inputs_sha256, prompt_version = excluded.prompt_version,
 		model = excluded.model, manual = excluded.manual, written_at = excluded.written_at, written_by = excluded.written_by,
 		folder = excluded.folder, covers = excluded.covers`,
-		t.root, annotationLevelPath, brief, abstract, language, cur.InputsSHA256, in.PromptVersion, model, manual,
+		t.root, annotationLevelPath, brief, abstract, language, d.ontologyContentArg(ctx), cur.InputsSHA256, in.PromptVersion, model, manual,
 		time.Now().UnixNano(), annotationWriter(ctx), canonical, string(coversJSON)); err != nil {
 		return errFrom(op+": "+err.Error(), err), nil
 	}

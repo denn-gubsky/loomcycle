@@ -94,6 +94,11 @@ import type {
   BindSubjectPrincipalResult,
   OntologyChange,
   PlanOntologyResult,
+  ListOntologyReleasesResult,
+  GetOntologyReleaseResult,
+  DiffOntologyReleasesResult,
+  OntologyJobResult,
+  ApplyOntologyRollbackResult,
   Agent,
   AgentEvent,
   AgentList,
@@ -1184,6 +1189,160 @@ export class LoomcycleClient {
       this.ctx,
       `/v1/_ontology/plan${q}`,
       { changes },
+      opts,
+    );
+  }
+
+  /**
+   * Roll the tenant ontology back to release `seq`: apply the plan of
+   * `{op: "release", seq}` ({@link planOntology}), which the server computes
+   * again and refuses unless `planFingerprint` is still its fingerprint. The
+   * writes go through the ontology's own guards; a write by anyone else stops
+   * the rollback. Never automatic. Mirrors POST /v1/_ontology/rollback.
+   *
+   * For an admin or a tenant operator only. A refusal throws with the server's
+   * code: `plan_required` / `plan_stale` (409; the error's `bodyText` carries
+   * `fingerprint`, the ontology's current one), `partially_applied` (409;
+   * `bodyText` carries `applied`), `rename_job_pending`, `entry_locked`,
+   * `invalid_request`, `invalid_body`, `entry_not_found`, `forbidden`,
+   * `unavailable`.
+   */
+  async rollbackOntology(
+    seq: number,
+    planFingerprint: string,
+    opts?: { tenant?: string; signal?: AbortSignal },
+  ): Promise<ApplyOntologyRollbackResult> {
+    const q = opts?.tenant !== undefined
+      ? `?tenant=${encodeURIComponent(opts.tenant)}`
+      : "";
+    return postJSON<ApplyOntologyRollbackResult>(
+      this.ctx,
+      `/v1/_ontology/rollback${q}`,
+      { seq, plan_fingerprint: planFingerprint },
+      opts,
+    );
+  }
+
+  /**
+   * List the tenant ontology's releases — the copies taken when it was
+   * confirmed and on each applied or rolled-back change, the newest 50 kept —
+   * newest first. Writes nothing. Mirrors GET /v1/_ontology/releases.
+   *
+   * For an admin or a tenant operator only: a release keeps the ontology's
+   * text after an edit or an erasure removed it. `tenant` is honored only for
+   * an admin token. A refusal throws with the server's code: `forbidden`,
+   * `unavailable`.
+   */
+  async listOntologyReleases(
+    opts?: { tenant?: string; signal?: AbortSignal },
+  ): Promise<ListOntologyReleasesResult> {
+    const q = opts?.tenant !== undefined
+      ? `?tenant=${encodeURIComponent(opts.tenant)}`
+      : "";
+    return jsonFetch<ListOntologyReleasesResult>(
+      this.ctx,
+      `/v1/_ontology/releases${q}`,
+      opts,
+    );
+  }
+
+  /**
+   * Read one release of the tenant ontology by its sequence number: its
+   * header, the plan summary of the change it applied (an `apply` release)
+   * and the ontology it copied, rendered as Markdown (`export_md`). Mirrors
+   * GET /v1/_ontology/releases/{seq}.
+   *
+   * Operator only, as {@link listOntologyReleases}. A refusal throws with the
+   * server's code: `invalid_request` (not a positive integer), `forbidden`,
+   * `release_not_found`, `unavailable`.
+   */
+  async getOntologyRelease(
+    seq: number,
+    opts?: { tenant?: string; signal?: AbortSignal },
+  ): Promise<GetOntologyReleaseResult> {
+    const q = opts?.tenant !== undefined
+      ? `?tenant=${encodeURIComponent(opts.tenant)}`
+      : "";
+    return jsonFetch<GetOntologyReleaseResult>(
+      this.ctx,
+      `/v1/_ontology/releases/${encodeURIComponent(String(seq))}${q}`,
+      opts,
+    );
+  }
+
+  /**
+   * Compare two releases of the tenant ontology, or a release with the
+   * ontology in force, entry by entry: what was added, removed, renamed,
+   * moved, retired, or had its meaning or directives changed. Writes nothing.
+   * Mirrors GET /v1/_ontology/releases/diff.
+   *
+   * `from` is a release's sequence number; `to` another's, or `"current"`
+   * (the default) for the ontology as it stands now. A rename is one changed
+   * entry, never an add and a remove.
+   *
+   * Operator only, as {@link listOntologyReleases}. A refusal throws with the
+   * server's code: `invalid_request`, `forbidden`, `release_not_found`,
+   * `unavailable`.
+   */
+  async diffOntologyReleases(
+    from: number,
+    to: number | "current" = "current",
+    opts?: { tenant?: string; signal?: AbortSignal },
+  ): Promise<DiffOntologyReleasesResult> {
+    const q = new URLSearchParams({ from: String(from), to: String(to) });
+    if (opts?.tenant !== undefined) q.set("tenant", opts.tenant);
+    return jsonFetch<DiffOntologyReleasesResult>(
+      this.ctx,
+      `/v1/_ontology/releases/diff?${q.toString()}`,
+      opts,
+    );
+  }
+
+  /**
+   * Read the tenant's ontology job — the class rename or concept re-tag
+   * carrying a change through the stored rows of the tenant scope and every
+   * user and agent scope: the unfinished one, else the one updated last;
+   * `job` is `null` when the tenant never had one. Writes nothing. Mirrors
+   * GET /v1/_ontology/job.
+   *
+   * For an admin or a tenant operator only. `tenant` is honored only for an
+   * admin token. A refusal throws with the server's code: `forbidden`,
+   * `unavailable`.
+   */
+  async getOntologyJob(
+    opts?: { tenant?: string; signal?: AbortSignal },
+  ): Promise<OntologyJobResult> {
+    const q = opts?.tenant !== undefined
+      ? `?tenant=${encodeURIComponent(opts.tenant)}`
+      : "";
+    return jsonFetch<OntologyJobResult>(this.ctx, `/v1/_ontology/job${q}`, opts);
+  }
+
+  /**
+   * Give the tenant's unfinished ontology job one slice of work (about 20
+   * seconds) under the ontology rename lease, from the scope and step it is
+   * at, as the next class rename or concept move would; a job whose change
+   * never reached the ontology is marked `abandoned`. Resolves to the job as
+   * the slice left it; call again while it is unfinished. Mirrors POST
+   * /v1/_ontology/job/resume.
+   *
+   * `id` (from {@link getOntologyJob}) is required: the resume is refused
+   * unless that job is still the unfinished one, so a resume aimed at a job
+   * that has since finished cannot carry on a newer one. Operator only, as
+   * {@link getOntologyJob}. A refusal throws with the server's code:
+   * `job_not_found`, `job_busy`, `invalid_body` (also an empty `id`),
+   * `forbidden`, `unavailable`.
+   */
+  async resumeOntologyJob(
+    opts: { id: string; tenant?: string; signal?: AbortSignal },
+  ): Promise<OntologyJobResult> {
+    const q = opts.tenant !== undefined
+      ? `?tenant=${encodeURIComponent(opts.tenant)}`
+      : "";
+    return postJSON<OntologyJobResult>(
+      this.ctx,
+      `/v1/_ontology/job/resume${q}`,
+      { id: opts.id },
       opts,
     );
   }
@@ -2365,6 +2524,12 @@ export class LoomcycleClient {
    *  A start past the rate is refused with 429 `rate_limited` and a
    *  `Retry-After` header.
    *
+   *  `purpose: "personal_worker"` mints the user's personal worker token
+   *  instead (RFC GW P13): exactly `["workers:attach"]`, bound to the user,
+   *  for `loomcycle worker --role workspace --personal`. The server needs
+   *  `workspace.personal_workers` on (403 `personal_workers_off`), and only
+   *  `ttlSeconds` and `name` go with it; any other option is refused (400).
+   *
    *  With none of the options the request has no body, as before. */
   async mintUserToken(
     subject: string,
@@ -2383,6 +2548,8 @@ export class LoomcycleClient {
       /** `"none"`: every run the token starts is a no-trace run, whatever
        *  the request or the agent says. */
       retention?: "none";
+      /** `"personal_worker"`: the user's personal worker token (RFC GW P13). */
+      purpose?: "personal_worker";
     },
   ): Promise<MintedUserToken> {
     const body: Record<string, unknown> = {};
@@ -2396,6 +2563,7 @@ export class LoomcycleClient {
       body.rate = { per_minute: opts.rate.perMinute, burst: opts.rate.burst };
     }
     if (opts?.retention !== undefined) body.retention = opts.retention;
+    if (opts?.purpose !== undefined) body.purpose = opts.purpose;
     return postJSON<MintedUserToken>(
       this.ctx,
       `/v1/_users/${encodeURIComponent(subject)}/tokens`,

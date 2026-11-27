@@ -4,6 +4,7 @@ AckChannel	channel:publish	false	ack channel:*
 AclBinding	substrate:tenant	false	read def:acl/*
 AclDef	substrate:tenant	false	read def:acl/*
 AgentDef	substrate:tenant	false	read def:agent/*
+ApplyOntologyRollback	substrate:tenant	false	write document:*
 ApplyReviewPolicy	substrate:tenant	false	read document:*
 Authz	any	false	-
 AwaitChannels	substrate:tenant	false	await channel:*
@@ -24,6 +25,7 @@ Decide	runs:create	false	use gateway:decide
 DeleteConfiguredRun	runs:create	true	run agent:*
 DeleteRunTree	runs:delete	false	delete run:*
 DeleteSnapshot	substrate:admin	false	manage runtime:snapshot
+DiffOntologyReleases	substrate:tenant	false	read document:*
 DirectoryInspect	substrate:tenant	false	read principal:user:*
 DirectoryTenants	substrate:admin	false	read runtime:tenants
 DirectoryUsers	substrate:tenant	false	read principal:user:*
@@ -37,6 +39,7 @@ ErasureReport	substrate:tenant	false	read runtime:erasure
 Evaluation	runs:read	false	read evaluation:*
 ExportSnapshot	substrate:admin	false	read runtime:snapshot
 GetAgent	runs:read	true	read run:*
+GetOntologyJob	substrate:tenant	false	read document:*
 GetRun	runs:read	true	read run:*
 GetRuntimeState	substrate:admin	false	read runtime:pause
 GetSnapshot	substrate:admin	false	read runtime:snapshot
@@ -49,6 +52,7 @@ ListChannels	channel:read	false	subscribe channel:*
 ListChildRuns	runs:read	true	read run:*
 ListDecisionModels	runs:create	false	use gateway:decide
 ListMyAppSignIns	any	false	-
+ListOntologyReleases	substrate:tenant	false	read document:*
 ListReviewQueue	substrate:tenant	false	read document:*
 ListRulings	substrate:tenant	false	read document:*
 ListSnapshots	substrate:admin	false	read runtime:snapshot
@@ -74,6 +78,7 @@ ReplaySession	runs:create	true	run agent:*
 ResolveInterrupt	runs:create	true	steer run:*
 ResolveProbe	substrate:admin	false	manage runtime:config
 RestoreSnapshot	substrate:admin	false	manage runtime:snapshot
+ResumeOntologyJob	substrate:tenant	false	write document:*
 ResumeRuntime	substrate:admin	false	manage runtime:pause
 RetentionOverride	substrate:tenant	false	read runtime:retention
 RetuneRun	runs:create	true	retune run:*

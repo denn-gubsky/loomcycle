@@ -133,16 +133,50 @@ type InvalidEndsSignal struct {
 	Sample []string `json:"sample"`
 }
 
-// ontologySignalsRefusal says who may read the signals: the operator plane only. The
-// counts cover every user's scope, so a member and an ordinary run are refused. The
-// one place the question is asked, so a grant for a pass is one more branch here.
-func ontologySignalsRefusal(ctx context.Context) *tools.Result {
+// ontologyGrant is the statement_methods value (code-js only) that lets a run read the
+// signals and hold the ontologistLeaseName lease. It stamps nothing and grants no write.
+const (
+	ontologyGrant       = "ontology"
+	ontologistLeaseName = "ontologist"
+)
+
+func hasOntologyGrant(ctx context.Context) bool {
+	return contains(tools.PolicyOf(ctx).StatementMethods, ontologyGrant)
+}
+
+// ontologySignalsRefusal says who may read the signals: the operator plane, or a run
+// holding the ontology grant (RFC GQ P6.2). The counts cover every user's scope, so a
+// member and an ordinary run are refused. The one place the question is asked.
+//
+// A granted run is asked two more things, as a granted node_stats pass is: it must hold
+// the tenant scope (the samples are tenant chunk ids), and its access-control rules must
+// hide no document of the tenant scope (the counts and samples would otherwise describe
+// documents it may not read). Neither question provisions: resolveScope only checks the
+// grant, and the access-control list is read from the Path tree in the main store.
+func (d *Document) ontologySignalsRefusal(ctx context.Context, key sqlmem.ScopeKey) (*tools.Result, error) {
 	if tools.IsOperatorPlane(ctx) {
-		return nil
+		return nil, nil
 	}
-	r := errPermission(ontologySignalsOp+": permission: the signals count every scope of the tenant, so only an operator reads them",
-		"Ask an operator to run it. describe_ontology reads the ontology in force.")
-	return &r
+	if !hasOntologyGrant(ctx) || tools.RunID(ctx) == "" {
+		r := errPermission(ontologySignalsOp+": permission: the signals count every scope of the tenant, so only an operator, or a code agent granted ontology in statement_methods, reads them",
+			"Ask an operator to run it. describe_ontology reads the ontology in force.")
+		return &r, nil
+	}
+	if _, _, err := d.resolveScope(ctx, "tenant"); err != nil {
+		r := errPermission(ontologySignalsOp+": permission: the signals sample the tenant scope, which this agent is not granted",
+			"Ask an operator to grant the tenant scope in memory_scopes and sql_scopes.")
+		return &r, nil
+	}
+	list, err := d.readableDocList(ctx, d.newDocACL(ctx, key))
+	if err != nil {
+		return nil, err
+	}
+	if !readsEverything(list) {
+		r := errPermission(ontologySignalsOp+": permission: the signals count every document of the tenant scope, and this agent's access-control rules hide some",
+			"Run it as an operator, or from an agent whose rules let it read the whole tenant scope.")
+		return &r, nil
+	}
+	return nil, nil
 }
 
 // ontologySignals is Document op=ontology_signals. Always the tenant's: a scope other
@@ -160,12 +194,16 @@ func (d *Document) ontologySignals(ctx context.Context, in docInput) (tools.Resu
 	if limit == 0 {
 		limit = ontologySignalsGroups
 	}
-	if refused := ontologySignalsRefusal(ctx); refused != nil {
-		return *refused, nil
-	}
 	key, mscope, err := d.ontologyTenantKey(ctx)
 	if err != nil {
 		return docFail(ontologySignalsOp, err), nil
+	}
+	refused, err := d.ontologySignalsRefusal(noWrites(ctx), key)
+	if err != nil {
+		return errFrom(ontologySignalsOp+": access control: "+err.Error(), err), nil
+	}
+	if refused != nil {
+		return *refused, nil
 	}
 	out, err := d.ontologySignalsAt(noWrites(ctx), key, mscope, limit)
 	if err != nil {

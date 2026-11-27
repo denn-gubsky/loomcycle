@@ -103,6 +103,8 @@ func (d *Document) countPlanDependents(ctx context.Context, key sqlmem.ScopeKey,
 		}
 		// Counted into a copy first, so a scope that fails halfway adds nothing.
 		scratch := make([]map[string]*connector.OntologyPlanCount, len(planned))
+		collisions := make([]int, len(planned))
+		retags := make([]map[string]int, len(planned))
 		var serr error
 		for i, p := range planned {
 			q := &plannedChange{entry: p.entry, classes: p.classes, kinds: p.kinds, tags: p.tags,
@@ -112,6 +114,19 @@ func (d *Document) countPlanDependents(ctx context.Context, key sqlmem.ScopeKey,
 				break
 			}
 			scratch[i] = q.counts
+			if p.in.Op == connector.OntologyPlanRename && p.entry.Kind == planKindClass {
+				// The rename job rewrites this scope too (RFC GQ P5.4): a key it would move
+				// onto one another row holds is found here, before anything is written.
+				if _, collisions[i], serr = d.renameCollisions(sctx, at, renameOwnNames(p), strings.TrimSpace(p.in.Name)); serr != nil {
+					break
+				}
+			}
+			if len(p.retagMoves) > 0 {
+				// The concept re-tag job rewrites this scope's tags too (RFC GQ P5.5).
+				if retags[i], serr = d.countRetagRows(sctx, renameScope{key: at, name: sk.Scope}, p.retagMoves); serr != nil {
+					break
+				}
+			}
 		}
 		if serr != nil {
 			skipped++
@@ -121,6 +136,13 @@ func (d *Document) countPlanDependents(ctx context.Context, key sqlmem.ScopeKey,
 		for i, p := range planned {
 			for name, c := range scratch[i] {
 				p.add(name, false, c.N, c.ByStatus, nil)
+			}
+			p.otherCollisions += collisions[i]
+			for name, n := range retags[i] {
+				if p.retagOther == nil {
+					p.retagOther = map[string]int{}
+				}
+				p.retagOther[name] += n
 			}
 		}
 		counted++

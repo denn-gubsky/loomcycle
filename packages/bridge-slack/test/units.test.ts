@@ -349,7 +349,7 @@ describe("events", () => {
 });
 
 describe("cards", () => {
-  const question = (options: string[]): CanonicalCard => ({
+  const question = (options: string[]): Extract<CanonicalCard, { kind: "question" }> => ({
     kind: "question",
     runId: "r1",
     interruptId: "q1",
@@ -375,12 +375,38 @@ describe("cards", () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
-  it("cuts a long option's button label and shows the option whole", () => {
+  /** numbered is the context bridge-core writes for a question's options (RFC HG). */
+  const numbered = (options: string[]) => `${options.map((o, i) => `${i + 1}. ${o}`).join("\n")}\n\nReply with a number, or tap a button.`;
+
+  it("cuts a long option's button label and shows the option whole, once, in the numbered context", () => {
     const long = "x".repeat(150);
-    const c = renderCard(question([long]), "im");
+    const c = renderCard({ ...question([long]), context: numbered([long]) }, "im");
     const label = (actionsOf(c.blocks).elements[0].text as { text: string }).text;
     expect(label.length).toBe(MAX_BUTTON_LABEL);
-    expect(c.blocks.some((b) => b.type === "markdown" && String(b.text).includes(long))).toBe(true);
+    expect(c.blocks.filter((b) => b.type === "markdown" && String(b.text).includes(long))).toHaveLength(1);
+  });
+
+  it("shows all eight numbered options and buttons for the six the core drew, then Decline", () => {
+    const options = ["o1", "o2", "o3", "o4", "o5", "o6", "o7", "o8"];
+    const drawn = question(options.slice(0, 6));
+    const c = renderCard({ ...drawn, options, context: numbered(options) }, "channel");
+    const text = c.blocks.filter((b) => b.type === "markdown").map((b) => String(b.text)).join("\n");
+    for (const [i, o] of options.entries()) expect(text).toContain(`${i + 1}. ${o}`);
+    expect(actionsOf(c.blocks).elements.map((e) => e.value)).toEqual(["b0", "b1", "b2", "b3", "b4", "b5", "bd"]);
+  });
+
+  it("keeps twenty long numbered options and the closing line whole", () => {
+    const options = Array.from({ length: 20 }, (_, i) => `${"y".repeat(190)}${i}`);
+    const c = renderCard({ ...question(options.slice(0, 6)), options, context: numbered(options) }, "channel");
+    const text = c.blocks.filter((b) => b.type === "markdown").map((b) => String(b.text)).join("\n");
+    expect(text).toContain(`20. ${options[19]}`);
+    expect(text).toContain("Reply with a number, or tap a button.");
+  });
+
+  it("neutralises a mention in a numbered option", () => {
+    const options = ["<!channel> now", "later"];
+    const c = renderCard({ ...question(options), context: numbered(options) }, "channel");
+    expect(JSON.stringify(c.blocks)).not.toContain("<!channel>");
   });
 
   it("asks for a reply instead of a send button on a free-text question", () => {

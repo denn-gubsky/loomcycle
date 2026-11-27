@@ -40,6 +40,12 @@ var (
 	ErrShareReadOnly = errors.New("this workspace is shared with this run read-only")
 	// ErrShareBusy: the shares kept changing under a share or an unshare.
 	ErrShareBusy = errors.New("the workspace's shares changed while they were written; try again")
+	// ErrShareNoConnect: a request through a share made without connect.
+	ErrShareNoConnect = errors.New("this workspace is shared with this run without connect, so its pages are not reached through it")
+	// ErrNotExposed: a request through a share to a port its owner has not
+	// exposed (or no longer: unexposed, gone idle, the operator's switch
+	// off). A share's connect reaches exposed ports only (RFC GW D20).
+	ErrNotExposed = errors.New("that port is not exposed by the workspace's owner")
 )
 
 // SplitShared splits a shared workspace's name, "<name>@<agent id>". ok is
@@ -94,11 +100,12 @@ func (m *Manager) ResolvePeer(ctx context.Context, o Owner, agentID string) (Pee
 	return Peer{RunID: run.ID, AgentID: agentID}, nil
 }
 
-// Share shares the run's workspace name with p. A second share with the
-// same run replaces the first's access. The caller has checked that the run
-// may share and holds what access hands over; p comes from ResolvePeer, or
-// is a child the runtime just made (spawn-time shares).
-func (m *Manager) Share(ctx context.Context, o Owner, name string, p Peer, access string) (store.WorkspaceRow, error) {
+// Share shares the run's workspace name with p, with connect when connect.
+// A second share with the same run replaces the first's access and connect.
+// The caller has checked that the run may share and holds what access and
+// connect hand over; p comes from ResolvePeer, or is a child the runtime
+// just made (spawn-time shares).
+func (m *Manager) Share(ctx context.Context, o Owner, name string, p Peer, access string, connect bool) (store.WorkspaceRow, error) {
 	if !ValidShareAccess(access) {
 		return store.WorkspaceRow{}, fmt.Errorf("%w: access %q (want read or read_write)", ErrInvalidName, access)
 	}
@@ -108,17 +115,27 @@ func (m *Manager) Share(ctx context.Context, o Owner, name string, p Peer, acces
 	if p.RunID == "" || p.RunID == o.RunID {
 		return store.WorkspaceRow{}, fmt.Errorf("%w (a run does not share with itself)", ErrShareTarget)
 	}
+	// A root is the user's own folder; it is handed to no other run, even
+	// of the same user (D-P13-14, deny by default). The root never changes
+	// on a row, so the read here decides for the write below.
+	if r, err := m.Get(ctx, o, name); err == nil && r.Root != "" {
+		return store.WorkspaceRow{}, ErrRootRefused
+	}
 	row, err := m.updateShares(ctx, o, name, func(cur []store.WorkspaceShare) ([]store.WorkspaceShare, error) {
 		next := slices.DeleteFunc(slices.Clone(cur), func(s store.WorkspaceShare) bool { return s.RunID == p.RunID })
 		if len(next) >= MaxSharesPerWorkspace {
 			return nil, ErrShareLimit
 		}
-		return append(next, store.WorkspaceShare{RunID: p.RunID, AgentID: p.AgentID, Access: access, CreatedAt: m.now().UTC()}), nil
+		return append(next, store.WorkspaceShare{RunID: p.RunID, AgentID: p.AgentID, Access: access, Connect: connect, CreatedAt: m.now().UTC()}), nil
 	})
 	if err != nil {
 		return store.WorkspaceRow{}, err
 	}
-	m.record(o, row, "workspace_share", p, access, "")
+	op := ""
+	if connect {
+		op = "connect"
+	}
+	m.record(o, row, "workspace_share", p, access, op)
 	return row, nil
 }
 
@@ -241,6 +258,41 @@ func (m *Manager) UseShared(ctx context.Context, o Owner, ref string, write bool
 	// the caller here.
 	m.recordUse(o, row, ownerAgent, sh.Access, op+" via "+via)
 	return nil
+}
+
+// ConnectShared checks that the run may send a request to port of the shared
+// workspace ref, and returns the owner's row for the tunnel. It needs a share
+// with connect and a page the owner exposed on that port, which opens as it
+// does for the owner's own user (OpenExposure: the operator's switch on, not
+// idle, the workspace ready); the use is recorded. The dial itself is the
+// tunnel's, with the worker's declared-port and listener checks.
+func (m *Manager) ConnectShared(ctx context.Context, o Owner, ref string, port int) (store.WorkspaceRow, error) {
+	row, sh, err := m.resolveShared(ctx, o, ref, false)
+	if err != nil {
+		return store.WorkspaceRow{}, err
+	}
+	if !sh.Connect {
+		return store.WorkspaceRow{}, ErrShareNoConnect
+	}
+	list, err := m.store.WorkspaceExposureListByWorkspace(ctx, row.TenantID, row.ID)
+	if err != nil {
+		return store.WorkspaceRow{}, err
+	}
+	i := slices.IndexFunc(list, func(e store.WorkspaceExposure) bool { return e.Port == port })
+	if i < 0 {
+		return store.WorkspaceRow{}, ErrNotExposed
+	}
+	// The page opens for the peer as for the owner's user: shares are
+	// between runs of one user, so they are the same person.
+	if _, _, err := m.OpenExposure(ctx, o.TenantID, o.UserID, list[i].ID); err != nil {
+		if errors.Is(err, ErrExposureNotFound) {
+			return store.WorkspaceRow{}, ErrNotExposed
+		}
+		return store.WorkspaceRow{}, err
+	}
+	_, ownerAgent, _ := SplitShared(ref)
+	m.recordUse(o, row, ownerAgent, sh.Access, fmt.Sprintf("request :%d via Workspace", port))
+	return row, nil
 }
 
 // SharedWithRun is a workspace shared with a run, as its list shows it.

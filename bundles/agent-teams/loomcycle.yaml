@@ -174,8 +174,20 @@ agents:
     # coordinate parallel branches; Interruption = ask the human; Context = self-
     # inspect; Memory = durable notes. VolumeDef + Bashbox are for SOFTWARE teams
     # (ephemeral repo volume + git/gh via Bashbox's host-command fallback); unused
-    # by Documents-only teams.
-    tools: [Agent, Document, TeamDef, Channel, Interruption, Context, Memory, VolumeDef, Bashbox]
+    # by Documents-only teams. Workspace + File run a data team's scripts on a
+    # workspace worker (team/sqldata), and the grant is the ceiling the handlers
+    # it spawns open their own workspaces under (a sub-agent holds only what its
+    # parent holds). Software teams work on a git workspace (team/repo): the
+    # orchestrator opens the repository, its handlers edit it through a share,
+    # and git_remote [fetch, push] lets it fetch and push the workspace's own
+    # branch, to hosts the operator lists (LOOMCYCLE_GIT_SOURCE_HOSTS,
+    # LOOMCYCLE_GIT_PUSH_HOSTS). It names no egress route: to open the pull
+    # request through the forge's API, the operator adds a route to the grant.
+    # Bashbox (with VolumeDef) stays as team/repo's fallback until RFC GW P15
+    # removes it.
+    tools: [Agent, Document, TeamDef, Channel, Interruption, Context, Memory, VolumeDef, Workspace, File, Bashbox]
+    workspace: {ops: [read, write, exec], open: true}
+    git_remote: [fetch, push]
     channels:                               # coordinate parallel team branches on team/* channels (prefix wildcard); default-deny without this
       publish: [team/*]
       subscribe: [team/*]
@@ -214,13 +226,15 @@ agents:
 
       ## Workspace is OPTIONAL and depends on the team's domain
       Decide what workspace the team needs — do NOT assume a repo:
-      - **Software** → an ephemeral repo volume + a PR. Load the `team/repo` skill and
-        follow it (create an ephemeral volume, clone, let handlers edit it, open a PR,
-        purge). This is the ONLY domain that clones/PRs.
+      - **Software** → a git workspace + a PR. Load the `team/repo` skill and
+        follow it (open the repository as a workspace, share it with the handlers,
+        commit and push its own branch, open the PR, release). This is the ONLY
+        domain that clones/PRs.
       - **Marketing / docs** → work in the Document task board itself; no volume, no
         repo, no PR. The board is the deliverable.
       - **Accounting / data** → in-runtime SQL Memory (your `Memory`/SQL scope) for
-        ledgers, or reach external SQL/Excel via `Bash`/an MCP tool. No git.
+        ledgers, or work external SQL/Excel in a workspace or through an MCP tool
+        (load `team/sqldata`). No git.
       - **Research** → Documents for the writeup + Memory for collected data.
       When in doubt, ask the human what the deliverable is.
 
@@ -381,62 +395,78 @@ skills:
       the document; post the ledger), then report the concrete result to the human.
 
   team/repo:
-    description: Software-team workspace — an ephemeral repo volume, git clone, handler edits, and a gh pull request via Bashbox. Software teams ONLY.
-    tools: [VolumeDef, Bashbox, Agent]
+    description: Software-team repository — a git workspace on the repository, handlers editing it through a share, a commit and a push of the team's own branch, then the pull request. Software teams ONLY.
+    tools: [Workspace, Agent, File, VolumeDef, Bashbox]
     body: |
       # Repo workspace (software teams)
 
       Use this ONLY for a team whose deliverable is a code change. Marketing /
       accounting / research teams do not clone or PR — skip this skill entirely.
 
-      `git`/`gh` need real host network, so run them through **Bashbox's host-command
-      fallback** (the in-sandbox gbash has no egress; the operator allowlists `git`
-      and `gh` as host commands that DO reach the network). Raw `Bash` can't carry
-      the token today (its env allowlist isn't config-wired), so use Bashbox here.
+      The repository lives in a **git workspace**: the runtime clones it, the
+      workspace works on a branch of its own, and only that branch is ever
+      pushed. No token is ever in a command: the operator's stored credential
+      is added by the runtime on the way out.
 
       ## Prerequisites (operator-provided; if missing, tell the human and stop)
-      - `git` + `gh` installed on the host image.
-      - `LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS=git,gh` (run these as host processes).
-      - `LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV=GITHUB_TOKEN` (+ `GITHUB_TOKEN` in the
-        host env) so the token reaches `git`/`gh` — one operator-global token. For a
-        PER-TENANT token, store it as a credential and add
-        `LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS=GITHUB_TOKEN` (see Context op=help
-        topic=credentials).
-      - A volume marked `dynamic_root: true` (ephemeral volumes live under it).
+      - `workspace.mode` on, with a worker that has git.
+      - The forge's host in `LOOMCYCLE_GIT_SOURCE_HOSTS` (to clone and fetch)
+        and in `LOOMCYCLE_GIT_PUSH_HOSTS` (to push), and, for a private
+        repository or any push, a stored credential (`$cred:<name>`; see
+        Context op=help topic=credentials).
+      - If `Workspace op=open` answers `workspaces_off`, use the fallback at the
+        end of this skill.
 
-      ## 1. Create an ephemeral scratch volume
-      `VolumeDef op=create ephemeral=true name="work"`. It is auto-purged when your
-      run ends and is shared with every handler agent you spawn (same run tree), so
-      they can edit the same checkout.
+      ## 1. Open the repository
+      `Workspace op=open name="repo" repo="https://github.com/<owner>/<repo>.git" credential="$cred:<name>"`
+      (omit `credential` for a public repository). The answer names the
+      workspace's own `branch` (default `loom/repo-<id>`; pass `branch` to name
+      it, never the forge's default branch). `base` picks where it starts.
 
-      ## 2. Clone (via Bashbox → host git)
-      `Bashbox volume="work" command="git clone https://x-access-token:$GITHUB_TOKEN@github.com/<owner>/<repo>.git . && git checkout -b <feature-branch>"`
-      Clone into the volume root; `$GITHUB_TOKEN` comes from the fallback env
-      allowlist — never echo it back, never write it into a chunk.
+      ## 2. Let the handlers work the checkout
+      Spawn each handler (coder, reviewer, qa…) with the workspace shared:
+      `Agent op=spawn … workspaces=[{name: "repo", access: "read_write"}]`
+      (`read` for a reviewer). The handler edits it as `repo@<your agent id>`
+      with `Workspace` read/write/edit, or `File` copies to and from
+      `workspace:repo@<your agent id>:<path>`. A share never runs commands:
+      a handler that builds or tests copies the tree into a workspace of its
+      own (`File op=copy from="workspace:repo@<your agent id>:." to="workspace:build:."`),
+      runs there, and writes its changes back through the share. You can also
+      run the build yourself: `Workspace op=exec name="repo" command="…"`.
+      Coordinate them through the workflow as usual (team/orchestrate).
 
-      ## 3. Let the handlers work the checkout
-      When you `Agent op=spawn` a handler (coder, reviewer, qa…), tell it to use
-      `volume="work"` for its Read/Write/Edit/Bashbox — it shares your ephemeral
-      volume, so its edits land in the same tree. Coordinate them through the
-      workflow as usual (team/orchestrate).
-
-      ## 4. Open the PR (via Bashbox → host gh)
+      ## 3. Commit and push
       At the workflow's terminal state:
-      `Bashbox volume="work" command="git add -A && git commit -m '<msg>' && git push -u origin <feature-branch> && gh pr create --fill"`
-      Capture the PR URL from the output and report it to the human.
+      - `Workspace op=git_status name="repo"` and `op=git_diff` to see the change;
+      - `Workspace op=git_commit name="repo" message="<msg>" all=true`;
+      - `Workspace op=git_push name="repo"` — pushes the workspace's own branch
+        and nothing else. If the forge moved on, `op=git_pull` (or merge with
+        `exec`) first.
+
+      ## 4. The pull request
+      If the operator added an egress route to the forge's API to your grant
+      (e.g. `github-api`, with a credential), open it from the workspace:
+      `Workspace op=exec name="repo" command="curl -sS -X POST http://egress/github-api/repos/<owner>/<repo>/pulls -d '{\"head\":\"<branch>\",\"base\":\"main\",\"title\":\"<title>\"}'"`
+      and report the PR URL. Without such a route, report the pushed branch
+      and the forge's compare link to the human, who opens the PR.
 
       ## 5. Teardown
-      The volume auto-purges at run end. To free it sooner (long sessions),
-      `VolumeDef op=purge name="work"` after the PR is open.
+      `Workspace op=release name="repo"` when the PR is open; the run's end
+      releases it anyway. The pushed branch stays on the forge.
 
-      ## Safety
-      The fallback runs real host `git`/`gh`, not a sandbox — only operate on the
-      repo the human authorized. Never interpolate untrusted text into the command.
-      Never print the token.
+      ## Fallback while workspaces are off (until RFC GW P15)
+      Where `Workspace op=open` answers `workspaces_off`, the old path still
+      works: an ephemeral volume (`VolumeDef op=create ephemeral=true name="work"`)
+      and `git`/`gh` through **Bashbox's host-command fallback**
+      (`LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS=git,gh`, the token through
+      `LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV` or `_ALLOWED_CREDS`). It is
+      deprecated, and real host `git`/`gh` are not a sandbox: only operate on
+      the repository the human authorized, never interpolate untrusted text
+      into a command, never print the token.
 
   team/sqldata:
-    description: Accounting/data-team workspace — per-scope SQL Memory tables (ledgers, reconciliation) and reaching external SQL/Excel via Bashbox/MCP. No git, no PR.
-    tools: [Memory, Bashbox, Document]
+    description: Accounting/data-team workspace — per-scope SQL Memory tables (ledgers, reconciliation), and external SQL/Excel in a workspace or through an MCP tool. No git, no PR.
+    tools: [Memory, Workspace, File, Document, Bashbox]
     body: |
       # SQL / data workspace (accounting + data teams)
 
@@ -451,12 +481,20 @@ skills:
          every handler you spawn in this run sees the same tables.
          - Seed: `Memory op=sql_exec scope=user sql="CREATE TABLE IF NOT EXISTS …"`.
          - Work: handlers sql_exec/sql_query; the orchestrator reads results to route.
-      2. **External SQL / Excel via Bashbox** — when the source of truth is outside
-         loomcycle (a warehouse, a `.xlsx`). Run a host CLI through Bashbox's
-         host-command fallback (operator allowlists e.g. `psql`, `duckdb`, a python
-         xlsx script; a DB token via the fallback env/cred allowlist), OR mount a
-         database MCP server and call its tools. Keep credentials in the fallback
-         cred allowlist (per-tenant) — never inline them.
+      2. **External data in a workspace** — when the source of truth is outside
+         loomcycle (a `.xlsx`, a CSV export, a warehouse's API). Open a workspace
+         (`Workspace op=open name="data"`) and put the data in it: a file the
+         human gave the run, from the run's inbox (`File op=copy from="<inbox
+         ref>" to="workspace:data:<file name>"`), or rows you hold (`Workspace op=write`).
+         Run a script over it with `Workspace op=exec` (or `op=run_cell` to keep
+         the data loaded between steps), and read the result with `Workspace
+         op=read`, or hand the file back with `File op=copy` to the inbox.
+         An API is reached only through an egress route the operator declared and
+         added to your grant: the core adds its credential, so no token ever
+         appears in a command. Or mount a database MCP server and call its tools.
+         If this install runs no workspaces, Bashbox's host-command fallback
+         (operator-allowlisted `psql`, `duckdb`, a python script) still works
+         until RFC GW P15 removes it.
 
       ## Drive it
       Represent each work-item as a Document chunk (status = the team's state) as
@@ -466,9 +504,9 @@ skills:
       output file, the external system).
 
       ## Safety
-      SQL Memory is scope-isolated (tenant/user). For external access via Bashbox,
-      only operator-allowlisted commands + creds reach the host — never interpolate
-      untrusted input into SQL or a shell command (parameterize / quote).
+      SQL Memory is scope-isolated (tenant/user). Never interpolate untrusted input
+      into SQL or a shell command (parameterize / quote). A script in a workspace
+      is untrusted code holding whatever routes the workspace holds.
 
   team/docboard:
     description: Marketing/content-team workspace — the Document task board IS the deliverable. Draft, review, and finalize copy in chunks. No volume, no repo, no PR.

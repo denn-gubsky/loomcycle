@@ -1,5 +1,11 @@
 # RFC AQ embedded bundle: dev-exec
 #
+# DEPRECATED (RFC GW §9): a future release (RFC GW P15) removes this bundle, the
+# builder sidecar and its mcp__sandbox__* tools. Select `dev-workspace` instead:
+# the same dev/exec envelope, run in a workspace on a workspace worker. Boot and
+# `loomcycle doctor` warn while this bundle is selected; docs/MIGRATING-FROM-BASH.md
+# ("The builder sidecar") maps it across.
+#
 # Deterministic, zero-token code-js agent (RFC J) that EXECUTES a caller's command
 # envelope in the isolated sandbox (open -> write files -> run commands -> read
 # artifacts -> close). The reliable replacement for the retired LLM dev/sandbox.

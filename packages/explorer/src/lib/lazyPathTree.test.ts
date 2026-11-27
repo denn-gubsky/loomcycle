@@ -257,6 +257,49 @@ describe("LazyPathTree", () => {
   });
 });
 
+describe("LazyPathTree listing options (RFC HA)", () => {
+  it("TestLazyPathTree_AsksEveryPageWithItsCountsAndFiltersAndKeepsTheEcho", async () => {
+    const pages: PathLsPage[] = [];
+    const data = {
+      pathLs: async (path: string, _s: unknown, _r: boolean, _b: unknown, page: PathLsPage) => {
+        pages.push(page);
+        return page.cursor
+          ? { path, entries: [], filters: { status: "draft" } }
+          : {
+              path,
+              entries: [{ name: "kb", kind: "directory", full_path: "/kb", documents: 3 }],
+              truncated: true,
+              next_cursor: "c1",
+              filters: { status: "draft" },
+              type_expanded_to: ["Guide", "HowTo"],
+            };
+      },
+    } as unknown as ExplorerDataLayer;
+    const t = new LazyPathTree(data, "tenant", undefined, 500, { withCounts: true, filters: { status: "draft" } });
+    await t.loadDir("");
+    let root = t.getSnapshot().get("")!;
+    expect(root.appliedFilters).toEqual({ status: "draft" });
+    expect(root.typeExpandedTo).toEqual(["Guide", "HowTo"]);
+    // Under a filter the next page may be empty and still be asked for.
+    await t.loadMore("");
+    root = t.getSnapshot().get("")!;
+    expect(root.entries.map((e) => e.name)).toEqual(["kb"]);
+    expect(root.nextCursor).toBeUndefined();
+    expect(pages).toEqual([
+      { withCounts: true, filters: { status: "draft" }, limit: 500 },
+      { withCounts: true, filters: { status: "draft" }, limit: 500, cursor: "c1" },
+    ]);
+  });
+
+  it("TestLazyPathTree_AnswerWithoutFiltersCarriesNoEcho", async () => {
+    // A runtime before RFC HA ignores the filters: its answer has no echo.
+    const srv = fakePathServer(liveShapedScope());
+    const t = new LazyPathTree(srv.data, "user", undefined, 500, { filters: { name_contains: "x" } });
+    await t.loadDir("");
+    expect(t.getSnapshot().get("")!.appliedFilters).toBeUndefined();
+  });
+});
+
 describe("listSubtree", () => {
   it("follows the cursor to the end of a subtree larger than the runtime's page", async () => {
     // A runtime that clamps every page to 250 entries.

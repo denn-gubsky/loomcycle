@@ -136,6 +136,9 @@ func (m *Manager) Unexpose(ctx context.Context, o Owner, name string, port int) 
 		if err != nil {
 			return false, err
 		}
+		if ok {
+			m.tellClosed(ctx, r, e, SurfaceUnexposed)
+		}
 		found = found || ok
 	}
 	return found, nil
@@ -187,8 +190,12 @@ func (m *Manager) OpenExposure(ctx context.Context, tenantID, userID, id string)
 	}
 	now := m.now().UTC()
 	if now.Sub(e.LastUsedAt) > m.expose.IdleTimeout {
-		if _, err := m.store.WorkspaceExposureDelete(ctx, tenantID, id); err != nil {
+		ok, err := m.store.WorkspaceExposureDelete(ctx, tenantID, id)
+		if err != nil {
 			m.log.Warn("cannot close an idle exposure", "exposure_id", id, "err", err)
+		}
+		if ok {
+			m.tellClosed(ctx, r, e, SurfaceIdle)
 		}
 		return none()
 	}
@@ -214,8 +221,14 @@ func (m *Manager) SweepExposures(ctx context.Context) (int, error) {
 			m.log.Warn("cannot close an idle exposure", "exposure_id", e.ID, "err", err)
 			continue
 		}
-		if ok {
-			n++
+		if !ok {
+			continue
+		}
+		n++
+		// The owning run is told; a workspace already gone has no run to
+		// tell (its release told it).
+		if r, err := m.store.WorkspaceGet(ctx, e.TenantID, e.WorkspaceID); err == nil {
+			m.tellClosed(ctx, r, e, SurfaceIdle)
 		}
 	}
 	return n, nil
@@ -224,14 +237,32 @@ func (m *Manager) SweepExposures(ctx context.Context) (int, error) {
 // dropExposures closes a workspace's exposures; a failure is logged, since
 // the route refuses a workspace that is not ready whatever its rows say.
 func (m *Manager) dropExposures(ctx context.Context, r store.WorkspaceRow) {
+	m.dropExposuresAs(ctx, r, SurfaceReleased)
+}
+
+// closeLostPages closes the pages of a workspace whose worker went away,
+// telling its run surface_closed with the reason lost (ruling Q6). The
+// route already refuses a workspace that is not ready; this tells the run
+// and drops the rows.
+func (m *Manager) closeLostPages(ctx context.Context, r store.WorkspaceRow) {
+	m.dropExposuresAs(ctx, r, SurfaceLost)
+}
+
+// dropExposuresAs closes r's exposures, telling its run why.
+func (m *Manager) dropExposuresAs(ctx context.Context, r store.WorkspaceRow, reason string) {
 	list, err := m.store.WorkspaceExposureListByWorkspace(ctx, r.TenantID, r.ID)
 	if err != nil {
 		m.log.Warn("cannot list a released workspace's exposures", "workspace_id", r.ID, "err", err)
 		return
 	}
 	for _, e := range list {
-		if _, err := m.store.WorkspaceExposureDelete(ctx, r.TenantID, e.ID); err != nil {
+		ok, err := m.store.WorkspaceExposureDelete(ctx, r.TenantID, e.ID)
+		if err != nil {
 			m.log.Warn("cannot close a released workspace's exposure", "exposure_id", e.ID, "err", err)
+			continue
+		}
+		if ok {
+			m.tellClosed(ctx, r, e, reason)
 		}
 	}
 }
@@ -274,3 +305,38 @@ func (m *Manager) DialExposure(ctx context.Context, r store.WorkspaceRow, port i
 	}
 	return t, nil
 }
+
+// SurfaceClosed is a page that went (RFC GW D24): the owning run's stream is
+// told, by SetSurfaceNotifier's function.
+type SurfaceClosed struct {
+	ExposureID string
+	// Reason is unexposed, released or idle.
+	Reason string
+}
+
+// The reasons a page goes.
+const (
+	SurfaceUnexposed = "unexposed"
+	// SurfaceLost: the workspace's worker went away (RFC GW P12 ruling Q6).
+	SurfaceLost     = "lost"
+	SurfaceReleased = "released"
+	SurfaceIdle     = "idle"
+)
+
+// SurfaceNotifier tells the run ownerRunID that one of its pages went; ctx
+// is the closer's (the run's own tool call, or a sweep's).
+type SurfaceNotifier func(ctx context.Context, ownerRunID string, c SurfaceClosed)
+
+// SetSurfaceNotifier sets who is told of a page's close. Boot wiring only.
+func (m *Manager) SetSurfaceNotifier(fn SurfaceNotifier) { m.surfaceClosed = fn }
+
+// tellClosed tells the owning run of workspace r that page e went.
+func (m *Manager) tellClosed(ctx context.Context, r store.WorkspaceRow, e store.WorkspaceExposure, reason string) {
+	if m.surfaceClosed == nil || r.OwnerKind != store.WorkspaceOwnerRun || r.OwnerRunID == "" {
+		return
+	}
+	m.surfaceClosed(ctx, r.OwnerRunID, SurfaceClosed{ExposureID: e.ID, Reason: reason})
+}
+
+// ExposeIdleTimeout is workspace.expose.idle_timeout_s, resolved.
+func (m *Manager) ExposeIdleTimeout() time.Duration { return m.expose.IdleTimeout }

@@ -6,7 +6,7 @@ The `Workspace` tool gives you a **workspace**: a directory on a workspace
 worker, a machine apart from the runtime, where you can run shell commands
 (`exec`), run code in an interpreter that keeps its variables (`run_cell`),
 read and change files (`read`, `write`, `edit`, `glob`, `grep`), and look at
-pictures it holds (`view`).
+pictures it holds (`view`) or the pages its server serves (`screenshot`).
 Use it for work that needs a real shell and toolchains such as Python and
 Node. For files you keep, use your volumes and the Read, Write and Edit tools.
 
@@ -14,11 +14,14 @@ Node. For files you keep, use your volumes and the Read, Write and Edit tools.
 
 Your agent's grant decides which operations work: `open` needs the grant to
 open workspaces; `exec`, `run_cell`, `reset_kernel`, `start`, `stop`,
-`logs` and `request` need `exec`; `write`
+`logs`, `request` and `await` need `exec`; `write`
 and `edit` need `write`; `read`, `view`, `glob`, `grep`, `list` and `status` need
-`read`; `share` and `unshare` need the grant to share; `expose` and `unexpose` need the grant to expose; `checkpoint`,
+`read`; `share` and `unshare` need the grant to share; `expose` and `unexpose` need the grant to expose; `screenshot` needs both `exec` and the grant to connect; `checkpoint`,
 `restore` and `delete_checkpoint` need `write`, `checkpoints` needs `read`,
-and `fork` needs the grant to open workspaces. Anything else is
+and `fork` needs the grant to open workspaces; `save_template` and
+`delete_template` need the grant to keep templates (a tenant template also
+the tenant value in your memory_scopes), and `templates` needs either that
+grant or the one to open workspaces. Anything else is
 refused with `not_granted`. Context op=self shows your grant.
 
 ## Lifetime
@@ -51,10 +54,10 @@ reason.
 
 | op | What it does | Main arguments |
 |---|---|---|
-| `open` | open (or return) a workspace of this run | `name`, `toolchain`, `egress` |
+| `open` | open (or return) a workspace of this run, empty or from a template; `lifetime: durable` keeps it for your next run | `name`, `toolchain`, `egress`, `template`, `lifetime` |
 | `list` | this run's workspaces | — |
 | `status` | its state, and whether its directory is on the worker | `name` |
-| `release` | delete it now | `name` |
+| `release` | delete it now (a durable one is kept for your next run unless `discard`) | `name`, `discard` |
 | `exec` | run a shell command in it | `name`, `command`, `cwd`, `timeout_s` |
 | `run_cell` | run Python or Node code in an interpreter that keeps its variables | `name`, `code`, `kernel`, `timeout_s` |
 | `reset_kernel` | stop the interpreter; the next cell starts clean | `name`, `kernel` |
@@ -64,8 +67,10 @@ reason.
 | `request` | send one HTTP request to a port your running server declared; returns status, headers, body | `name`, `port`, `method`, `path`, `headers`, `body` |
 | `expose` | show the page your server serves on a port to your user, in their chat | `name`, `port`, `title`, `kind` |
 | `unexpose` | withdraw that page | `name`, `port` |
+| `await` | the next update your application posted from its page (what the person did), once; or `timed_out` | `name`, `timeout_s` |
 | `read` | a file's text | `name`, `path`, `offset`, `limit`, `line_numbers` |
 | `view` | look at a picture (PNG, JPEG, GIF, WebP) | `name`, `path` |
+| `screenshot` | look at the page your running server serves on a port, in a headless browser | `name`, `port`, `path`, `width`, `height` |
 | `write` | create or replace a file whole | `name`, `path`, `content` |
 | `edit` | replace exact text in a file | `name`, `path`, `old_string`, `new_string`, `replace_all` |
 | `glob` | find files by name | `name`, `pattern`, `path` |
@@ -77,6 +82,9 @@ reason.
 | `restore` | put its files back to a checkpoint; stops its interpreters and commands | `name`, `checkpoint` |
 | `delete_checkpoint` | remove a checkpoint and free its room | `name`, `checkpoint` |
 | `fork` | open a second workspace as a copy of it, or of a checkpoint | `name`, `as`, `checkpoint` |
+| `save_template` | keep a checkpoint as a template to open workspaces from | `name`, `checkpoint`, `as`, `scope` |
+| `templates` | the templates you may open | — |
+| `delete_template` | delete a template | `template`, `scope` |
 
 The file operations take the same arguments as the Read, Write, Edit, Glob
 and Grep tools, without `volume`, and paths are relative to the workspace.
@@ -94,6 +102,14 @@ delete the ones you no longer need. `fork` opens a second workspace of your
 run from the present files or a checkpoint; it is yours like any other, has
 its own quota, and starts with no checkpoints and no shares. See
 Workspace/checkpoint and Workspace/fork.
+
+## Templates
+
+A template is a starting state kept by the runtime: a checkpoint's files,
+installed packages included. `save_template` keeps one, for your own runs
+(`scope: user`) or every user of your tenant (`scope: tenant`); `open` with
+`template` starts a new workspace as a copy of it, on any worker that has
+its toolchains. See Workspace/save_template.
 
 ## A workspace shared with you
 
@@ -123,3 +139,5 @@ Every refusal is `{"error": <class>, "detail": ...}`:
 - `workspace_over_quota` — the write, checkpoint, restore or fork would pass
   a disk quota (checkpoints count against their workspace's).
 - `checkpoint_limit`, `checkpoint_not_found` — see Workspace/checkpoint.
+- `template_not_found`, `template_limit`, `template_too_large` — see
+  Workspace/save_template.

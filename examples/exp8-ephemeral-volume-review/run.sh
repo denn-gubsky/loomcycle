@@ -11,8 +11,9 @@ set -a; source "$HERE/.env.local"; set +a
 export LOOMCYCLE_DATA_DIR="${LOOMCYCLE_DATA_DIR:-$HERE/data}"
 export LOOMCYCLE_LISTEN_ADDR="${LOOMCYCLE_LISTEN_ADDR:-127.0.0.1:8787}"
 export LOOMCYCLE_ANTHROPIC_OAUTH_DEV_ENABLED="${LOOMCYCLE_ANTHROPIC_OAUTH_DEV_ENABLED:-1}"
-# Bash is required by the dispatcher (git clone + ls verify). Reviewers get Read/Grep/Glob only.
-export LOOMCYCLE_BASH_ENABLED="${LOOMCYCLE_BASH_ENABLED:-1}"
+# The dispatcher clones with the Git tool, which reaches only these hosts.
+# Reviewers get Read/Grep/Glob only.
+export LOOMCYCLE_GIT_SOURCE_HOSTS="${LOOMCYCLE_GIT_SOURCE_HOSTS:-github.com}"
 
 # dynamic-root backing dir must exist before the server loads the volume config.
 mkdir -p "$HERE/data" "$HERE/work" "$HERE/work/dynamic"

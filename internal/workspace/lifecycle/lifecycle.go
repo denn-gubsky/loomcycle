@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/audit"
+	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/workspace"
 	"github.com/denn-gubsky/loomcycle/internal/workspace/dispatch"
@@ -31,6 +32,7 @@ import (
 // for the run-end release's pause check and a share's runs.
 type Store interface {
 	store.WorkspaceStore
+	store.WorkspaceTemplateStore
 	store.WorkspaceExposureStore
 	GetRun(ctx context.Context, runID string) (store.Run, error)
 	// GetRunByAgentID resolves the run a share names (RFC GW P8).
@@ -61,6 +63,16 @@ type Limits struct {
 	// (workspace.checkpoint.max_per_workspace); zero is the worker's
 	// default, workspace.DefaultMaxCheckpoints.
 	MaxCheckpoints int
+	// TemplateMaxBytes bounds one template's archive
+	// (workspace.template.max_mb), MaxTemplates a tenant's templates
+	// (workspace.template.max_per_tenant); zero is DefaultTemplateMaxBytes
+	// and DefaultMaxTemplates.
+	TemplateMaxBytes int64
+	MaxTemplates     int
+	// MaxTemplatesPerUser bounds one user's user templates
+	// (workspace.template.max_per_user), so one member cannot fill the
+	// tenant's bound; zero is DefaultMaxTemplatesPerUser.
+	MaxTemplatesPerUser int
 	// ConvertQuarantine is how long a file that crashed a worker's
 	// conversion child is refused for its workspace
 	// (conversion.quarantine_ttl_s); zero is DefaultConvertQuarantine.
@@ -94,10 +106,27 @@ type Manager struct {
 	audit audit.Sink
 	// expose is workspace.expose (SetExpose): off until set.
 	expose ExposeLimits
+	// durable is workspace.durable (SetDurable): off until set.
+	durable DurableLimits
+	// surfaceClosed tells a run one of its pages went (SetSurfaceNotifier);
+	// nil tells no one.
+	surfaceClosed SurfaceNotifier
 	// proxy and routes are the way out and the operator's routes by name
 	// (SetEgress); a nil proxy refuses every request out.
 	proxy  *egress.Proxy
 	routes map[string]egress.Route
+	// gitProxy sends git workspaces' requests (SetGitProxy); nil refuses
+	// every one. gitTickets are the live tickets of git ops (git.go).
+	gitProxy   *egress.GitProxy
+	gitTickets gitTickets
+	// onGitTicket, when set, is told each network op's ticket as it is
+	// minted. Tests only.
+	onGitTicket func(*GitTicket)
+	// gitPush is workspace.push, resolved (SetGitPush): a git fork's branch
+	// is held to it.
+	gitPush config.WorkspacePushConfig
+	// gitMirrorMax is a mirror's cap in bytes (SetGitMirrorMax); 0 is none.
+	gitMirrorMax int64
 	// principalEgress is workspace.mcp.egress (SetPrincipalEgress): the
 	// routes a workspace opened over the MCP server may use.
 	principalEgress []string
@@ -110,6 +139,9 @@ type Manager struct {
 	// name: set only by this package's tests, whose upstreams cannot listen
 	// on 443.
 	tenantTestPort string
+	// templateDir is where template archives are kept (SetTemplateDir);
+	// empty keeps none.
+	templateDir string
 }
 
 // New builds a manager. A zero MaxPerRun is 1: a run that may open
@@ -136,7 +168,13 @@ func New(d *dispatch.Dispatcher, st Store, l Limits, log *slog.Logger) *Manager 
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Manager{disp: d, store: st, limits: l, log: log.With("component", "workspaces"), now: time.Now}
+	m := &Manager{disp: d, store: st, limits: l, log: log.With("component", "workspaces"), now: time.Now}
+	// A workspace reconciliation marks lost closes its pages, as one the
+	// lost sweep marks does (RFC GW P12 plan §3.4, G-D).
+	if d != nil {
+		d.SetOnLost(m.closeLostPages)
+	}
+	return m
 }
 
 // Owner is who is asking: who a workspace is for and who may use it. A run
@@ -242,7 +280,33 @@ type OpenRequest struct {
 	// recorded on its row (RFC GW §6.3). The caller has checked them
 	// against the run's grant; none is no way out.
 	Egress []string
+	// Template, when set, is the template the workspace starts as a copy
+	// of (RFC GW §5.5), found by FindTemplate. Toolchains are then its.
+	Template *store.WorkspaceTemplateRow
+	// Git, when set, opens a git workspace (RFC GW §4.2, P11): a working
+	// tree over the tenant's mirror of the repository, on a worker with the
+	// git label. The caller has run the run's checks (git_remote, the host
+	// list, the access-control rules) and resolved the credential.
+	Git *GitOpen
+	// Lifetime is "" (ephemeral) or store.WorkspaceLifetimeDurable.
+	Lifetime string
+	// Root, set, opens the workspace on the user's own folder of that name
+	// on their personal worker (RFC GW §4.5, P13): the workspace is that
+	// folder, never a copy. Not with Template, Toolchains or durable, and
+	// not for a principal (D-P13-9).
+	Root string
 }
+
+// The refusals of a root workspace (RFC GW P13).
+var (
+	// ErrRootRefused: the op copies, keeps or hands over the user's own
+	// folder (checkpoints, restore, fork, save_template, share), so a root
+	// workspace does not take it.
+	ErrRootRefused = errors.New("this workspace is your own folder (a root): checkpoints, restore, fork, templates and shares are refused on it")
+	// ErrRootOverMCP: a root puts a user's real folder behind a session;
+	// over the MCP server it is not opened (D-P13-9, owner ruling Q5).
+	ErrRootOverMCP = errors.New("a root is opened inside a run; over the MCP server it is not offered")
+)
 
 // Open opens a workspace named req.Name for the run. A ready workspace of
 // that name the run already holds is returned as it is, so a repeated open
@@ -253,7 +317,33 @@ func (m *Manager) Open(ctx context.Context, o Owner, req OpenRequest) (store.Wor
 	if !ValidName(req.Name) {
 		return store.WorkspaceRow{}, fmt.Errorf("%w: 1 to %d letters, digits, '.', '-' or '_', starting with a letter or digit", ErrInvalidName, MaxNameLen)
 	}
+	if err := checkRootOpen(o, req); err != nil {
+		return store.WorkspaceRow{}, err
+	}
+	// A durable git workspace would keep a mirror's pins and a branch
+	// across runs, each of which must prove access again: not built yet.
+	if req.Git != nil && req.Lifetime == store.WorkspaceLifetimeDurable {
+		return store.WorkspaceRow{}, fmt.Errorf("%w: a durable workspace", ErrGitUnsupported)
+	}
+	switch req.Lifetime {
+	case "", store.WorkspaceLifetimeEphemeral:
+	case store.WorkspaceLifetimeDurable:
+		return m.openDurable(ctx, o, req)
+	default:
+		return store.WorkspaceRow{}, fmt.Errorf("%w: lifetime %q (want ephemeral or durable)", ErrInvalidName, req.Lifetime)
+	}
 	if r, err := m.Get(ctx, o, req.Name); err == nil {
+		// A repeated open asks for what the run holds: the same root, or
+		// none. Another answer is the caller's mistake, never a quiet swap
+		// of a user's folder for a scratch directory or back.
+		if r.Root != req.Root {
+			return store.WorkspaceRow{}, fmt.Errorf("%w: the run's %q is open %s; release it first", ErrInvalidName, req.Name, rootDescription(r.Root))
+		}
+		// A repeat is harmless only when it asks for what the run holds: a
+		// git open never gets a general workspace, or another repository's.
+		if (req.Git != nil) != (r.Git != nil) || req.Git != nil && req.Git.URL != r.Git.URL {
+			return store.WorkspaceRow{}, fmt.Errorf("%w: %q is another kind of workspace, or on another repository", ErrNameTaken, req.Name)
+		}
 		if r.State == store.WorkspaceReady {
 			return r, nil
 		}
@@ -261,7 +351,64 @@ func (m *Manager) Open(ctx context.Context, o Owner, req OpenRequest) (store.Wor
 	} else if !errors.Is(err, ErrNotFound) {
 		return store.WorkspaceRow{}, err
 	}
-	cands, err := m.disp.Place(ctx, dispatch.PlaceRequest{TenantID: o.TenantID, UserID: o.UserID, Toolchains: req.Toolchains, Engine: req.Engine})
+	return m.openPlaced(ctx, o, req, store.WorkspaceLifetimeEphemeral)
+}
+
+// checkRootOpen refuses a root open (RFC GW P13) that cannot be one: over
+// the MCP server (D-P13-9), with no user, with a template, a toolchain or
+// durable (a root is the user's folder as it is, on their disk already), or
+// naming a root by something that is not a name.
+func checkRootOpen(o Owner, req OpenRequest) error {
+	if req.Root == "" {
+		return nil
+	}
+	switch {
+	case o.IsPrincipal():
+		return ErrRootOverMCP
+	case o.UserID == "":
+		return fmt.Errorf("%w: a root is a user's own folder, and this run has no user", ErrInvalidName)
+	case !ValidName(req.Root):
+		return fmt.Errorf("%w: root: 1 to %d letters, digits, '.', '-' or '_', starting with a letter or digit", ErrInvalidName, MaxNameLen)
+	case req.Git != nil:
+		// A git workspace is a clone the runtime makes (RFC GW P11); a
+		// root is the user's folder as it is. One is never the other.
+		return fmt.Errorf("%w: a root is your folder as it is, never a git workspace: open it with repo or root, not both", ErrInvalidName)
+	case req.Template != nil, len(req.Toolchains) > 0, req.Lifetime == store.WorkspaceLifetimeDurable:
+		return fmt.Errorf("%w: a root is your folder as it is: not with a template, a toolchain or lifetime durable", ErrInvalidName)
+	}
+	return nil
+}
+
+// rootDescription says how a workspace is open, for a refusal.
+func rootDescription(root string) string {
+	if root == "" {
+		return "without a root"
+	}
+	return fmt.Sprintf("on root %q", root)
+}
+
+// openPlaced places and makes a new workspace of lifetime for the run.
+func (m *Manager) openPlaced(ctx context.Context, o Owner, req OpenRequest, lifetime string) (store.WorkspaceRow, error) {
+	req.Lifetime = lifetime
+	if req.Template != nil {
+		if req.Template.TenantID != o.TenantID {
+			return store.WorkspaceRow{}, ErrTemplateNotFound
+		}
+		// A template is refused on a worker without its toolchains
+		// (RFC GW §5.5).
+		req.Toolchains = req.Template.Toolchains
+	}
+	place := dispatch.PlaceRequest{TenantID: o.TenantID, UserID: o.UserID, Root: req.Root, Toolchains: req.Toolchains, Engine: req.Engine}
+	if req.Git != nil {
+		if req.Template != nil {
+			return store.WorkspaceRow{}, fmt.Errorf("%w: a git workspace does not start from a template", ErrInvalidGitOpen)
+		}
+		if err := req.Git.check(); err != nil {
+			return store.WorkspaceRow{}, err
+		}
+		place.Labels = []string{workspace.GitLabel}
+	}
+	cands, err := m.disp.Place(ctx, place)
 	if err != nil {
 		return store.WorkspaceRow{}, err
 	}
@@ -288,25 +435,44 @@ func (m *Manager) Open(ctx context.Context, o Owner, req OpenRequest) (store.Wor
 // other's row, so neither passes a bound both together would break (both may
 // be refused, never both admitted).
 func (m *Manager) openOn(ctx context.Context, o Owner, req OpenRequest, workerID, engine string) (store.WorkspaceRow, error) {
-	return m.makeOn(ctx, o, req.Name, req.Egress, workerID, engine, func(id string) error {
-		return m.disp.OpenWith(ctx, o.TenantID, workerID, id, workspace.OpenArgs{DiskQuotaBytes: m.limits.DiskQuotaBytes})
+	if req.Git != nil {
+		return m.makeOn(ctx, o, req.Name, req.Lifetime, "", req.Egress, workerID, engine, req.Git.row(o.TenantID), func(row *store.WorkspaceRow) error {
+			return m.openGit(ctx, row, *req.Git)
+		})
+	}
+	return m.makeOn(ctx, o, req.Name, req.Lifetime, req.Root, req.Egress, workerID, engine, nil, func(row *store.WorkspaceRow) error {
+		if req.Template != nil {
+			return m.openFromTemplate(ctx, o, *req.Template, workerID, row.ID)
+		}
+		if req.Root != "" {
+			// The worker binds the id to its folder; a root has no quota.
+			return m.disp.OpenWith(ctx, o.TenantID, o.UserID, workerID, row.ID, workspace.OpenArgs{Root: req.Root})
+		}
+		return m.disp.OpenWith(ctx, o.TenantID, o.UserID, workerID, row.ID, workspace.OpenArgs{DiskQuotaBytes: m.limits.DiskQuotaBytes})
 	})
 }
 
 // makeOn makes a workspace on one worker: its row (with the egress routes it
 // may use, RFC GW §6.3), the bounds, then place, which makes its directory
-// there (an open, or a fork), then the row ready.
-func (m *Manager) makeOn(ctx context.Context, o Owner, name string, egress []string, workerID, engine string, place func(id string) error) (store.WorkspaceRow, error) {
+// there (an open, or a fork), then the row ready. git, when set, makes a git
+// workspace's row; place may fill in what it learns of the repository. root,
+// set, is the user's folder the workspace is on (RFC GW P13).
+func (m *Manager) makeOn(ctx context.Context, o Owner, name, lifetime, root string, egress []string, workerID, engine string, git *store.WorkspaceGit, place func(row *store.WorkspaceRow) error) (store.WorkspaceRow, error) {
 	id, err := newID()
 	if err != nil {
 		return store.WorkspaceRow{}, fmt.Errorf("workspace id: %w", err)
 	}
-	row, err := m.store.WorkspaceCreate(ctx, store.WorkspaceRow{
-		ID: id, TenantID: o.TenantID, UserID: o.UserID, Name: name, WorkerID: workerID, Engine: engine,
+	seed := store.WorkspaceRow{
+		ID: id, TenantID: o.TenantID, UserID: o.UserID, Name: name, WorkerID: workerID, Engine: engine, Lifetime: lifetime,
 		OwnerRunID: o.RunID, OwnerAgentID: o.AgentID, RootRunID: o.RootRunID, State: store.WorkspaceOpening,
 		OwnerKind: o.kind(), OpenedToken: o.TokenDefID,
-		Egress: append([]string{}, egress...),
-	})
+		Egress: append([]string{}, egress...), Root: root,
+	}
+	if git != nil {
+		g := *git
+		seed.Kind, seed.Git = store.WorkspaceKindGit, &g
+	}
+	row, err := m.store.WorkspaceCreate(ctx, seed)
 	if err != nil {
 		var conflict *store.ErrConflict
 		if errors.As(err, &conflict) {
@@ -319,7 +485,18 @@ func (m *Manager) makeOn(ctx context.Context, o Owner, name string, egress []str
 		undo()
 		return store.WorkspaceRow{}, err
 	}
-	if err := place(id); err != nil {
+	if lifetime == store.WorkspaceLifetimeDurable {
+		// Counted after the insert, as the run's bound is: two creates
+		// racing on two replicas cannot both pass it.
+		if n, err := m.store.WorkspaceCountDurableByUser(ctx, o.TenantID, o.UserID); err != nil || (m.durable.MaxPerUser > 0 && n > m.durable.MaxPerUser) {
+			undo()
+			if err == nil {
+				err = fmt.Errorf("%w: a user keeps at most %d durable workspaces (workspace.durable.max_per_user); discard one first", ErrLimit, m.durable.MaxPerUser)
+			}
+			return store.WorkspaceRow{}, err
+		}
+	}
+	if err := place(&row); err != nil {
 		// The directory may have been made before the error (a worker lost
 		// mid-op): remove it if the worker is still here; if not, its next
 		// attach finds a directory no row knows and removes it.
@@ -425,20 +602,30 @@ func (m *Manager) Do(ctx context.Context, r store.WorkspaceRow, req dispatch.Req
 	if r.State != store.WorkspaceReady {
 		return dispatch.Result{}, fmt.Errorf("%w: %q is %s", ErrNotReady, r.Name, r.State)
 	}
-	req.TenantID, req.WorkspaceID = r.TenantID, r.ID
+	req.TenantID, req.UserID, req.WorkspaceID = r.TenantID, r.UserID, r.ID
 	return m.disp.Do(ctx, r.WorkerID, req)
 }
 
 // Status reports whether the workspace's directory is on its worker.
 func (m *Manager) Status(ctx context.Context, r store.WorkspaceRow) (bool, error) {
-	return m.disp.Status(ctx, r.TenantID, r.WorkerID, r.ID)
+	return m.disp.Status(ctx, r.TenantID, r.UserID, r.WorkerID, r.ID)
 }
 
-// Release removes a workspace: its directory from the worker and then its
+// Release ends a workspace's pin: a durable one is parked, its files kept
+// (RFC GW §4.2); any other is removed. The run-end release and the sweeper
+// come here, so neither removes a durable workspace.
+func (m *Manager) Release(ctx context.Context, r store.WorkspaceRow) error {
+	if r.Lifetime == store.WorkspaceLifetimeDurable && r.State != store.WorkspaceReleasing {
+		return m.unpin(ctx, r)
+	}
+	return m.remove(ctx, r)
+}
+
+// remove removes a workspace: its directory from the worker and then its
 // row. A worker that is not attached here, or that fails the remove, leaves
 // the row releasing, and the worker's next attach removes the directory and
 // the row (dispatch's reconciliation).
-func (m *Manager) Release(ctx context.Context, r store.WorkspaceRow) error {
+func (m *Manager) remove(ctx context.Context, r store.WorkspaceRow) error {
 	// Its checkouts go with it, whatever the release's outcome: no commit
 	// can be asked of a workspace being released.
 	m.checkouts.forget(r.ID)
@@ -470,10 +657,10 @@ func (m *Manager) Release(ctx context.Context, r store.WorkspaceRow) error {
 			}
 		}
 	}
-	if !m.disp.Attached(r.WorkerID, r.TenantID) {
+	if !m.disp.Attached(r.WorkerID, r.TenantID, r.UserID) {
 		return nil
 	}
-	if err := m.disp.Remove(ctx, r.TenantID, r.WorkerID, r.ID); err != nil {
+	if err := m.disp.Remove(ctx, r.TenantID, r.UserID, r.WorkerID, r.ID); err != nil {
 		m.log.Warn("cannot remove a released workspace; its worker's next attach removes it", "workspace_id", r.ID, "err", err)
 		return nil
 	}
@@ -519,7 +706,7 @@ func (m *Manager) Sweep(ctx context.Context) (int, error) {
 	}
 	n := 0
 	for _, r := range rows {
-		if r.State == store.WorkspaceReleasing && !m.disp.Attached(r.WorkerID, r.TenantID) {
+		if r.State == store.WorkspaceReleasing && !m.disp.Attached(r.WorkerID, r.TenantID, r.UserID) {
 			continue // the worker's next attach finishes it
 		}
 		if err := m.Release(ctx, r); err != nil {
@@ -549,7 +736,7 @@ func (m *Manager) MarkLost(ctx context.Context) (int, error) {
 	}
 	n := 0
 	for _, r := range rows {
-		if m.disp.Attached(r.WorkerID, r.TenantID) {
+		if m.disp.Attached(r.WorkerID, r.TenantID, r.UserID) {
 			continue
 		}
 		ok, err := m.store.WorkspaceSetState(ctx, r.TenantID, r.ID, r.State, store.WorkspaceLost)
@@ -559,6 +746,7 @@ func (m *Manager) MarkLost(ctx context.Context) (int, error) {
 		}
 		if ok {
 			n++
+			m.closeLostPages(ctx, r)
 		}
 	}
 	if n > 0 {
@@ -570,7 +758,7 @@ func (m *Manager) MarkLost(ctx context.Context) (int, error) {
 func (m *Manager) removeQuietly(r store.WorkspaceRow) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if err := m.disp.Remove(ctx, r.TenantID, r.WorkerID, r.ID); err != nil {
+	if err := m.disp.Remove(ctx, r.TenantID, r.UserID, r.WorkerID, r.ID); err != nil {
 		m.log.Warn("cannot remove a workspace that failed to open; its worker's next attach removes it", "workspace_id", r.ID, "err", err)
 	}
 }
