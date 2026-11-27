@@ -441,11 +441,10 @@ var allowedSideways = []subsystemEdge{
 
 // standaloneModules are directories holding a go.mod the root module does not
 // replace: separate builds that ship on their own and are not part of the
-// binary. They are outside the layering. deploy/builder is the
-// loomcycle-builder image (security.yml scans it as its own module).
-var standaloneModules = []string{
-	"deploy/builder",
-}
+// binary. They are outside the layering. None today: deploy/builder, the
+// loomcycle-builder image, was removed in v1.172.0 (RFC GW P15). An entry
+// here also needs its own rows in security.yml and codeql.yml.
+var standaloneModules = []string{}
 
 // knownViolation is one wrong-way import that exists today, as an exact
 // package edge (paths relative to the module root).

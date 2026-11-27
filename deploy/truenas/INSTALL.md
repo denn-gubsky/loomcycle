@@ -10,28 +10,19 @@ Replace `APPS2` with your pool name, `PG_HOST` with your Postgres host,
 you use local models), and fill the `CHANGE_ME` / `PASTE_…` placeholders throughout. **All secrets live in an external env file (Phase 4) —
 never in the YAML you paste into the TrueNAS UI.**
 
-> **Deprecated: in-container code execution.** The toolbox image, `LOOMCYCLE_BASH_ENABLED`,
-> the `LOOMCYCLE_BASHBOX_FALLBACK_*` variables and the builder sidecar still work, and a
-> future release removes them (RFC GW P15); boot and `loomcycle doctor` warn while they
-> are set. Agents run commands in a workspace on a workspace worker instead
-> (`docs/WORKSPACES.md`; `docs/MIGRATING-FROM-BASH.md` maps each variable across).
-
-> **Image choice.** This walkthrough enables in-container code execution, so it uses
-> the **`denngubsky/loomcycle-toolbox:1.153.0`** image — a dev toolchain (python / go /
-> rust / c++ / node + git/gh/curl/jq/rsync/wget/unzip/sqlite3) on a shell-bearing base.
-> Code runs in loomcycle's OWN container, so this is a **single-tenant / trusted**
-> posture ([`../../docs/TOOLBOX_IMAGE.md`](../../docs/TOOLBOX_IMAGE.md)). For a
-> locked-down / multi-tenant deploy, use the secure distroless
-> **`denngubsky/loomcycle:1.153.0`** instead and DELETE the "code execution" env block
-> in Phase 5 (its shell tools have no shell/toolchain in distroless); for ISOLATED
-> untrusted code, keep distroless and add the builder sidecar
-> ([`../../docs/SANDBOX.md`](../../docs/SANDBOX.md)). Either way pin **≥ v1.6.0** — the
-> first release with the embedded presets (RFC AQ) this app's `LOOMCYCLE_PRESETS`
-> relies on; older tags fail to boot with `no config found`.
+> **Image.** This walkthrough uses the distroless **`denngubsky/loomcycle:1.153.0`**
+> image: no shell and no toolchain. Agents do not run commands in the runtime's
+> container; they run them in a workspace on a workspace worker (the `Workspace`
+> tool). The [browser + workspace variant](#browser--workspace-variant) below adds a
+> workspace worker on the container engine. The `Bash` and `Bashbox` tools, the
+> `loomcycle-toolbox` image and the builder sidecar were removed in v1.172.0
+> (`docs/MIGRATING-FROM-BASH.md`). Pin **≥ v1.6.0** — the first release with the
+> embedded presets (RFC AQ) this app's `LOOMCYCLE_PRESETS` relies on; older tags fail
+> to boot with `no config found`.
 >
 > **Registry.** Every loomcycle image is published to Docker Hub *and* to
 > `ghcr.io/denn-gubsky/…` (same build, same digest). If a pull fails with
-> `toomanyrequests`, swap the prefix — `ghcr.io/denn-gubsky/loomcycle-toolbox:1.153.0`
+> `toomanyrequests`, swap the prefix — `ghcr.io/denn-gubsky/loomcycle:1.153.0`
 > — everywhere in the YAML below. See "Docker Hub rate limits" in Troubleshooting;
 > TrueNAS is unusually exposed to this because it re-checks every installed app for
 > image updates on a timer, and each check spends from the same anonymous quota.
@@ -204,14 +195,14 @@ Notes:
 name: loomcycle
 services:
   loomcycle-migrate:
-    image: denngubsky/loomcycle-toolbox:1.153.0
+    image: denngubsky/loomcycle:1.153.0
     user: "65532:65532"
     restart: "no"
     command: ["migrate", "up"]
     env_file:
       - /mnt/APPS2/loomcycle/config/loomcycle.secrets.env   # PG DSNs come from here
   loomcycle:
-    image: denngubsky/loomcycle-toolbox:1.153.0
+    image: denngubsky/loomcycle:1.153.0
     user: "65532:65532"
     restart: unless-stopped
     depends_on:
@@ -239,24 +230,6 @@ services:
       OLLAMA_BASE_URL: http://OLLAMA_HOST:11434
       LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX: "65535"     # pin the local model's context window
       # GPU offload (num_gpu) is in the config overlay: providers.ollama-local.options.
-
-      # --- code execution (TOOLBOX IMAGE ONLY; single-tenant/trusted) ---
-      # DEPRECATED (RFC GW P15 removes these): run commands in a workspace instead;
-      # see docs/MIGRATING-FROM-BASH.md.
-      # Delete this whole block on the distroless image. Grant Bash/Bashbox to an
-      # agent via its tools:.
-      # Bashbox: in-process gbash sandbox (rooted at the agent's rw volume, no
-      # network); host commands you allowlist ESCAPE to the real toolchain.
-      # Bash: NOT a sandbox — reaches arbitrary files + the network; only grant it
-      # to trusted agents (needs the toolbox image's real /bin/sh + toolchain).
-      LOOMCYCLE_BASH_ENABLED: "1"
-      # Fallback = the toolchain drivers. Don't add jq/awk (native to Bashbox) or
-      # bash/sh/env (they'd defeat the sandbox). ./compiled-binary won't run via
-      # Bashbox — use `go run`/`cargo run` or the raw Bash tool.
-      LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS: git,gh,curl,rsync,python3,pip3,go,gofmt,cargo,rustc,node,npm,npx,gcc,g++,cc,c++,clang,clang++,make,cmake,pkg-config
-      # REQUIRED for go/cargo/npm/pip — the fallback scrubs the child env to PATH
-      # only, and those need HOME for their caches (go build errors otherwise).
-      LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV: HOME
 
       # --- HTTP / WebFetch host policy ---
       # "*" allows any host — an SSRF surface, acceptable for a TRUSTED single-tenant
@@ -508,60 +481,87 @@ peer's credential, and a team walk by whoever started it or the trigger's author
 - Snapshots don't carry lists, groups or bindings. After restoring on another
   instance, recreate them, or keep them in the overlay.
 
-## Browser + sandbox variant (serve-and-test)
+## Browser + workspace variant
 
-The walkthrough above is the lean, single-tenant toolbox posture. To instead let an
-agent **build a feature in an isolated sandbox, serve it, and test it in a headless
-browser** — all in one run — paste
+The walkthrough above runs no commands for agents. To let an agent **build a
+feature in a workspace, serve it, and look at it** — all in one run — paste
 [`docker-compose.browser.yaml`](docker-compose.browser.yaml) in Phase 5 instead of the
-inline compose. It runs the distroless **`loomcycle-browser`** image and adds two
-sidecars (a code-execution `builder-sidecar` + a `pinchtab` browser) plus a dedicated
-`loom-dev` network, so a `dev/exec` envelope with `expose:<alias>` reaches its dev
-server from the browser at `http://<alias>:<port>`. It's a **stronger** isolation
-posture than the toolbox image — code runs in throwaway sandbox sessions, not in
-loomcycle's own container — with the sidecar as the one privileged component (host
-Docker socket). Background: [`../../docs/SANDBOX.md`](../../docs/SANDBOX.md).
+inline compose. It runs the distroless **`loomcycle-browser`** image and adds:
+
+- a **workspace worker** (`denngubsky/loomcycle-ws-worker`) on the **container
+  engine**: each workspace's commands run in a container of their own (the
+  `denngubsky/loomcycle-workspace-browser` session image: Python, Node, git and
+  Chromium), with a read-only root, no capabilities and no network but the egress
+  routes the runtime grants. The worker drives the host's Docker through its socket,
+  so it is the one privileged component; the sessions hold no such right.
+  Background: [`../../docs/WORKERS.md`](../../docs/WORKERS.md) "Workspace workers";
+- a **`pinchtab`** headless browser for `mcp__browser__*` (browsing the web).
+
+The `dev-workspace` preset supplies `dev/exec`, which runs a command envelope in a
+workspace. An agent whose `workspace` grant holds `exec` and `connect` sees the page
+its own server serves with `Workspace op=screenshot`; the browser runs inside the
+workspace's session (`docs/WORKSPACES.md`, "Looking at a picture").
 
 The deltas from the base install:
 
 1. **Datasets (Phase 2)** — add `pinchtab-data`, owned by **uid 1000** (PinchTab is not
-   the 65532 distroless user, and crash-loops on a root-owned `/data`):
+   the 65532 distroless user, and crash-loops on a root-owned `/data`), and the
+   worker's two directories, owned by 65532, mode 0700:
    ```sh
-   mkdir -p /mnt/APPS2/loomcycle/pinchtab-data
+   mkdir -p /mnt/APPS2/loomcycle/pinchtab-data /mnt/APPS2/loomcycle/workspaces /mnt/APPS2/loomcycle/wse
    chown -R 1000:1000 /mnt/APPS2/loomcycle/pinchtab-data
+   chown 65532:65532 /mnt/APPS2/loomcycle/workspaces /mnt/APPS2/loomcycle/wse
+   chmod 0700 /mnt/APPS2/loomcycle/workspaces /mnt/APPS2/loomcycle/wse
    ```
+   The worker mounts both at their host paths, so the host's Docker finds what the
+   worker names.
 2. **Overlay (Phase 3)** — copy
    [`loomcycle.overlay.browser.example.yaml`](loomcycle.overlay.browser.example.yaml)
    (not the plain one) to `config/loomcycle.yaml`; it declares the `mcp_servers.browser`
-   stdio bridge. The `sandbox` MCP server comes from the preset — nothing to add.
-3. **A second secret file (Phase 4)** — the sidecar and the Chromium container must
-   **not** see the PG DSN or provider keys, so the two sandbox-stack tokens live in
-   their own file:
+   stdio bridge, the worker endpoint and `workspace: {mode: remote}`.
+3. **Two more secret files (Phase 4)** — PinchTab must **not** see the PG DSN or
+   provider keys, so its token lives in its own file:
    ```sh
-   cat > /mnt/APPS2/loomcycle/config/sandbox.secrets.env <<'EOF'
-   SANDBOX_AUTH_TOKEN=CHANGE_ME   # openssl rand -hex 32
+   cat > /mnt/APPS2/loomcycle/config/browser.secrets.env <<'EOF'
    PINCHTAB_TOKEN=CHANGE_ME       # openssl rand -hex 32
    EOF
-   chmod 600 /mnt/APPS2/loomcycle/config/sandbox.secrets.env
+   chmod 600 /mnt/APPS2/loomcycle/config/browser.secrets.env
    ```
-   loomcycle reads both `loomcycle.secrets.env` and `sandbox.secrets.env`; the sidecar
-   and pinchtab read only `sandbox.secrets.env`.
-4. **Host Docker socket** — the sidecar spawns sessions as host-Docker siblings, so it
-   bind-mounts `/var/run/docker.sock` (a privileged grant; keep the box trusted). The
-   `loom-dev` network is created automatically when the app comes up. The session image
-   `denngubsky/loomcycle-sandbox-session:1.153.0` is pulled by the **host** Docker on
-   first session (public — no login needed).
+   loomcycle reads both `loomcycle.secrets.env` and `browser.secrets.env`; pinchtab
+   reads only `browser.secrets.env`. The workspace worker's token is a minted
+   operator token with the single scope `workers:attach`, so it can only be made once
+   the app runs. Create the file empty now, then after the first start mint the token
+   and restart the worker:
+   ```sh
+   install -m 600 /dev/null /mnt/APPS2/loomcycle/config/workspace.worker.env
+   # after Phase 6, with the admin token in LOOMCYCLE_AUTH_TOKEN:
+   loomcycle operator-token create --target http://TRUENAS_SCALE_HOST:8787 \
+     --name ws1 --tenant <your tenant> --scopes workers:attach --worker-shared
+   echo 'LOOMCYCLE_WORKER_TOKEN=<the token it printed>' > /mnt/APPS2/loomcycle/config/workspace.worker.env
+   docker restart <workspace-worker-container>
+   ```
+   `--worker-shared` lets the one worker serve every tenant, which the container
+   engine allows; drop it to serve `--tenant`'s runs only. The conversion workers'
+   `LOOMCYCLE_WORKER_TOKEN` is a different value that never attaches a workspace
+   worker, so keep the two files apart.
+4. **Host Docker socket** — the worker bind-mounts `/var/run/docker.sock` (a
+   privileged grant; keep the box trusted) and joins the socket's group: replace
+   `DOCKER_GID` in the compose with `stat -c %g /var/run/docker.sock`. The session
+   image is pulled by the **host** Docker on the first command (public — no login
+   needed).
 5. **PinchTab allowlist** — PinchTab browses **local-only** until you widen its IDPI
-   allowlist; add each expose alias, then restart the sidecar:
+   allowlist; add the sites agents may browse, then restart it:
    ```sh
    docker exec <pinchtab-container> \
-     pinchtab config set security.allowedDomains "127.0.0.1,localhost,::1,devsrv"
+     pinchtab config set security.allowedDomains "127.0.0.1,localhost,::1,example.com"
    docker restart <pinchtab-container>
    ```
-   The value persists in `pinchtab-data` (it survives reboots); to manage it
-   declaratively see the reference `cloud-deployment/` compose.
+   The value persists in `pinchtab-data` (it survives reboots).
 
-Verify end-to-end: spawn `dev/exec` with `{"expose":"devsrv","commands":["nohup python3 -m http.server 8080 &","sleep 1"],"browser":[{"op":"navigate","args":{"url":"http://devsrv:8080/"}},{"op":"get_text"}]}` — the reply should carry `reachable at http://devsrv:<port>` and the fetched page text.
+Verify end-to-end: `curl -s -H "Authorization: Bearer $LOOMCYCLE_AUTH_TOKEN"
+http://TRUENAS_SCALE_HOST:8787/metrics | grep loomcycle_workspace_workers` shows 1,
+then spawn `dev/exec` with `{"commands":["python3 --version"]}` — the reply carries
+the command's output.
 
 ## Conversion workers
 
@@ -647,5 +647,5 @@ Three fixes, in order of how well they hold:
    Verify: `cat /root/.docker/config.json` shows an `auths` entry.
 3. **Pull less.** Add `pull_policy: missing` to each service so a restart reuses the
    image already on disk instead of re-fetching its manifest. Pinning by digest
-   (`image: denngubsky/loomcycle-toolbox@sha256:…`) also halves the requests a
+   (`image: denngubsky/loomcycle@sha256:…`) also halves the requests a
    multi-arch tag costs, since it skips the manifest-list lookup.

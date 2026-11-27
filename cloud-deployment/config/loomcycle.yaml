@@ -139,8 +139,8 @@ agents:
   doc/manager:
     memory_rerank: { enabled: true }
   # The chat agents' tool lists REPLACE the bundle's here, leaving out the file
-  # and shell tools (Grep, Glob, Write, Edit, Bash, Bashbox). No volume is bound
-  # to agents on this deployment, so those tools could only fail, and agents
+  # tools (Grep, Glob, Write, Edit) and Workspace. No volume is bound
+  # to agents on this deployment, so the file tools could only fail, and agents
   # answering from the tenant's documents reached for Grep and Glob on Path
   # names (which name documents, not files). Read stays: it opens a file a
   # WebFetch or HTTP call kept in the run's inbox (volume: inbox). A tool the
@@ -429,3 +429,12 @@ transcription:
 conversion:
   mode: remote
   listen: 127.0.0.1:7788
+
+# ─── Workspaces (RFC GW) ──────────────────────────────────────────────
+# Agents run commands in workspaces on the workspace-worker container (compose
+# profile `workspace`), which attaches to the endpoint above with its own minted
+# workers:attach token and runs each workspace in a session container of its own
+# (the container engine). Without the worker running, a Workspace call is
+# refused and says so. INSTALL.md → "Workspace worker".
+workspace:
+  mode: remote

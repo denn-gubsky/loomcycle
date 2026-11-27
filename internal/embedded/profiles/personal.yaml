@@ -11,11 +11,11 @@
 
 # Which presets this config sits on. LOOMCYCLE_PRESETS (or --preset), when
 # set, is used instead. A preset named here is trusted as this file is: it is
-# yaml, and can carry agents or MCP servers. None can enable Bash or web
-# access: those are switches in the environment.
+# yaml, and can carry agents or MCP servers. None can enable web access: that
+# is a switch in the environment.
 presets: [personal]
 
-# A directory the file tools (Read, Write, Edit, Grep, Glob, Bashbox) may use.
+# A directory the file tools (Read, Write, Edit, Grep, Glob) may use.
 # Without one those tools are registered and idle. The path must exist.
 # volumes:
 #   work:

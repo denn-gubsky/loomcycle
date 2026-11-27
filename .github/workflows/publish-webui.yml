@@ -8,8 +8,8 @@ name: Publish Web UI bundle
 #
 # A `webui-v<version>` tag builds web/ with `make webui-bundle` and publishes a
 # GitHub release for that tag with two assets: loomcycle-webui-<version>.tar.gz
-# and its .sha256. `webui-v*` cannot match the other tag filters: release.yml,
-# publish-ts-adapter.yml and publish-sandbox-images.yml take `v*` (a tag
+# and its .sha256. `webui-v*` cannot match the other tag filters: release.yml
+# and publish-ts-adapter.yml take `v*` (a tag
 # starting with "v"), and the package workflows take `python-v*`, `library-v*`,
 # `explorer-v*`, `memory-view-v*`, `def-fields-v*`, `loomboard-v*` and
 # `bridge-*-v*`. ci.yml, codeql.yml and security.yml run on branch pushes,

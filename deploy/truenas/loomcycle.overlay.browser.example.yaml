@@ -1,10 +1,11 @@
-# loomcycle TrueNAS overlay — BROWSER + SANDBOX variant (for docker-compose.browser.yaml).
+# loomcycle TrueNAS overlay — BROWSER + WORKSPACE variant (for docker-compose.browser.yaml).
 #
 # Copy to your config dataset as loomcycle.yaml (the compose mounts that dataset at
 # /config and selects it via LOOMCYCLE_CONFIG_DIR). Layered OVER the embedded presets
-# (RFC AQ): the presets — including `sandbox` + `dev-exec` selected in the compose —
-# supply the sandbox MCP server and the dev/exec agent; this file adds only what's
-# specific to this box: the agent Volumes and the PinchTab browser MCP server.
+# (RFC AQ): the presets — including `dev-workspace` selected in the compose — supply
+# the dev/exec agent and the workspace egress routes; this file adds only what's
+# specific to this box: the agent Volumes, the worker endpoint, workspaces and the
+# PinchTab browser MCP server.
 #
 # Keep secrets OUT of this file — they're TrueNAS-managed env (the compose). This
 # overlay is non-secret config only.
@@ -36,24 +37,30 @@ providers:
 # PinchTab's MCP is stdio-only, so loomcycle spawns the pinchtab client (present in the
 # loomcycle-browser image) as a stdio MCP bridge to the `pinchtab` server sidecar. The
 # child inherits PINCHTAB_TOKEN from loomcycle's env (from sandbox.secrets.env), so no
-# ${...} interpolation is needed here. The dev/exec agent (dev-exec bundle) already
+# ${...} interpolation is needed here. The dev/exec agent (dev-workspace bundle) already
 # grants mcp__browser__* in its tool ceiling and drives it via the envelope's optional
 # `browser` steps, so this overlay only needs to DECLARE the server — no agent override.
-#
-# The `sandbox` MCP server (the builder-sidecar) is declared by the `sandbox` preset at
-# http://builder-sidecar:9000/mcp — no restatement needed here, since the compose names
-# the sidecar `builder-sidecar` and sets the matching SANDBOX_AUTH_TOKEN.
 mcp_servers:
   browser:
     transport: stdio
     command: /usr/local/bin/pinchtab
     args: ["--server", "http://pinchtab:9867", "mcp"]
 
-# Conversion workers (RFC GO): every file conversion goes to the
-# conversion-worker containers of the compose, which attach to this endpoint
-# over the internal `workers` network. Never publish 7788. Delete the block
-# (and the conversion-worker service) to convert inside the runtime instead.
-conversion:
-  mode: remote
+# The worker endpoint: the conversion-worker and workspace-worker containers of
+# the compose attach here over the internal `workers` network. Never publish 7788.
+worker_endpoint:
   listen: 0.0.0.0:7788   # reachable only on the internal workers network
   insecure: true         # plain gRPC, acceptable because that network is internal
+
+# Conversion workers (RFC GO): every file conversion goes to the conversion-worker
+# containers. Delete the block (and the conversion-worker service) to convert
+# inside the runtime instead.
+conversion:
+  mode: remote
+
+# Workspaces (RFC GW): agents run commands in workspaces on the workspace-worker
+# container, which runs each workspace in a session container of its own. An agent
+# also needs a `workspace:` grant (dev/exec has one). docs/CONFIGURATION.md
+# "Workspace workers" lists the limits (disk quota, command timeouts, egress routes).
+workspace:
+  mode: remote

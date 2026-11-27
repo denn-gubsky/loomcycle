@@ -652,8 +652,8 @@ table.models tr[data-dim] td { color: color-mix(in srgb, var(--color-text) 45%, 
         <span class="cap">Tools</span>
         <div class="prim">
           <h3>Nineteen built-in tools</h3>
-          <span class="tools">Read Write Edit Grep Glob · Bash Bashbox · HTTP WebFetch WebSearch</span>
-          <p>Claude Code parity on the file tools, plus a true in-process shell sandbox — Bashbox runs commands with no OS process and no network, and honours read-only volumes through a RAM write overlay. Filesystem access exists only through a bound Volume: sandbox by default. MCP servers ingest as tools on one side; loomcycle serves as an MCP server on the other.</p>
+          <span class="tools">Read Write Edit Grep Glob · Workspace · HTTP WebFetch WebSearch</span>
+          <p>Claude Code parity on the file tools, plus workspaces — commands run on a workspace worker, never in the runtime, each workspace in a container of its own with no network but the routes the operator grants. Filesystem access exists only through a bound Volume: sandbox by default. MCP servers ingest as tools on one side; loomcycle serves as an MCP server on the other.</p>
         </div>
       </div>
       <div class="cell" tabindex="0">
@@ -706,7 +706,7 @@ table.models tr[data-dim] td { color: color-mix(in srgb, var(--color-text) 45%, 
     <div class="row-item rise">
       <p class="r-num">02</p>
       <h2 class="r-title">Nineteen built-in tools</h2>
-      <p class="r-copy">Claude Code parity — Read, Write, Edit, Grep, Glob, NotebookEdit — plus HTTP, WebFetch, WebSearch, Bash, Bashbox, Agent, Skill, Memory, Channel, Path, Document and Context. Filesystem access only through a bound Volume; sandbox by default.</p>
+      <p class="r-copy">Claude Code parity — Read, Write, Edit, Grep, Glob, NotebookEdit — plus HTTP, WebFetch, WebSearch, Workspace, Agent, Skill, Memory, Channel, Path, Document and Context. Filesystem access only through a bound Volume; sandbox by default.</p>
     </div>
     <div class="row-item rise">
       <p class="r-num">03</p>

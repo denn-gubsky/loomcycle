@@ -27,8 +27,7 @@ permissions:
 
 # The Go jobs (govulncheck, gosec) cover every Go module that ships: the
 # runtime at the repo root, the in-tree modules the root go.mod replaces
-# (internal/errkind, internal/otel, internal/providers; RFC FE), and
-# deploy/builder, a separate module published as the loomcycle-builder image.
+# (internal/errkind, internal/otel, internal/providers; RFC FE).
 # `./...` from the root reaches none of them. npm-audit and pip-audit, at the
 # end, cover the npm packages and the Python adapter.
 jobs:
@@ -41,8 +40,6 @@ jobs:
         include:
           - module: root
             dir: .
-          - module: builder
-            dir: deploy/builder
           - module: errkind
             dir: internal/errkind
           - module: otel
@@ -92,9 +89,6 @@ jobs:
           - module: root
             dir: .
             prefix: ""
-          - module: builder
-            dir: deploy/builder
-            prefix: deploy/builder/
           - module: errkind
             dir: internal/errkind
             prefix: internal/errkind/
