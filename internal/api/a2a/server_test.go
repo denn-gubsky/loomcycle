@@ -34,6 +34,9 @@ func (fakeStore) GetRunByAgentID(ctx context.Context, agentID string) (store.Run
 func (fakeStore) GetSession(ctx context.Context, sessionID string) (store.Session, error) {
 	return store.Session{}, &store.ErrNotFound{Kind: "session", ID: sessionID}
 }
+func (fakeStore) InterruptGet(ctx context.Context, interruptID string) (store.InterruptRow, error) {
+	return store.InterruptRow{}, &store.ErrNotFound{Kind: "interrupt", ID: interruptID}
+}
 func (fakeStore) InterruptListByRun(ctx context.Context, runID, statusFilter string) ([]store.InterruptRow, error) {
 	return nil, nil
 }

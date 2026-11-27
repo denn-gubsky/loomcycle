@@ -142,6 +142,39 @@ A session is started at a workspace's first command and started again when it is
 
 The worker refuses to start with this engine as root (its sessions would run as root): run it as a user that may use the daemon (the `docker` group, or a rootless daemon). That user can start containers, which on most hosts is as good as root on the host, so give the worker a machine (or a VM) of its own; the sessions hold no such right. At start the worker runs one throwaway session to check the daemon, the runtime and the image, and reports the image's toolchains (`python3`, `node`) as its own.
 
+**The `loomcycle-ws-worker` image.** `denngubsky/loomcycle-ws-worker:<version>` (and `ghcr.io/denn-gubsky/loomcycle-ws-worker`), published with each minor release from v1.171.0, is the conversion worker image plus the docker client, for a worker that runs in a container itself and drives the host's daemon through its socket. It runs as uid 65532 and points `TMPDIR` and `DOCKER_CONFIG` at `/scratch`, so it runs with a read-only root. A compose service for it, beside the runtime:
+
+```yaml
+  workspace-worker:
+    image: denngubsky/loomcycle-ws-worker:<version>
+    command: [--role, workspace, --id, ws1]      # keep the id across restarts
+    env_file: [workspace.worker.env]             # LOOMCYCLE_WORKER_TOKEN: a minted workers:attach token
+    environment:
+      LOOMCYCLE_WORKER_DISPATCHER: loomcycle:7788
+      LOOMCYCLE_WORKER_INSECURE: "1"             # the workers network is internal
+      LOOMCYCLE_WORKSPACE_ROOT: /srv/loomcycle/workspaces
+      LOOMCYCLE_WORKSPACE_ENGINE: container
+      LOOMCYCLE_WORKSPACE_CONTAINER_IMAGE: denngubsky/loomcycle-workspace:<version>
+      LOOMCYCLE_WORKSPACE_CONTAINER_EGRESS_DIR: /srv/loomcycle/wse
+    group_add: ["<gid of /var/run/docker.sock>"]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /srv/loomcycle/workspaces:/srv/loomcycle/workspaces   # the same path inside and out
+      - /srv/loomcycle/wse:/srv/loomcycle/wse
+    tmpfs: ["/scratch:size=1g,mode=0700,uid=65532,gid=65532"]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    networks: [workers]
+    depends_on:
+      loomcycle: {condition: service_healthy}
+```
+
+- **The same paths inside and out.** The workspace root and the egress directory are mounted at their host paths, so the daemon finds what the worker names and neither `…_CONTAINER_HOST_ROOT` nor `…_EGRESS_HOST_DIR` is needed.
+- **The two directories.** Make both before the first start, owned by `65532:65532`, mode 0700. A directory the worker cannot write refuses every `open` with `making the workspace: … permission denied`.
+- **The token.** It is minted with the single scope `workers:attach`, with `--worker-shared` for one worker serving every tenant. The conversion workers' `LOOMCYCLE_WORKER_TOKEN` is a different value that never verifies as a workspace worker's token, so keep the two in separate env files.
+- **Patch releases.** A patch release does not publish this image. Run the minor's image with a patch runtime: a worker of another build is logged, not refused.
+
 | Variable | Default | |
 |---|---|---|
 | `LOOMCYCLE_WORKSPACE_CONTAINER_IMAGE` | — (required) | The session image: `denngubsky/loomcycle-workspace:<version>` (or `ghcr.io/denn-gubsky/loomcycle-workspace:<version>`), the workspace session image, published with each minor release after v1.165.0; use the runtime's own version (below). Any image with `/bin/sh` works. |

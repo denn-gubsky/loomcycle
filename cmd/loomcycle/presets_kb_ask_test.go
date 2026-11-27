@@ -155,7 +155,7 @@ func TestKnowledgeBaseBundle_AnsweringAgentsHoldOnlyTheirTools(t *testing.T) {
 	}
 
 	// Model-visible text must not cite design documents.
-	for _, name := range []string{"kb/ask", "kb/classify", "kb/search", "kb/walker", "kb/survey", "kb/screen"} {
+	for _, name := range []string{"kb/ask", "kb/classify", "kb/search", "kb/walker", "kb/survey", "kb/screen", "kb/answer", "kb/read"} {
 		a := cfg.Agents[name]
 		for where, text := range map[string]string{"system_prompt": a.SystemPrompt, "code": a.Code} {
 			for _, line := range strings.Split(text, "\n") {

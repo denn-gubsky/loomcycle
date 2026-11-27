@@ -18,6 +18,12 @@ type fakeInterruptStore struct {
 	resolvedID  string
 	resolvedAns string
 	resolveByOK string
+	// row is what InterruptGet serves; the zero row is a free-text question.
+	row store.InterruptRow
+}
+
+func (f *fakeInterruptStore) InterruptGet(ctx context.Context, interruptID string) (store.InterruptRow, error) {
+	return f.row, nil
 }
 
 func (f *fakeInterruptStore) InterruptListByRun(ctx context.Context, runID, statusFilter string) ([]store.InterruptRow, error) {

@@ -214,6 +214,23 @@ class SurfaceInfo:
 
 
 @dataclass(frozen=True)
+class InterruptionInfo:
+    """Structured payload on ``interruption_pending`` events: the question a
+    run asked (RFC HG D6). With ``options``, an answer must be one of them
+    unless ``allow_other`` is set, when an answer of the person's own is
+    accepted too. Mirrors ``providers.InterruptionEventInfo`` on the Go side."""
+
+    interrupt_id: str
+    kind: str = ""  # question
+    question: str = ""
+    options: tuple[str, ...] = ()  # empty = a free-text answer
+    context: str = ""
+    priority: str = ""  # low | normal | high
+    expires_at: str = ""  # RFC 3339; "" = no timeout
+    allow_other: bool = False
+
+
+@dataclass(frozen=True)
 class TranscriptionInfo:
     """Structured payload on ``transcription`` events: one OCR or
     speech-to-text pass a File tool call made over an inbox file — the
@@ -429,6 +446,7 @@ class AgentEvent:
     file: Optional[FileCapturedInfo] = None
     transcription: Optional[TranscriptionInfo] = None
     surface: Optional[SurfaceInfo] = None
+    interruption: Optional[InterruptionInfo] = None
     admission: Optional[AdmissionInfo] = None
     capability_inert: Optional[CapabilityInertInfo] = None
     override: Optional[OverrideInfo] = None
@@ -580,6 +598,19 @@ class AgentEvent:
                 expires_at=s.expires_at.ToJsonString() if s.HasField("expires_at") else "",
                 reason=s.reason,
             )
+        intr: Optional[InterruptionInfo] = None
+        if ev.HasField("interruption"):
+            q = ev.interruption
+            intr = InterruptionInfo(
+                interrupt_id=q.interrupt_id,
+                kind=q.kind,
+                question=q.question,
+                options=tuple(q.options),
+                context=q.context,
+                priority=q.priority,
+                expires_at=q.expires_at.ToJsonString() if q.HasField("expires_at") else "",
+                allow_other=q.allow_other,
+            )
         tr: Optional[TranscriptionInfo] = None
         if ev.HasField("transcription"):
             t = ev.transcription
@@ -647,6 +678,7 @@ class AgentEvent:
             file=fc,
             transcription=tr,
             surface=sf,
+            interruption=intr,
             admission=adm,
             capability_inert=ci,
             override=ov,

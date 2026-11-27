@@ -1,0 +1,172 @@
+{
+  "dated": {
+    "output": "Five documents cover it: [A](loom:doc/0123456789abcdef0123456789abcdef?scope=tenant).\n\nROUTE: walker | SCORE: none | CLASSIFIER: dated | RUNS: r1:completed",
+    "spawns": [
+      {
+        "name": "kb/walker",
+        "prompt": "Which RFCs were opened since 9 November 2026?\n\nDATED. The question is bounded by a date or a version. List the documents created after that point with query_documents (created_after; for a version, first find the date it was released) and answer from that listing, then read what you need of each; a search alone does not reach every document of a period.",
+        "result": "object"
+      }
+    ]
+  },
+  "deep caller": {
+    "output": "Five documents cover it: [A](loom:doc/0123456789abcdef0123456789abcdef?scope=tenant).\n\nROUTE: search -\u003e walker (partial coverage) | SCORE: 0.05 | CLASSIFIER: decision | RUNS: r1:completed, r2:completed | DEPTH: deep (caller)",
+    "spawns": [
+      {
+        "name": "kb/search",
+        "prompt": "Where is the retry limit set?\n\nDEPTH: deep. The caller wants a thorough answer: widen until every counted document is examined.",
+        "result": "object"
+      },
+      {
+        "name": "kb/walker",
+        "prompt": "Where is the retry limit set?\n\nA first search already found these. Start from them and do not repeat that search:\nloom:doc/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nloom:chunk/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n\nDEPTH: deep. The caller wants a thorough answer: widen until every counted document is examined.",
+        "result": "object"
+      }
+    ]
+  },
+  "known item": {
+    "output": "It is set in [Guide](loom:doc/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?scope=tenant), see [step](loom:chunk/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb?scope=tenant).\n\nROUTE: search | SCORE: none | CLASSIFIER: known-item | RUNS: r1:completed",
+    "spawns": [
+      {
+        "name": "kb/search",
+        "prompt": "Show me the overview of the scheduler.",
+        "result": "object"
+      }
+    ]
+  },
+  "quick wording": {
+    "output": "It is set in [Guide](loom:doc/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?scope=tenant), see [step](loom:chunk/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb?scope=tenant).\n\nROUTE: search | SCORE: 0.05 | CLASSIFIER: decision | RUNS: r1:completed | DEPTH: quick (wording)",
+    "spawns": [
+      {
+        "name": "kb/search",
+        "prompt": "Briefly, where is the retry limit set?\n\nDEPTH: quick. The caller wants a short answer: the few documents that answer best, one short line each; do not widen.",
+        "result": "object"
+      }
+    ]
+  },
+  "search complete": {
+    "output": "It is set in [Guide](loom:doc/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?scope=tenant), see [step](loom:chunk/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb?scope=tenant).\n\nROUTE: search | SCORE: 0.05 | CLASSIFIER: decision | RUNS: r1:completed",
+    "spawns": [
+      {
+        "name": "kb/search",
+        "prompt": "Where is the retry limit set?",
+        "result": "object"
+      }
+    ]
+  },
+  "search failed walks": {
+    "output": "Five documents cover it: [A](loom:doc/0123456789abcdef0123456789abcdef?scope=tenant).\n\nROUTE: search -\u003e walker (search failed) | SCORE: 0.05 | CLASSIFIER: decision | RUNS: r1:failed, r2:completed",
+    "spawns": [
+      {
+        "name": "kb/search",
+        "prompt": "Where is the retry limit set?",
+        "result": "object"
+      },
+      {
+        "name": "kb/walker",
+        "prompt": "Where is the retry limit set?",
+        "result": "object"
+      }
+    ]
+  },
+  "search partial after a middle-band NO walks": {
+    "output": "Five documents cover it: [A](loom:doc/0123456789abcdef0123456789abcdef?scope=tenant).\n\nROUTE: search -\u003e walker (partial coverage) | SCORE: 0.3 | CLASSIFIER: agent | RUNS: r1:completed, r2:completed, r3:completed",
+    "spawns": [
+      {
+        "name": "kb/classify",
+        "prompt": "Where is the retry limit set?",
+        "result": "object"
+      },
+      {
+        "name": "kb/search",
+        "prompt": "Where is the retry limit set?",
+        "result": "object"
+      },
+      {
+        "name": "kb/walker",
+        "prompt": "Where is the retry limit set?\n\nA first search already found these. Start from them and do not repeat that search:\nloom:doc/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nloom:chunk/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "result": "object"
+      }
+    ]
+  },
+  "survey": {
+    "output": "Seven documents fit: [A](loom:doc/0123456789abcdef0123456789abcdef?scope=tenant).\n\nCOVERAGE: complete\nSURVEY: candidates 7 (cut 0) | rounds 1 | RUNS: w1:completed\n\nROUTE: survey | SCORE: 0.62 | CLASSIFIER: decision | RUNS: r1:completed",
+    "spawns": [
+      {
+        "name": "kb/survey",
+        "prompt": "What do we hold on speech and voice?",
+        "result": "object"
+      }
+    ]
+  },
+  "unreadable classify": {
+    "output": "Seven documents fit: [A](loom:doc/0123456789abcdef0123456789abcdef?scope=tenant).\n\nCOVERAGE: complete\nSURVEY: candidates 7 (cut 0) | rounds 1 | RUNS: w1:completed\n\nROUTE: survey | SCORE: 0.3 | CLASSIFIER: agent-unreadable | RUNS: r1:completed, r2:completed",
+    "spawns": [
+      {
+        "name": "kb/classify",
+        "prompt": "Where is the retry limit set?",
+        "result": "object"
+      },
+      {
+        "name": "kb/survey",
+        "prompt": "Where is the retry limit set?",
+        "result": "object"
+      }
+    ]
+  },
+  "untrusted with framing": {
+    "output": "Five documents cover it: [A](loom:doc/0123456789abcdef0123456789abcdef?scope=tenant).\n\nROUTE: search -\u003e walker (partial coverage) | SCORE: 0.3 | CLASSIFIER: agent | RUNS: r1:completed, r2:completed, r3:completed",
+    "spawns": [
+      {
+        "name": "kb/classify",
+        "prompt": "Classify the question given as untrusted input.",
+        "result": "object",
+        "untrusted": [
+          {
+            "ref": "input"
+          }
+        ]
+      },
+      {
+        "name": "kb/search",
+        "prompt": "Answer the question given as untrusted input.\n\nThe caller's instructions that came with the question:\nAnswer in one paragraph.",
+        "result": "object",
+        "untrusted": [
+          {
+            "ref": "input"
+          }
+        ]
+      },
+      {
+        "name": "kb/walker",
+        "prompt": "Answer the question given as untrusted input.\n\nThe caller's instructions that came with the question:\nAnswer in one paragraph.\n\nA first search already found these. Start from them and do not repeat that search:\nloom:doc/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nloom:chunk/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "result": "object",
+        "untrusted": [
+          {
+            "ref": "input"
+          }
+        ]
+      }
+    ]
+  },
+  "walk failed keeps the search": {
+    "output": "It is set in [Guide](loom:doc/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?scope=tenant), see [step](loom:chunk/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb?scope=tenant).\n\nROUTE: search -\u003e walker (partial coverage) -\u003e search kept (walker failed) | SCORE: 0.2 | CLASSIFIER: agent | RUNS: r1:completed, r2:completed, r3:failed",
+    "spawns": [
+      {
+        "name": "kb/classify",
+        "prompt": "Where is the retry limit set?",
+        "result": "object"
+      },
+      {
+        "name": "kb/search",
+        "prompt": "Where is the retry limit set?",
+        "result": "object"
+      },
+      {
+        "name": "kb/walker",
+        "prompt": "Where is the retry limit set?\n\nA first search already found these. Start from them and do not repeat that search:\nloom:doc/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nloom:chunk/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "result": "object"
+      }
+    ]
+  }
+}

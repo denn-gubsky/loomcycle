@@ -34,6 +34,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -131,7 +132,8 @@ const interruptionInputSchema = `{
   "properties": {
     "op":              {"type": "string", "enum": ["ask","notify","cancel"], "description": "Which operation to perform."},
     "question":        {"type": "string", "description": "ask only: the question text shown to the human."},
-    "options":         {"type": "array",  "items": {"type": "string"}, "description": "ask only (optional): a fixed list of allowed answers. When set, the resolve endpoint refuses any answer not in this list. Absent or empty = free-text answer."},
+    "options":         {"type": "array",  "items": {"type": "string"}, "description": "ask only (optional): a fixed list of allowed answers. When set, the resolve endpoint refuses any answer not in this list (unless allow_other). Absent or empty = free-text answer."},
+    "allow_other":     {"type": "boolean", "description": "ask only (optional, default false): with options, also accept an answer of the person's own; the tool result marks it other: true."},
     "context":         {"type": "string", "description": "ask only (optional): a short hint for the answerer (e.g. \"47 records pending\")."},
     "timeout_ms":      {"type": "integer", "description": "ask only (optional): how long to block before giving up. Absent = operator default; capped by operator max."},
     "priority":        {"type": "string", "enum": ["low","normal","high"], "description": "ask/notify (optional): informational badge for the UI. Default normal."},
@@ -146,6 +148,7 @@ type interruptionInput struct {
 	Op             string   `json:"op"`
 	Question       string   `json:"question,omitempty"`
 	Options        []string `json:"options,omitempty"`
+	AllowOther     bool     `json:"allow_other,omitempty"`
 	Context        string   `json:"context,omitempty"`
 	TimeoutMS      int      `json:"timeout_ms,omitempty"`
 	Priority       string   `json:"priority,omitempty"`
@@ -259,6 +262,9 @@ func (it *Interruption) execAsk(ctx context.Context, policy tools.InterruptionPo
 		}
 		optsJSON = b
 	}
+	// allow_other means nothing without options: a free-text question
+	// already takes any answer, so the row does not claim it.
+	allowOther := in.AllowOther && len(in.Options) > 0
 	row := store.InterruptRow{
 		InterruptID: id,
 		RunID:       runID,
@@ -266,6 +272,7 @@ func (it *Interruption) execAsk(ctx context.Context, policy tools.InterruptionPo
 		Status:      store.InterruptStatusPending,
 		Question:    in.Question,
 		Options:     optsJSON,
+		AllowOther:  allowOther,
 		ContextData: in.Context,
 		Priority:    priority,
 		CreatedAt:   now,
@@ -299,6 +306,7 @@ func (it *Interruption) execAsk(ctx context.Context, policy tools.InterruptionPo
 			Kind:        store.InterruptKindQuestion,
 			Question:    in.Question,
 			Options:     optsJSON,
+			AllowOther:  allowOther,
 			Context:     in.Context,
 			Priority:    priority,
 			ExpiresAt:   rfc3339OrEmpty(expiresAt),
@@ -315,6 +323,7 @@ func (it *Interruption) execAsk(ctx context.Context, policy tools.InterruptionPo
 			"kind":         store.InterruptKindQuestion,
 			"question":     in.Question,
 			"options":      json.RawMessage(optsJSON),
+			"allow_other":  allowOther,
 			"priority":     priority,
 			"expires_at":   rfc3339OrEmpty(expiresAt),
 			"agent_id":     ident.AgentID,
@@ -393,6 +402,9 @@ func (it *Interruption) execAskViaMCP(ctx context.Context, interruptID, mcpName 
 	}
 	if len(in.Options) > 0 {
 		argMap["options"] = in.Options
+		if in.AllowOther {
+			argMap["allow_other"] = true
+		}
 	}
 	if in.Context != "" {
 		argMap["context"] = in.Context
@@ -741,12 +753,19 @@ func (it *Interruption) finaliseUnresolved(ctx context.Context, interruptID stri
 func (it *Interruption) toolResultForStatus(row store.InterruptRow) tools.Result {
 	switch row.Status {
 	case store.InterruptStatusResolved:
-		out, _ := json.Marshal(map[string]any{
+		res := map[string]any{
 			"interrupt_id": row.InterruptID,
 			"answer":       row.Answer,
 			"resolved_at":  rfc3339OrEmpty(row.ResolvedAt),
 			"resolved_by":  row.ResolvedBy,
-		})
+		}
+		// RFC HG §3.3: an answer outside the options (allow_other) is the
+		// person's own text, and the agent is told so. Computed from the
+		// row; free-text questions carry no mark.
+		if opts, err := row.OptionList(); err == nil && len(opts) > 0 && !slices.Contains(opts, row.Answer) {
+			res["other"] = true
+		}
+		out, _ := json.Marshal(res)
 		return tools.Result{Text: string(out)}
 	case store.InterruptStatusDeclined:
 		// RFC BH P2: the operator declined to answer. This is deliberately

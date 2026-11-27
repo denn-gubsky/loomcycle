@@ -1,0 +1,357 @@
+{
+  "study": "C (ConditionalQA)",
+  "questions": 800,
+  "arms": {
+    "kb": {
+      "EM": 0.475,
+      "F1": 0.5999,
+      "n_condensed": 800,
+      "cited_page_recall": 0.9475,
+      "cited_page_recall_docs_only": 0.6112,
+      "judge": {
+        "CORRECT": 525,
+        "PARTLY": 190,
+        "WRONG": 85,
+        "n": 800
+      },
+      "per_question": {
+        "input_tokens": 14064.4713,
+        "output_tokens": 1901.2113,
+        "cached_tokens": 100747.33,
+        "model_calls": 1.2425,
+        "usd_est": 0.0034,
+        "wall_s": 39.9911
+      },
+      "calls_are_floor": true,
+      "cost_per_correct": {
+        "judge_tokens": 24328.7,
+        "judge_usd_est": 0.005215,
+        "em_tokens": 33612.0,
+        "em_usd_est": 0.007205
+      },
+      "served": [
+        [
+          "anthropic",
+          "claude-haiku-5-5"
+        ]
+      ],
+      "routes": {
+        "search": 768,
+        "survey": 14,
+        "walker": 17,
+        "search -> walker (partial coverage)": 1
+      },
+      "rows": {
+        "ok": 800,
+        "missing": 0,
+        "failed": 0,
+        "uncondensed": 0
+      },
+      "spread": {
+        "questions_with_all_reps": 100,
+        "F1_by_rep": [
+          0.5378,
+          0.5486,
+          0.5631
+        ],
+        "mean_range_F1": 0.2112
+      }
+    },
+    "rag-lc": {
+      "EM": 0.5038,
+      "F1": 0.6419,
+      "n_condensed": 800,
+      "EM_direct": 0.4775,
+      "F1_direct": 0.6231,
+      "F1_direct_on_condensed": 0.6231,
+      "cited_page_recall": 0.9313,
+      "cited_page_recall_docs_only": 0.9313,
+      "judge": {
+        "CORRECT": 593,
+        "PARTLY": 58,
+        "WRONG": 149,
+        "n": 800
+      },
+      "per_question": {
+        "input_tokens": 1187.4137,
+        "output_tokens": 490.5587,
+        "cached_tokens": 0.0,
+        "model_calls": 1.0,
+        "usd_est": 0.0004,
+        "wall_s": 32.2834
+      },
+      "calls_are_floor": false,
+      "cost_per_correct": {
+        "judge_tokens": 2263.7,
+        "judge_usd_est": 0.000491,
+        "em_tokens": 3331.0,
+        "em_usd_est": 0.000723
+      },
+      "served": [
+        [
+          "anthropic",
+          "claude-haiku-5-5"
+        ]
+      ],
+      "R@1": 0.7875,
+      "R@3": 0.9313,
+      "R@5": 0.945,
+      "R@10": 0.9525,
+      "MRR@10": 0.8575,
+      "chance_R@5": 0.00077,
+      "rows": {
+        "ok": 800,
+        "missing": 0,
+        "failed": 0,
+        "uncondensed": 0
+      },
+      "spread": {
+        "questions_with_all_reps": 100,
+        "F1_by_rep": [
+          0.602,
+          0.5928,
+          0.5922
+        ],
+        "mean_range_F1": 0.1521
+      }
+    },
+    "rag-ext": {
+      "EM": 0.5088,
+      "F1": 0.6468,
+      "n_condensed": 800,
+      "EM_direct": 0.4913,
+      "F1_direct": 0.6319,
+      "F1_direct_on_condensed": 0.6319,
+      "cited_page_recall": 0.935,
+      "cited_page_recall_docs_only": 0.935,
+      "judge": {
+        "CORRECT": 605,
+        "PARTLY": 61,
+        "WRONG": 134,
+        "n": 800
+      },
+      "per_question": {
+        "input_tokens": 8918.2362,
+        "output_tokens": 1746.725,
+        "cached_tokens": 0.0,
+        "model_calls": 3.0,
+        "usd_est": 0.0018,
+        "wall_s": 16.9324
+      },
+      "calls_are_floor": false,
+      "cost_per_correct": {
+        "judge_tokens": 14102.4,
+        "judge_usd_est": 0.002334,
+        "em_tokens": 20963.1,
+        "em_usd_est": 0.00347
+      },
+      "served": [
+        [
+          "anthropic",
+          "claude-haiku-5-5"
+        ]
+      ],
+      "R@1": 0.7788,
+      "R@3": 0.9275,
+      "R@5": 0.9413,
+      "R@10": 0.9637,
+      "MRR@10": 0.8528,
+      "chance_R@5": 0.00077,
+      "rows": {
+        "ok": 800,
+        "missing": 0,
+        "failed": 0,
+        "uncondensed": 0
+      },
+      "spread": {
+        "questions_with_all_reps": 100,
+        "F1_by_rep": [
+          0.6199,
+          0.6375,
+          0.6253
+        ],
+        "mean_range_F1": 0.1187
+      }
+    },
+    "oracle": {
+      "EM": 0.54,
+      "F1": 0.6765,
+      "n_condensed": 800,
+      "EM_direct": 0.5138,
+      "F1_direct": 0.6612,
+      "F1_direct_on_condensed": 0.6612,
+      "cited_page_recall": 0.99,
+      "cited_page_recall_docs_only": 0.99,
+      "judge": {
+        "CORRECT": 621,
+        "PARTLY": 42,
+        "WRONG": 137,
+        "n": 800
+      },
+      "per_question": {
+        "input_tokens": 629.495,
+        "output_tokens": 425.065,
+        "cached_tokens": 0.0,
+        "model_calls": 1.0,
+        "usd_est": 0.0003,
+        "wall_s": 3.4334
+      },
+      "calls_are_floor": false,
+      "cost_per_correct": {
+        "judge_tokens": 1358.5,
+        "judge_usd_est": 0.000355,
+        "em_tokens": 1952.9,
+        "em_usd_est": 0.00051
+      },
+      "served": [
+        [
+          "anthropic",
+          "claude-haiku-5-5"
+        ]
+      ],
+      "rows": {
+        "ok": 800,
+        "missing": 0,
+        "failed": 0,
+        "uncondensed": 0
+      },
+      "spread": {
+        "questions_with_all_reps": 100,
+        "F1_by_rep": [
+          0.6462,
+          0.6224,
+          0.6227
+        ],
+        "mean_range_F1": 0.0975
+      }
+    }
+  },
+  "hypotheses": {
+    "H3": {
+      "comparison": "kb - rag-lc, mean condensed F1",
+      "bound": -0.02,
+      "ci_level": 0.9875,
+      "diff": -0.0419,
+      "ci": [
+        -0.0762,
+        -0.0072
+      ],
+      "n": 800,
+      "non_inferior": false,
+      "superior": false,
+      "verdict": "void (failed check: 1_same_corpus)"
+    },
+    "H4": {
+      "comparison": "kb - rag-ext, mean condensed F1",
+      "bound": -0.02,
+      "ci_level": 0.9875,
+      "diff": -0.0469,
+      "ci": [
+        -0.0798,
+        -0.0137
+      ],
+      "n": 800,
+      "non_inferior": false,
+      "superior": false,
+      "verdict": "void (failed check: 1_same_corpus)"
+    }
+  },
+  "problems": [],
+  "profiles": [
+    "haiku"
+  ],
+  "reader_models": {
+    "kb": [
+      [
+        "anthropic",
+        "claude-haiku-5-5"
+      ]
+    ],
+    "rag-lc": [
+      [
+        "anthropic",
+        "claude-haiku-5-5"
+      ]
+    ],
+    "rag-ext": [
+      [
+        "anthropic",
+        "claude-haiku-5-5"
+      ]
+    ],
+    "oracle": [
+      [
+        "anthropic",
+        "claude-haiku-5-5"
+      ]
+    ]
+  },
+  "complete": true,
+  "checks": {
+    "1_same_corpus": {
+      "indexed": 652,
+      "tenant": 653,
+      "only_indexed": 0,
+      "only_tenant": 1,
+      "status": "fail"
+    },
+    "2_annotated": {
+      "coverage": 0.9985,
+      "stale": 0.0,
+      "documents": 653,
+      "at": "2026-11-23T07:38:08Z",
+      "note": "the server checked only 2000 annotations for staleness",
+      "status": "pass"
+    },
+    "3_raglc_no_annotation": {
+      "searches": 800,
+      "with_annotation": 0,
+      "status": "pass"
+    },
+    "4_rerank_raglc": {
+      "reranked_rate": 0.9988,
+      "reasons": {
+        "timeout": 1
+      },
+      "status": "pass"
+    },
+    "4_rerank_ragext": {
+      "strategies": [
+        "listwise"
+      ],
+      "rerank_failed": 0,
+      "note": "listwise reader-model rerank stands in for the pre-registered cross-encoder (amendment)",
+      "status": "pass"
+    },
+    "5_retrieval_rag-lc": {
+      "R5": 0.945,
+      "ten_x_chance": 0.0077,
+      "status": "pass"
+    },
+    "5_retrieval_rag-ext": {
+      "R5": 0.9413,
+      "ten_x_chance": 0.0077,
+      "status": "pass"
+    },
+    "6_oracle_above_rag": {
+      "oracle": 0.6765,
+      "rag-lc": 0.6419,
+      "rag-ext": 0.6468,
+      "status": "pass"
+    },
+    "7_condense_faithful": {
+      "condensed": 0.6765,
+      "direct": 0.6612,
+      "diff": 0.0153,
+      "status": "pass"
+    },
+    "8_every_run_answered": {
+      "status": "pass"
+    },
+    "9_one_release": {
+      "first": "1.165.0",
+      "last": "1.165.0",
+      "status": "pass"
+    }
+  }
+}

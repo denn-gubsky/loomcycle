@@ -541,6 +541,59 @@ dockers:
       - "--label=org.opencontainers.image.licenses=Apache-2.0"
     goarch: arm64
 
+  # loomcycle-ws-worker — Dockerfile.worker's ws-worker target: the worker
+  # plus the docker client, for `loomcycle worker --role workspace` on the
+  # container engine (RFC GW P3) driving the host's daemon. Minor releases
+  # only: release.yml's patch build makes the conversion worker alone.
+  - id: loomcycle-ws-worker-amd64
+    ids:
+      - loomcycle
+    image_templates:
+      - "denngubsky/loomcycle-ws-worker:{{ .Version }}-amd64"
+      - "ghcr.io/denn-gubsky/loomcycle-ws-worker:{{ .Version }}-amd64"
+      - "denngubsky/loomcycle-ws-worker:latest-amd64"
+      - "ghcr.io/denn-gubsky/loomcycle-ws-worker:latest-amd64"
+    dockerfile: Dockerfile.worker
+    extra_files:
+      - LICENSE
+      - NOTICE
+    use: buildx
+    build_flag_templates:
+      - "--platform=linux/amd64"
+      - "--target=ws-worker"
+      - "--label=org.opencontainers.image.title=loomcycle-ws-worker"
+      - "--label=org.opencontainers.image.description=loomcycle workspace worker for the container engine (RFC GW P3): the conversion worker plus the docker client, to run each workspace in a session container on the host's daemon"
+      - "--label=org.opencontainers.image.url=https://github.com/denn-gubsky/loomcycle"
+      - "--label=org.opencontainers.image.source=https://github.com/denn-gubsky/loomcycle"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+      - "--label=org.opencontainers.image.licenses=Apache-2.0"
+    goarch: amd64
+  - id: loomcycle-ws-worker-arm64
+    ids:
+      - loomcycle
+    image_templates:
+      - "denngubsky/loomcycle-ws-worker:{{ .Version }}-arm64"
+      - "ghcr.io/denn-gubsky/loomcycle-ws-worker:{{ .Version }}-arm64"
+      - "denngubsky/loomcycle-ws-worker:latest-arm64"
+      - "ghcr.io/denn-gubsky/loomcycle-ws-worker:latest-arm64"
+    dockerfile: Dockerfile.worker
+    extra_files:
+      - LICENSE
+      - NOTICE
+    use: buildx
+    build_flag_templates:
+      - "--platform=linux/arm64"
+      - "--target=ws-worker"
+      - "--label=org.opencontainers.image.title=loomcycle-ws-worker"
+      - "--label=org.opencontainers.image.description=loomcycle workspace worker for the container engine (RFC GW P3): the conversion worker plus the docker client, to run each workspace in a session container on the host's daemon"
+      - "--label=org.opencontainers.image.url=https://github.com/denn-gubsky/loomcycle"
+      - "--label=org.opencontainers.image.source=https://github.com/denn-gubsky/loomcycle"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+      - "--label=org.opencontainers.image.licenses=Apache-2.0"
+    goarch: arm64
+
 
 # docker_manifests joins per-arch images into one multi-arch manifest
 # the operator pulls with `docker pull denngubsky/loomcycle:vX.Y.Z`
@@ -600,6 +653,14 @@ docker_manifests:
     image_templates:
       - "denngubsky/loomcycle-workspace-browser:latest-amd64"
       - "denngubsky/loomcycle-workspace-browser:latest-arm64"
+  - name_template: "denngubsky/loomcycle-ws-worker:{{ .Version }}"
+    image_templates:
+      - "denngubsky/loomcycle-ws-worker:{{ .Version }}-amd64"
+      - "denngubsky/loomcycle-ws-worker:{{ .Version }}-arm64"
+  - name_template: "denngubsky/loomcycle-ws-worker:latest"
+    image_templates:
+      - "denngubsky/loomcycle-ws-worker:latest-amd64"
+      - "denngubsky/loomcycle-ws-worker:latest-arm64"
 
   # ── GHCR mirror ──
   - name_template: "ghcr.io/denn-gubsky/loomcycle:{{ .Version }}"
@@ -650,3 +711,11 @@ docker_manifests:
     image_templates:
       - "ghcr.io/denn-gubsky/loomcycle-workspace-browser:latest-amd64"
       - "ghcr.io/denn-gubsky/loomcycle-workspace-browser:latest-arm64"
+  - name_template: "ghcr.io/denn-gubsky/loomcycle-ws-worker:{{ .Version }}"
+    image_templates:
+      - "ghcr.io/denn-gubsky/loomcycle-ws-worker:{{ .Version }}-amd64"
+      - "ghcr.io/denn-gubsky/loomcycle-ws-worker:{{ .Version }}-arm64"
+  - name_template: "ghcr.io/denn-gubsky/loomcycle-ws-worker:latest"
+    image_templates:
+      - "ghcr.io/denn-gubsky/loomcycle-ws-worker:latest-amd64"
+      - "ghcr.io/denn-gubsky/loomcycle-ws-worker:latest-arm64"

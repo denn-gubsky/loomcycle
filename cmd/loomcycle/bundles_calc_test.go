@@ -23,7 +23,7 @@ var bundledCalc = map[string]map[string]bool{
 		"kb/linker": false, "kb/verdict": false, "kb/judge": false, "kb/judge-verdict": false,
 		"kb/annotator": false, "kb/annotate": false, "kb/taxonomist": false, "kb/taxonomy-writer": false,
 		"kb/ontologist": false, "kb/ontology-writer": false,
-		"kb/classify": false, "kb/screen": false,
+		"kb/classify": false, "kb/screen": false, "kb/answer": false, "kb/read": false,
 		"kb/ask": true, "kb/survey": true, "kb/search": true, "kb/walker": true,
 	},
 	"memory": {

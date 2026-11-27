@@ -7575,6 +7575,22 @@ type InterruptRow struct {
 	UserID      string          `json:"user_id,omitempty"`
 	AgentID     string          `json:"agent_id,omitempty"`
 	AgentName   string          `json:"agent_name,omitempty"`
+	// AllowOther (RFC HG): with Options, the resolve paths also accept an
+	// answer of the person's own. Meaningless without Options.
+	AllowOther bool `json:"allow_other,omitempty"`
+}
+
+// OptionList decodes a question's options. Nil, with no error, for a
+// free-text question (no options, or an empty list).
+func (r InterruptRow) OptionList() ([]string, error) {
+	if len(r.Options) == 0 || string(r.Options) == "null" {
+		return nil, nil
+	}
+	var opts []string
+	if err := json.Unmarshal(r.Options, &opts); err != nil {
+		return nil, fmt.Errorf("interrupt %s: options: %w", r.InterruptID, err)
+	}
+	return opts, nil
 }
 
 // ErrInterruptAlreadyTerminal is returned by InterruptResolve /

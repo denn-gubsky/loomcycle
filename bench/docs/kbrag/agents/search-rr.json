@@ -1,0 +1,14 @@
+{
+  "name": "kbrag/search-rr",
+  "description": "KB-vs-RAG Study C, arm rag-lc: one Document op=search over the tenant corpus with the opt-in rerank at its shipped defaults. No annotations, concept, expand or with_summary parameter: passages only.",
+  "overlay": {
+    "provider": "code-js",
+    "tools": ["Document"],
+    "tool_modes": {"Document": "read"},
+    "skills": ["-*"],
+    "memory_scopes": ["tenant"],
+    "sql_scopes": ["tenant"],
+    "memory_rerank": {"enabled": true},
+    "code_body": "function run(input) {\n  var r = Document({ op: \"search\", scope: \"tenant\", query: input.prompt, limit: 20 });\n  return { final_text: typeof r === \"string\" ? r : JSON.stringify(r) };\n}\n"
+  }
+}
