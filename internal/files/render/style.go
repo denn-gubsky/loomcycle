@@ -43,8 +43,8 @@ type Style struct {
 	Footer      PageLine    `json:"footer,omitzero"`
 	PageNumbers *bool       `json:"page_numbers,omitempty"`
 	// Headings sets the look of heading levels 1–4 (RFC HB D2).
-	Headings *StyleHeadings `json:"headings,omitempty"`
-	LogoWidthMM float64     `json:"logo_width_mm,omitempty"`
+	Headings    *StyleHeadings `json:"headings,omitempty"`
+	LogoWidthMM float64        `json:"logo_width_mm,omitempty"`
 	// Logo is the picture above the title: an image of the Doc, by name.
 	// Set by the core from the style document, never by the JSON.
 	Logo string `json:"logo,omitempty"`
@@ -76,7 +76,9 @@ type HeadingLook struct {
 }
 
 // zero reports a look that leaves the built-in heading as it is.
-func (h HeadingLook) zero() bool { return !h.Rule && !h.Uppercase && (h.Weight == "" || h.Weight == "bold") }
+func (h HeadingLook) zero() bool {
+	return !h.Rule && !h.Uppercase && (h.Weight == "" || h.Weight == "bold")
+}
 
 // heading is the look of heading level n (1 = Heading 1), zero when the
 // style sets none.
