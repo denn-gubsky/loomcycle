@@ -26,7 +26,7 @@ You can find out who you are right now with `Context.self`:
 
 Loomcycle ships twelve higher-level built-in tools beyond the basic
 file/network group (`Read` / `Write` / `Edit` / `HTTP` / `WebFetch` /
-`WebSearch` / `Bash`):
+`WebSearch`):
 
 - **Grep** (v0.8.24) — content search with RE2 regex over the sandbox
   root. Three output modes: `files_with_matches` (default), `content`

@@ -18,7 +18,7 @@ Four calls answer most questions before you make a mistake:
 3. `{"op":"guide"}` — for every tool you hold, its operations and required
    arguments, in one short list.
 4. `{"op":"capabilities"}` — what this deployment actually supports (vector
-   memory, SQL memory, documents, bash, scheduler, search…), so you do not call
+   memory, SQL memory, documents, scheduler, search…), so you do not call
    something that can only refuse.
 
 ## When to use it — and when not

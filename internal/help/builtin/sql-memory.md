@@ -6,7 +6,7 @@ SQL Memory is a third facet of the `Memory` tool (alongside k/v and the
 semantic layer): a real, per-scope SQL database the runtime hosts, isolated
 from the main store. Reach for it when an agent needs **related tables, joins,
 and aggregates** — structured storage the k/v + vector Memory can't give —
-without `Bash + sqlite3` (which is not a sandbox). Each scope's data is
+without a shell and `sqlite3`. Each scope's data is
 reachable only by that scope; the threat model is escaping the scope, not SQL
 injection (the agent is authorized to run SQL).
 

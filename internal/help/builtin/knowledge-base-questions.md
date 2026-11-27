@@ -5,7 +5,7 @@ aliases: [kb-questions, questions, asking, ask-kb, kb-answers]
 ---
 A knowledge base is answered with the **`Document` tool**, not with file tools.
 Its documents are not files: a name such as `/library/proposals/...` is a Path
-tree name for a document, and `Grep`, `Glob`, `Read` and `Bash` cannot open it.
+tree name for a document, and `Grep`, `Glob` and `Read` cannot open it.
 Search it with `Document op=search`, follow its relations with `backlinks` and
 `get_edges`, and read a document with `get_chunk` or `export_md`.
 

@@ -28,7 +28,7 @@ To answer a question from imported documents, read
 calls that answer each. The rules that matter most:
 
 - **Documents are not files.** A Path name such as `/library/proposals/...`
-  names a document, not a file on disk: never `Grep`, `Glob`, `Read` or `Bash`
+  names a document, not a file on disk: never `Grep`, `Glob` or `Read`
   it. Search with `search`, list a folder with `Path op=ls`, read with
   `get_chunk` or `export_md`.
 - **Pass `scope` on every call** — `search`, `get_document`, `get_chunk`,
