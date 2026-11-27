@@ -692,8 +692,6 @@ func Run(t *testing.T, factory Factory) {
 		{"InterruptCountPendingByRunIsAccurateUnderConcurrency", testInterruptCountPendingByRunIsAccurateUnderConcurrency},
 		{"InterruptSweepExpiredMarksOnlyExpiredPending", testInterruptSweepExpiredMarksOnlyExpiredPending},
 		{"InterruptIDIsMonotonicByTime", testInterruptIDIsMonotonicByTime},
-		// RFC HG P1: an answer outside the options.
-		{"InterruptAllowOtherRoundTripsEveryRead", testInterruptAllowOtherRoundTripsEveryRead},
 		// v0.8.21 audit-view cross-session event listing.
 		{"ListEventsFilterByTypeAndRange", testListEventsFilterByTypeAndRange},
 		{"ListEventsFilterByTenant", testListEventsFilterByTenant},
@@ -13728,6 +13726,9 @@ func testInterruptCreateAndGet(t *testing.T, s store.Store) {
 	if r.ExpiresAt.IsZero() {
 		t.Error("ExpiresAt round-tripped zero; want non-zero")
 	}
+	// A subtest rather than a Run table entry: Run is held to its length
+	// (scripts/ci/funclen).
+	t.Run("AllowOtherRoundTripsEveryRead", func(t *testing.T) { testInterruptAllowOtherRoundTripsEveryRead(t, s) })
 }
 
 func testInterruptGetNotFound(t *testing.T, s store.Store) {

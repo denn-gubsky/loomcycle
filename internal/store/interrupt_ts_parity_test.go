@@ -12,12 +12,12 @@ import (
 	"testing"
 )
 
-// TestInterruptStatus_TSAdapterNamesTheStatusesTheServerWrites pins the TS
+// TestInterruptStatusTSParity_NamesTheStatusesTheServerWrites pins the TS
 // adapter's hand-written InterruptStatus union to the InterruptStatus*
 // constants, read from this package's source rather than listed here. The
 // union named statuses the server never wrote ("answered", "expired") and
 // missed three it does (RFC HG §3.4).
-func TestInterruptStatus_TSAdapterNamesTheStatusesTheServerWrites(t *testing.T) {
+func TestInterruptStatusTSParity_NamesTheStatusesTheServerWrites(t *testing.T) {
 	fset := token.NewFileSet()
 	f, err := parser.ParseFile(fset, "store.go", nil, 0)
 	if err != nil {
