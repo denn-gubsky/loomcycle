@@ -83,8 +83,8 @@ export default function VolumeEditModal({
           <label className="library-modal-field">
             <span>Mode</span>
             <select value={mode} onChange={(e) => setMode(e.target.value as VolumeMode)}>
-              <option value="rw">rw — read + write (Write/Edit, and the deprecated Bash, allowed)</option>
-              <option value="ro">ro — read-only (Write/Edit, and the deprecated Bash, refused)</option>
+              <option value="rw">rw — read + write (Write/Edit allowed)</option>
+              <option value="ro">ro — read-only (Write/Edit refused)</option>
             </select>
           </label>
 

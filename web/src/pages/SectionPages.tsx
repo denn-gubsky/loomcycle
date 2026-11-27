@@ -888,19 +888,21 @@ function HealthSection() {
 // ConfigTeamsTable lists the teams of the server's configuration (RFC GS) and
 // whether each was written into the shared tier. The boot only logs a name
 // conflict or a refused team; this is where an operator sees one later.
-// DeprecationsList shows what a future release removes that this deployment
-// still uses (RFC GW P14): the config's uses, and the runs this replica gave
-// a deprecated tool or field. Nothing when neither has any.
+// DeprecationsList shows what v1.172.0 removed that stored definitions still
+// name (RFC GW P15 Q3): the runs on this replica whose definition named a
+// removed tool or field and ran without it. The config list is empty on a
+// v1.172.0 server (a config naming a removed item does not load) and is shown
+// only if a server sends lines. Nothing when neither has any.
 function DeprecationsList({ deprecations }: { deprecations: ConfigDeprecations }) {
   const config = deprecations.config ?? [];
   const runs = deprecations.runs ?? [];
   if (config.length === 0 && runs.length === 0) return null;
   return (
     <>
-      <h3>Deprecated</h3>
+      <h3>Removed items still named by stored definitions</h3>
       <p className="settings-help">
-        These will be removed in a future release. <code>docs/MIGRATING-FROM-BASH.md</code> maps each to its
-        replacement.
+        These were removed in v1.172.0. A run whose definition names one runs without it; fork the definition
+        without it. <code>docs/MIGRATING-FROM-BASH.md</code> maps each to its replacement.
       </p>
       {config.length > 0 && (
         <ul className="deprecations-config">
