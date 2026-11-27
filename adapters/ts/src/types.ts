@@ -969,6 +969,8 @@ export interface InterruptionEventInfo {
   kind: string;
   question?: string;
   options?: unknown;
+  /** RFC HG: with `options`, an answer of the person's own is accepted too. */
+  allow_other?: boolean;
   context?: string;
   priority: string;
   expires_at?: string;
@@ -4005,7 +4007,8 @@ export type MemoryReembedResponse =
 
 // ---- Interruption ----
 
-export type InterruptStatus = "pending" | "answered" | "cancelled" | "expired";
+/** The statuses the server writes (store.InterruptStatus*). */
+export type InterruptStatus = "pending" | "resolved" | "declined" | "timed_out" | "cancelled";
 
 export interface InterruptRow {
   interrupt_id: string;
@@ -4014,6 +4017,8 @@ export interface InterruptRow {
   status: InterruptStatus;
   question?: string;
   options?: string[];
+  /** RFC HG: with `options`, an answer outside them is accepted too. */
+  allow_other?: boolean;
   context_data?: string;
   priority: string;
   answer?: string;
