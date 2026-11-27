@@ -20,7 +20,12 @@ Every pass appends one line to annotate.jsonl.
 """
 import argparse, datetime as dt, json, os, sys, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import lc
+try:
+    import lc
+except RuntimeError:
+    # The Study C bearer is not set: hc/sweep.py imports this module to drive the same
+    # loop for another tenant and binds `lc`, WORK, LOG and STOP itself before calling it.
+    lc = None
 
 WORK = "/home/denn/workspace/kbrag-work/cqa"
 LOG = os.path.join(WORK, "annotate.jsonl")
