@@ -14,6 +14,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/audit"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/toolchainname"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/workspace"
 	"github.com/denn-gubsky/loomcycle/internal/workspace/dispatch"
@@ -745,8 +746,8 @@ func openToolchains(in workspaceInput, required []string) ([]string, tools.Resul
 			return nil, workspaceRefusal("invalid_argument", "toolchains: name at least one, or leave it out for a general workspace"), false
 		}
 		// Bounded before the dedupe below, which is quadratic.
-		if len(*in.Toolchains) > workspace.MaxToolchains {
-			return nil, workspaceRefusal("invalid_argument", fmt.Sprintf("toolchains: at most %d", workspace.MaxToolchains)), false
+		if len(*in.Toolchains) > toolchainname.Max {
+			return nil, workspaceRefusal("invalid_argument", fmt.Sprintf("toolchains: at most %d", toolchainname.Max)), false
 		}
 		asked = *in.Toolchains
 	case len(required) > 0:
@@ -756,16 +757,16 @@ func openToolchains(in workspaceInput, required []string) ([]string, tools.Resul
 	}
 	out := []string{}
 	for _, name := range asked {
-		if !workspace.ValidToolchainName(name) {
-			return nil, workspaceRefusal("invalid_argument", fmt.Sprintf("toolchain %q is not a toolchain name (a lowercase letter, then up to %d lowercase letters, digits, '.', '+', '_' or '-')", name, workspace.MaxToolchainNameLen-1)), false
+		if !toolchainname.Valid(name) {
+			return nil, workspaceRefusal("invalid_argument", fmt.Sprintf("toolchain %q is not a toolchain name (a lowercase letter, then up to %d lowercase letters, digits, '.', '+', '_' or '-')", name, toolchainname.MaxLen-1)), false
 		}
 		if !slices.Contains(out, name) {
 			out = append(out, name)
 		}
 	}
 	out = unionToolchains(out, required)
-	if len(out) > workspace.MaxToolchains {
-		return nil, workspaceRefusal("invalid_argument", fmt.Sprintf("toolchains: at most %d, your grant's required ones included", workspace.MaxToolchains)), false
+	if len(out) > toolchainname.Max {
+		return nil, workspaceRefusal("invalid_argument", fmt.Sprintf("toolchains: at most %d, your grant's required ones included", toolchainname.Max)), false
 	}
 	return out, tools.Result{}, true
 }

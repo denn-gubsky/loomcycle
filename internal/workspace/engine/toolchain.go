@@ -5,7 +5,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/denn-gubsky/loomcycle/internal/workspace"
+	"github.com/denn-gubsky/loomcycle/internal/toolchainname"
 )
 
 // MaxToolchainBinaries bounds the alternative programs one toolchain is
@@ -21,18 +21,18 @@ type Toolchain struct {
 }
 
 // CheckToolchains reports the first entry of tcs that may not be probed: a
-// name or a binary outside workspace.ValidToolchainName, a toolchain with no
+// name or a binary outside toolchainname.Valid, a toolchain with no
 // binary or more than MaxToolchainBinaries, a name listed twice, or more than
-// workspace.MaxToolchains entries. Every name and binary that passes is safe
+// toolchainname.Max entries. Every name and binary that passes is safe
 // to write into a shell script unquoted.
 func CheckToolchains(tcs []Toolchain) error {
-	if len(tcs) > workspace.MaxToolchains {
-		return fmt.Errorf("%d toolchains listed, at most %d", len(tcs), workspace.MaxToolchains)
+	if len(tcs) > toolchainname.Max {
+		return fmt.Errorf("%d toolchains listed, at most %d", len(tcs), toolchainname.Max)
 	}
 	seen := map[string]bool{}
 	for _, tc := range tcs {
-		if !workspace.ValidToolchainName(tc.Name) {
-			return fmt.Errorf("toolchain name %q is not 1 to %d of a-z 0-9 . + _ - starting with a letter", tc.Name, workspace.MaxToolchainNameLen)
+		if !toolchainname.Valid(tc.Name) {
+			return fmt.Errorf("toolchain name %q is not 1 to %d of a-z 0-9 . + _ - starting with a letter", tc.Name, toolchainname.MaxLen)
 		}
 		if seen[tc.Name] {
 			return fmt.Errorf("toolchain %q is listed twice", tc.Name)
@@ -42,8 +42,8 @@ func CheckToolchains(tcs []Toolchain) error {
 			return fmt.Errorf("toolchain %q: 1 to %d probe binaries, got %d", tc.Name, MaxToolchainBinaries, len(tc.Binaries))
 		}
 		for _, b := range tc.Binaries {
-			if !workspace.ValidToolchainName(b) {
-				return fmt.Errorf("toolchain %q: binary %q is not 1 to %d of a-z 0-9 . + _ - starting with a letter, with no path", tc.Name, b, workspace.MaxToolchainNameLen)
+			if !toolchainname.Valid(b) {
+				return fmt.Errorf("toolchain %q: binary %q is not 1 to %d of a-z 0-9 . + _ - starting with a letter, with no path", tc.Name, b, toolchainname.MaxLen)
 			}
 		}
 	}

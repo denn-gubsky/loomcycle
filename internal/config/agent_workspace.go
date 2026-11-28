@@ -8,7 +8,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/denn-gubsky/loomcycle/internal/workspace"
+	"github.com/denn-gubsky/loomcycle/internal/toolchainname"
 )
 
 // agent_workspace.go — the per-agent `workspace:` grant (RFC GW). The tool it
@@ -114,7 +114,7 @@ func (w *AgentWorkspace) Clone() *AgentWorkspace {
 // ValidateAgentWorkspace refuses a workspace grant holding an unknown or
 // repeated operation, an unknown engine, an egress entry that is not a
 // route name or is repeated, or a toolchain that is malformed, repeated or
-// past workspace.MaxToolchains. Whether a name is a route is not checked: a
+// past toolchainname.Max. Whether a name is a route is not checked: a
 // tenant's routes live in the store and come and go (workspaceEgressWarnings
 // advises on the operator's at load). One function for every place a
 // definition is authored — operator yaml, Markdown agents, the AgentDef
@@ -146,13 +146,13 @@ func ValidateAgentWorkspace(w *AgentWorkspace) error {
 		}
 		seenRoute[name] = true
 	}
-	if len(w.Toolchains) > workspace.MaxToolchains {
-		return fmt.Errorf("workspace.toolchains: at most %d", workspace.MaxToolchains)
+	if len(w.Toolchains) > toolchainname.Max {
+		return fmt.Errorf("workspace.toolchains: at most %d", toolchainname.Max)
 	}
 	seenTool := map[string]bool{}
 	for i, name := range w.Toolchains {
-		if !workspace.ValidToolchainName(name) {
-			return fmt.Errorf("workspace.toolchains[%d]: %q is not a toolchain name (a lowercase letter, then up to %d lowercase letters, digits, '.', '+', '_' or '-')", i, name, workspace.MaxToolchainNameLen-1)
+		if !toolchainname.Valid(name) {
+			return fmt.Errorf("workspace.toolchains[%d]: %q is not a toolchain name (a lowercase letter, then up to %d lowercase letters, digits, '.', '+', '_' or '-')", i, name, toolchainname.MaxLen-1)
 		}
 		if seenTool[name] {
 			return fmt.Errorf("workspace.toolchains[%d]: %q is listed twice", i, name)

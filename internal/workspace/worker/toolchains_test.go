@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/denn-gubsky/loomcycle/internal/toolchainname"
 	"github.com/denn-gubsky/loomcycle/internal/workspace"
 	"github.com/denn-gubsky/loomcycle/internal/workspace/engine"
 )
@@ -44,7 +45,7 @@ func TestParseToolchains_EmptyIsNil(t *testing.T) {
 // A malformed entry stops the worker at its start, with an error naming it.
 func TestParseToolchains_RefusesAMalformedEntryNamingIt(t *testing.T) {
 	var over []string
-	for i := 0; i <= workspace.MaxToolchains; i++ {
+	for i := 0; i <= toolchainname.Max; i++ {
 		over = append(over, "t"+strconv.Itoa(i)+"=x")
 	}
 	for v, mention := range map[string]string{

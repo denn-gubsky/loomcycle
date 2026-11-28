@@ -38,6 +38,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/safego"
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/toolchainname"
 	"github.com/denn-gubsky/loomcycle/internal/workerid"
 	"github.com/denn-gubsky/loomcycle/internal/workerlink"
 	"github.com/denn-gubsky/loomcycle/internal/workspace"
@@ -567,8 +568,8 @@ func (d *Dispatcher) admit(owner string, att auth.WorkerAttach, h *workspacepb.H
 	// §2): the attach token already trusts it, and a false name only
 	// misplaces its own tenant's workspaces.
 	for _, t := range h.GetToolchains() {
-		if !workspace.ValidToolchainName(t) {
-			return nil, nil, status.Errorf(codes.InvalidArgument, "toolchain name %q is not 1 to %d of a-z 0-9 . + _ - starting with a letter", t, workspace.MaxToolchainNameLen)
+		if !toolchainname.Valid(t) {
+			return nil, nil, status.Errorf(codes.InvalidArgument, "toolchain name %q is not 1 to %d of a-z 0-9 . + _ - starting with a letter", t, toolchainname.MaxLen)
 		}
 	}
 	if b := h.GetBuildVersion(); b != d.opt.BuildVersion {

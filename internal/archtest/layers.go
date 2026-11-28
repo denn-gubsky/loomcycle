@@ -163,6 +163,10 @@ var layers = []layer{
 			"internal/statepatch",
 			"internal/steer",
 			"internal/teamspec",
+			// A workspace toolchain's name rule (RFC HH): stdlib only, so the
+			// agent grant in config and the workspace worker, dispatcher and
+			// tool check names alike.
+			"internal/toolchainname",
 			"internal/transcribe/helper",
 			"internal/turncancel",
 			// The link between the worker endpoint and the workers that
