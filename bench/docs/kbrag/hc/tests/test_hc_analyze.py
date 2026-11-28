@@ -213,3 +213,68 @@ class TestGate(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestAmendment1(unittest.TestCase):
+    """The post-hoc replacements for checks 1 and 7: each passes the study's real shape and fails
+    on a corrupted input, and they only re-label the registered tests (exploratory)."""
+
+    def test_condense_extractive_accepts_a_span_of_the_readers_sentence(self):
+        ok = hcanalyze.condense_extractive
+        self.assertTrue(ok("No", "No, student accommodation is exempt from right to rent checks."))
+        self.assertTrue(ok("halls of residence", "Yes: halls of residence are exempt."))
+        self.assertTrue(ok("NO ANSWER", "NOT FOUND"))
+        self.assertTrue(ok("NOT FOUND", "NOT FOUND"))
+
+    def test_condense_extractive_rejects_words_the_reader_did_not_write_and_dropped_answers(self):
+        ok = hcanalyze.condense_extractive
+        self.assertFalse(ok("Yes", "No, it is exempt."))
+        self.assertFalse(ok("NO ANSWER", "Send a Self Assessment tax return to HMRC."))
+        self.assertFalse(ok("No", "NOT FOUND"))
+
+    def test_a1_check_7_fails_when_condensed_answers_are_swapped_between_questions(self):
+        direct = {"q%d" % i: "Yes, item %d qualifies." % i for i in range(40)}
+        rows = {q: {"attempt": 1} for q in direct}
+        good = {(q, 0, 1): {"condensed": "item %s" % q[1:], "direct": d} for q, d in direct.items()}
+        c = {}
+        hcanalyze.a1_condense_extractive(c, rows, good)
+        self.assertEqual((c["7_condense_faithful"]["status"], c["7_condense_faithful"]["extractive_share"]), ("pass", 1.0))
+        qs = sorted(direct)
+        swapped = {(q, 0, 1): {"condensed": "item %s" % qs[(i + 1) % len(qs)][1:], "direct": direct[q]}
+                   for i, q in enumerate(qs)}
+        c = {}
+        hcanalyze.a1_condense_extractive(c, rows, swapped)
+        self.assertEqual(c["7_condense_faithful"]["status"], "fail")
+
+    def test_a1_check_7_fails_on_the_study_when_the_condenser_drops_an_answer(self):
+        st = Study()
+        p = os.path.join(st.out, "cqa", "condensed", "oracle.jsonl")
+        rows = common.read_jsonl(p)
+        rows[0]["condensed"] = "NO ANSWER"
+        with open(p, "w") as f:
+            f.writelines(json.dumps(r) + "\n" for r in rows)
+        self.assertEqual(st.analyze()["amendment_1"]["checks"]["7_condense_faithful"]["status"], "fail")
+
+    def test_a1_check_1_passes_a_cited_snapshot_document_and_fails_a_new_one(self):
+        work = tempfile.mkdtemp()
+        write_json(os.path.join(work, "p7", "corpus.json"),
+                   {"corpus": ["D1", "D2"], "dropped": {"ONT": "ontology"}, "expected": None})
+        c = {}
+        hcanalyze.a1_same_corpus(c, work, "p7", {"D1", "ONT"})
+        self.assertEqual(c["1_same_corpus"]["status"], "pass")
+        self.assertEqual(c["1_same_corpus"]["cited_left_out"], {"ONT": "ontology"})
+        c = {}
+        hcanalyze.a1_same_corpus(c, work, "p7", {"D1", "NEW"})
+        self.assertEqual((c["1_same_corpus"]["status"], c["1_same_corpus"]["not_in_snapshot"]), ("fail", ["NEW"]))
+
+    def test_amended_relabels_a_test_voided_only_by_a_replaced_check(self):
+        res = {"checks": {"7_condense_faithful": {"status": "fail"}, "6_oracle_above_raglc": {"status": "pass"}},
+               "tests": {"T1": {"diff": 0.01, "ci": [-0.01, 0.03], "holds": True, "verdict": "void (failed check: 7)"},
+                         "T2": {"verdict": "not tested (set incomplete)"}}}
+        a = hcanalyze.amended(res, "cqa", {"7_condense_faithful": {"status": "pass"}})
+        self.assertEqual(a["tests"]["T1"]["verdict"], "holds")
+        self.assertTrue(a["tests"]["T2"]["verdict"].startswith("not tested"))
+        self.assertTrue(res["tests"]["T1"]["verdict"].startswith("void"))  # the registered result is untouched
+        res["checks"]["6_oracle_above_raglc"]["status"] = "fail"
+        a = hcanalyze.amended(res, "cqa", {"7_condense_faithful": {"status": "pass"}})
+        self.assertIn("6_oracle_above_raglc", a["tests"]["T1"]["verdict"])

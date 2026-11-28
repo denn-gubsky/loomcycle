@@ -400,3 +400,41 @@ situation, which a prompt change would only overfit. Tuning cost $0.68.
   amendment: **$2.66** (sweep $1.93, smoke $0.03, tuning $0.68, and about $0.01–0.09 of
   another session's 50 Haiku runs on the development tenant). The $19 stop is unchanged and
   still counts from the baseline; the remaining estimate is about $12.5, so about $15 in all.
+
+## Amendment 1 — 2026-11-28 (post hoc: written AFTER the scored runs and their analysis)
+
+> **This amendment does not change the registered result.** Under the rules above, all three
+> tests are void and the gate is closed; that stays the study's verdict. Amendment 1 is the
+> owner's ruling (2026-11-28) to replace two checks that could not fail for the reason they
+> guard, and to report T1–T3 under the replacements as **exploratory** evidence, labelled as
+> such wherever they appear. `hcanalyze.py` prints both readings; the registered one first.
+
+### Why the two registered checks failed
+
+- **Check 7 (condense faithful) could not pass with this reader.** The check was carried over
+  from the benchmark, whose reader was told to write `ANSWER: <short answer>`. The oracle here
+  runs the bundle's `kb/read` unchanged (Amendment 0), and that prompt writes a sentence on the
+  `ANSWER:` line ("No, student accommodation such as halls of residence is exempt…"). Scored
+  directly against the short gold answers, those sentences give F1 0.2456, against 0.6885 once
+  condensed: a 0.44 gap that measures the answer's length, not the condenser. Neither the
+  smoke test nor the tuning computed check 7, so Amendment 0 missed it.
+- **Check 1 (same corpus) failed on p7 for two documents that were in the snapshot.**
+  `rag-lc` searches the whole tenant, and it cited the tenant's ontology document (35 of 72
+  runs, 12 questions) and one untyped memory document (3 runs, 1 question). Both were in the
+  tenant at the corpus snapshot and were left out by the filter on purpose. The corpus did not
+  change; `rag-lc` made wrong citations. `rag-lc` is not an arm of T3 (kb-first − kb-today).
+
+### The replacements (each shown to fail on a corrupted input in `tests/test_hc_analyze.py`)
+
+- **A1 check 7 — the condense is extractive.** On the oracle's scored rows, a condense passes
+  when every word of the condensed answer occurs in the reader's own `ANSWER:` line (after the
+  SQuAD normalisation), or when it is empty (`NO ANSWER` / `NOT FOUND`) exactly when that line
+  is. The check passes when at least **0.97** of the rows pass (the registered 0.03 bound, read
+  as a share). On the study's rows, shuffling the condensed answers between questions gives
+  0.164 and flipping every Yes/No gives 0.484, so the check can fail.
+- **A1 check 1 — the corpus did not change under the runs.** A cited document fails the set
+  only when it was not in the tenant at the snapshot (neither kept nor dropped by the filter).
+  Citations of snapshot documents the filter left out are reported, not failed. The rest of
+  check 1 (the listing equals the expected set, for ConditionalQA) is unchanged.
+
+Every other check, bound, test, seed and the gate rule are unchanged.
