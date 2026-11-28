@@ -101,9 +101,15 @@ type WorkspaceRow struct {
 	// Git is a git workspace's repository (RFC GW §4.2, P11): what the
 	// supervisor is told of its remote and branch, never read back from the
 	// workspace. nil for every other workspace.
-	Git       *WorkspaceGit
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	Git *WorkspaceGit
+	// Toolchains are the toolchains the workspace was opened with (RFC HH
+	// §5, D4): what a template saved from it requires. nil is unknown (a
+	// row from before the column, or a workspace that asked for none, such
+	// as a root), and a reader then falls back to its worker's list; an
+	// empty list is a workspace that required no toolchain.
+	Toolchains []string
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
 }
 
 // WorkspaceGit is a git workspace's repository, as the core holds it. It

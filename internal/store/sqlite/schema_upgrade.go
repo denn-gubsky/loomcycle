@@ -363,6 +363,9 @@ func columnsSection2() schemaPlan {
 		// A question that also takes an answer outside its options (RFC HG
 		// P1); none for every row before. Mirrors postgres 0146.
 		`ALTER TABLE interrupts ADD COLUMN allow_other INTEGER NOT NULL DEFAULT 0`,
+		// The toolchains a workspace was opened with (RFC HH §5); NULL,
+		// unknown, for every row before. Mirrors postgres 0147.
+		`ALTER TABLE workspaces ADD COLUMN toolchains TEXT`,
 	}}
 }
 

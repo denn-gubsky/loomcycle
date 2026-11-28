@@ -155,7 +155,9 @@ func (m *Manager) fork(ctx context.Context, dst Owner, src store.WorkspaceRow, a
 		return store.WorkspaceRow{}, out, err
 	}
 	// A fork is a new ephemeral workspace, whatever its source's lifetime.
-	row, err := m.makeOn(ctx, dst, as, store.WorkspaceLifetimeEphemeral, "", egress, src.WorkerID, src.Engine, git, func(r *store.WorkspaceRow) error {
+	// It holds its source's files on its source's worker, so a template
+	// saved from it requires what its source was opened with (RFC HH §5).
+	row, err := m.makeOn(ctx, dst, as, store.WorkspaceLifetimeEphemeral, "", egress, src.Toolchains, src.WorkerID, src.Engine, git, func(r *store.WorkspaceRow) error {
 		res, err := m.disp.Do(ctx, src.WorkerID, dispatch.Request{TenantID: dst.TenantID, UserID: dst.UserID, WorkspaceID: r.ID, Op: workspace.OpFork, Args: args, MaxOutput: maxCheckpointAnswer})
 		if err != nil {
 			return err

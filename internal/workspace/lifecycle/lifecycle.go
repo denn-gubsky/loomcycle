@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/audit"
@@ -436,11 +437,11 @@ func (m *Manager) openPlaced(ctx context.Context, o Owner, req OpenRequest, life
 // be refused, never both admitted).
 func (m *Manager) openOn(ctx context.Context, o Owner, req OpenRequest, workerID, engine string) (store.WorkspaceRow, error) {
 	if req.Git != nil {
-		return m.makeOn(ctx, o, req.Name, req.Lifetime, "", req.Egress, workerID, engine, req.Git.row(o.TenantID), func(row *store.WorkspaceRow) error {
+		return m.makeOn(ctx, o, req.Name, req.Lifetime, "", req.Egress, req.Toolchains, workerID, engine, req.Git.row(o.TenantID), func(row *store.WorkspaceRow) error {
 			return m.openGit(ctx, row, *req.Git)
 		})
 	}
-	return m.makeOn(ctx, o, req.Name, req.Lifetime, req.Root, req.Egress, workerID, engine, nil, func(row *store.WorkspaceRow) error {
+	return m.makeOn(ctx, o, req.Name, req.Lifetime, req.Root, req.Egress, req.Toolchains, workerID, engine, nil, func(row *store.WorkspaceRow) error {
 		if req.Template != nil {
 			return m.openFromTemplate(ctx, o, *req.Template, workerID, row.ID)
 		}
@@ -456,8 +457,10 @@ func (m *Manager) openOn(ctx context.Context, o Owner, req OpenRequest, workerID
 // may use, RFC GW §6.3), the bounds, then place, which makes its directory
 // there (an open, or a fork), then the row ready. git, when set, makes a git
 // workspace's row; place may fill in what it learns of the repository. root,
-// set, is the user's folder the workspace is on (RFC GW P13).
-func (m *Manager) makeOn(ctx context.Context, o Owner, name, lifetime, root string, egress []string, workerID, engine string, git *store.WorkspaceGit, place func(row *store.WorkspaceRow) error) (store.WorkspaceRow, error) {
+// set, is the user's folder the workspace is on (RFC GW P13). toolchains
+// are the ones it was opened with, kept on its row for a template saved from
+// it (RFC HH §5); nil is unknown, and stays nil.
+func (m *Manager) makeOn(ctx context.Context, o Owner, name, lifetime, root string, egress, toolchains []string, workerID, engine string, git *store.WorkspaceGit, place func(row *store.WorkspaceRow) error) (store.WorkspaceRow, error) {
 	id, err := newID()
 	if err != nil {
 		return store.WorkspaceRow{}, fmt.Errorf("workspace id: %w", err)
@@ -466,7 +469,7 @@ func (m *Manager) makeOn(ctx context.Context, o Owner, name, lifetime, root stri
 		ID: id, TenantID: o.TenantID, UserID: o.UserID, Name: name, WorkerID: workerID, Engine: engine, Lifetime: lifetime,
 		OwnerRunID: o.RunID, OwnerAgentID: o.AgentID, RootRunID: o.RootRunID, State: store.WorkspaceOpening,
 		OwnerKind: o.kind(), OpenedToken: o.TokenDefID,
-		Egress: append([]string{}, egress...), Root: root,
+		Egress: append([]string{}, egress...), Root: root, Toolchains: slices.Clone(toolchains),
 	}
 	if git != nil {
 		g := *git

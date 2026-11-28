@@ -12,6 +12,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/audit"
@@ -200,7 +201,7 @@ func (m *Manager) SaveTemplate(ctx context.Context, o Owner, src store.Workspace
 		return store.WorkspaceTemplateRow{}, err
 	}
 	row := store.WorkspaceTemplateRow{ID: id, TenantID: o.TenantID, Scope: scope, ScopeID: scopeID, Name: as,
-		Toolchains: m.workerToolchains(src.WorkerID), Engine: src.Engine, Digest: digest, Bytes: size,
+		Toolchains: m.templateToolchains(src), Engine: src.Engine, Digest: digest, Bytes: size,
 		AuthorUser: o.UserID, AuthorRun: o.RunID}
 	out, err := m.store.WorkspaceTemplateCreate(ctx, row)
 	if err != nil {
@@ -300,8 +301,17 @@ func (c *countWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
-// workerToolchains is what the worker that holds a workspace carries: what
-// a template saved from it needs (D-P6-31).
+// templateToolchains is what a template saved from src requires: the
+// toolchains src was opened with (RFC HH §5, D4), or, for a row from before
+// they were recorded, what its worker carries (D-P6-31).
+func (m *Manager) templateToolchains(src store.WorkspaceRow) []string {
+	if src.Toolchains != nil {
+		return slices.Clone(src.Toolchains)
+	}
+	return m.workerToolchains(src.WorkerID)
+}
+
+// workerToolchains is what the worker that holds a workspace carries.
 func (m *Manager) workerToolchains(workerID string) []string {
 	for _, w := range m.disp.Workers() {
 		if w.ID == workerID {

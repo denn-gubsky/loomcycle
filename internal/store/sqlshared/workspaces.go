@@ -15,7 +15,7 @@ import (
 
 // workspaceColNames is the column order scanWorkspace reads.
 var workspaceColNames = []string{"id", "tenant_id", "user_id", "name", "worker_id", "kind", "lifetime", "engine",
-	"owner_run_id", "owner_agent_id", "root_run_id", "state", "shares", "owner_kind", "opened_token", "last_used_at", "egress", "root", "git", "created_at", "updated_at"}
+	"owner_run_id", "owner_agent_id", "root_run_id", "state", "shares", "owner_kind", "opened_token", "last_used_at", "egress", "root", "git", "toolchains", "created_at", "updated_at"}
 
 var workspaceCols = workspaceColList("")
 
@@ -36,10 +36,11 @@ func scanWorkspace(d Dialect, sc Row) (store.WorkspaceRow, error) {
 		shares string
 		egress string
 		git    string
+		tools  *string
 	)
 	if err := sc.Scan(&r.ID, &r.TenantID, &r.UserID, &r.Name, &r.WorkerID, &r.Kind, &r.Lifetime, &r.Engine,
 		&r.OwnerRunID, &r.OwnerAgentID, &r.RootRunID, &state, &shares, &r.OwnerKind, &r.OpenedToken,
-		d.TimeDest(&r.LastUsedAt), &egress, &r.Root, &git, d.TimeDest(&r.CreatedAt), d.TimeDest(&r.UpdatedAt)); err != nil {
+		d.TimeDest(&r.LastUsedAt), &egress, &r.Root, &git, &tools, d.TimeDest(&r.CreatedAt), d.TimeDest(&r.UpdatedAt)); err != nil {
 		return store.WorkspaceRow{}, err
 	}
 	r.State = store.WorkspaceState(state)
@@ -54,6 +55,7 @@ func scanWorkspace(d Dialect, sc Row) (store.WorkspaceRow, error) {
 		r.Egress = []string{}
 	}
 	r.Git = decodeWorkspaceGit(git)
+	r.Toolchains = decodeWorkspaceToolchains(tools)
 	r.CreatedAt, r.UpdatedAt, r.LastUsedAt = r.CreatedAt.UTC(), r.UpdatedAt.UTC(), r.LastUsedAt.UTC()
 	return r, nil
 }
@@ -123,7 +125,7 @@ func WorkspaceCreate(ctx context.Context, q Querier, row store.WorkspaceRow) (st
 		VALUES (`+Placeholders(len(workspaceColNames))+`)`,
 		row.ID, row.TenantID, row.UserID, row.Name, row.WorkerID, row.Kind, row.Lifetime, row.Engine,
 		row.OwnerRunID, row.OwnerAgentID, row.RootRunID, string(row.State), encodeShares(row.Shares),
-		row.OwnerKind, row.OpenedToken, d.TimeArg(now), encodeEgress(row.Egress), row.Root, encodeWorkspaceGit(row.Git), d.TimeArg(now), d.TimeArg(now))
+		row.OwnerKind, row.OpenedToken, d.TimeArg(now), encodeEgress(row.Egress), row.Root, encodeWorkspaceGit(row.Git), encodeWorkspaceToolchains(row.Toolchains), d.TimeArg(now), d.TimeArg(now))
 	if IsUniqueViolation(err) {
 		return store.WorkspaceRow{}, &store.ErrConflict{Kind: "workspace", ID: row.Name}
 	}
@@ -542,4 +544,32 @@ func SnapshotReadWorkspaces(ctx context.Context, q Querier) ([]store.WorkspaceRo
 		return nil, fmt.Errorf("snapshot read workspaces: %w", err)
 	}
 	return collectWorkspaces(d, rows)
+}
+
+// encodeWorkspaceToolchains is the toolchains column's value: NULL for nil
+// (unknown), else the JSON list, "[]" for a workspace that required none.
+// An untyped nil, so both drivers bind it as NULL.
+func encodeWorkspaceToolchains(tc []string) any {
+	if tc == nil {
+		return nil
+	}
+	b, err := json.Marshal(tc)
+	if err != nil {
+		return nil
+	}
+	return string(b)
+}
+
+// decodeWorkspaceToolchains reads the toolchains column. NULL, or a value
+// that does not decode, is unknown: save_template then falls back to the
+// worker's list, as for a row from before the column (RFC HH §5).
+func decodeWorkspaceToolchains(s *string) []string {
+	if s == nil {
+		return nil
+	}
+	var tc []string
+	if err := json.Unmarshal([]byte(*s), &tc); err != nil || tc == nil {
+		return nil
+	}
+	return tc
 }
