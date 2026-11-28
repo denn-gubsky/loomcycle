@@ -264,3 +264,92 @@ func TestRun_Stateful_IdleTimeoutEndsAParkedRun(t *testing.T) {
 		t.Errorf("final = %q, want the answer the run had given", res.FinalText)
 	}
 }
+
+// RFC HI D4: at its idle deadline a parked run asks IdleExtend, and only
+// then; a later time holds the park to it, where it asks again, and the run
+// ends idle once the answer no longer lies ahead.
+func TestRun_Interactive_IdleExtendHoldsAParkedRunUntilItsEnd(t *testing.T) {
+	q := make(chan steer.Message, 4)
+	const idle = 50 * time.Millisecond
+	var asks atomic.Int32
+	var leaseEnd atomic.Int64 // unix nanos
+	leaseEnd.Store(time.Now().Add(400 * time.Millisecond).UnixNano())
+	r := startIdleRun(t, context.Background(), q, func(o *RunOptions) {
+		o.IdleTimeout = idle
+		o.CloseSteerIfEmpty = func() bool { return len(q) == 0 }
+		o.IdleExtend = func(context.Context) time.Time {
+			asks.Add(1)
+			return time.Unix(0, leaseEnd.Load())
+		}
+	})
+	r.waitPark(t, "first turn")
+	parked := time.Now()
+	select {
+	case <-r.done:
+		t.Fatalf("the run ended at %v while its lease ran to 400ms: stop %q", time.Since(parked), r.res.StopReason)
+	case <-time.After(250 * time.Millisecond):
+	}
+	r.waitEnd(t, 3*time.Second)
+	if waited := time.Since(parked); waited < 300*time.Millisecond {
+		t.Errorf("the run ended %v after parking, before its lease's end", waited)
+	}
+	if r.res.StopReason != StopReasonIdleTimeout {
+		t.Errorf("stop reason = %q, want %q once the lease ended", r.res.StopReason, StopReasonIdleTimeout)
+	}
+	// Once at the idle deadline and once at the lease's end: never polled.
+	if n := asks.Load(); n != 2 {
+		t.Errorf("IdleExtend asked %d times, want 2 (the deadline and the lease's end)", n)
+	}
+}
+
+// An IdleExtend answering the zero time, or a time already past, lets the
+// run end at its idle deadline as without it.
+func TestRun_Interactive_IdleExtendWithNoLiveLeaseEndsTheRun(t *testing.T) {
+	for name, at := range map[string]func() time.Time{
+		"zero": func() time.Time { return time.Time{} },
+		"past": func() time.Time { return time.Now().Add(-time.Second) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			q := make(chan steer.Message, 4)
+			r := startIdleRun(t, context.Background(), q, func(o *RunOptions) {
+				o.IdleTimeout = 50 * time.Millisecond
+				o.CloseSteerIfEmpty = func() bool { return len(q) == 0 }
+				o.IdleExtend = func(context.Context) time.Time { return at() }
+			})
+			r.waitPark(t, "first turn")
+			r.waitEnd(t, time.Second)
+			if r.res.StopReason != StopReasonIdleTimeout {
+				t.Errorf("stop reason = %q, want %q", r.res.StopReason, StopReasonIdleTimeout)
+			}
+		})
+	}
+}
+
+// A deadline that passed while paused asks IdleExtend at the lift: a lease
+// still live holds the run.
+func TestRun_Interactive_IdleExtendIsAskedWhenAPauseLifts(t *testing.T) {
+	q := make(chan steer.Message, 4)
+	gate := newIdleGate()
+	var leaseEnd atomic.Int64
+	r := startIdleRun(t, context.Background(), q, func(o *RunOptions) {
+		o.IdleTimeout = 300 * time.Millisecond
+		o.CloseSteerIfEmpty = func() bool { return len(q) == 0 }
+		o.PauseGate = gate
+		o.IdleExtend = func(context.Context) time.Time { return time.Unix(0, leaseEnd.Load()) }
+	})
+	r.waitPark(t, "first turn")
+	gate.declare()
+	waitCount(t, "paused records", gate.paused.Load, 1)
+	time.Sleep(400 * time.Millisecond) // the idle deadline passes while paused
+	leaseEnd.Store(time.Now().Add(300 * time.Millisecond).UnixNano())
+	gate.lift()
+	select {
+	case <-r.done:
+		t.Fatal("the run ended at the lift while a lease was live")
+	case <-time.After(150 * time.Millisecond):
+	}
+	r.waitEnd(t, 3*time.Second)
+	if r.res.StopReason != StopReasonIdleTimeout {
+		t.Errorf("stop reason = %q, want %q", r.res.StopReason, StopReasonIdleTimeout)
+	}
+}
