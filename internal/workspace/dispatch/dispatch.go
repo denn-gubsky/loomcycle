@@ -1000,6 +1000,9 @@ func (d *Dispatcher) Place(ctx context.Context, req PlaceRequest) ([]string, err
 		used, cap int
 	}
 	var matched []cand
+	// carriesAll: some eligible worker carries every toolchain asked, so
+	// the toolchains are not why nothing matched.
+	carriesAll := false
 	d.mu.Lock()
 	for _, w := range d.workers {
 		if !w.eligible(req) {
@@ -1009,12 +1012,17 @@ func (d *Dispatcher) Place(ctx context.Context, req PlaceRequest) ([]string, err
 		for _, t := range req.Toolchains {
 			ok = ok && w.tools[t]
 		}
+		carriesAll = carriesAll || ok
 		for _, l := range req.Labels {
 			ok = ok && slices.Contains(w.labels, l) && (l != workspace.GitLabel || w.protocol >= workspace.GitProtocolVersion)
 		}
 		if ok {
 			matched = append(matched, cand{id: w.id, cap: w.capacity})
 		}
+	}
+	var offered map[string][]string
+	if len(matched) == 0 && !carriesAll {
+		offered = d.offeredLocked(req)
 	}
 	d.mu.Unlock()
 	if len(matched) == 0 {
@@ -1023,6 +1031,8 @@ func (d *Dispatcher) Place(ctx context.Context, req PlaceRequest) ([]string, err
 			detail = fmt.Sprintf("no personal worker of yours is attached offering root %q", req.Root)
 		} else if req.TenantID == "" {
 			detail = "the run has no tenant, and only a local worker configured for the empty tenant (workspace.mode local, workspace.local.tenant unset, no authentication) serves one"
+		} else if !carriesAll && len(req.Toolchains) > 0 {
+			detail = toolchainDetail(req.Toolchains, offered)
 		}
 		return nil, &OpError{Class: workspace.ClassNoWorker, Detail: detail}
 	}
@@ -1070,6 +1080,63 @@ func (w *worker) eligible(req PlaceRequest) bool {
 	// offers; any other worker never takes one (D-P13-4).
 	return w.serves.Personal == (req.Root != "") &&
 		(req.Root == "" || slices.Contains(w.labels, workspace.RootLabelPrefix+req.Root))
+}
+
+// toolchainDetail explains a no_worker refusal that the toolchains asked
+// caused (RFC HH §3): those no eligible worker carries, else that no one
+// worker carries them together; and in both cases what is on offer.
+func toolchainDetail(asked []string, offered map[string][]string) string {
+	var missing []string
+	for _, t := range asked {
+		if _, ok := offered[t]; !ok && !slices.Contains(missing, t) {
+			missing = append(missing, t)
+		}
+	}
+	names := make([]string, 0, len(offered))
+	for t := range offered {
+		names = append(names, t)
+	}
+	sort.Strings(names)
+	offer := "none are on offer"
+	if len(names) > 0 {
+		offer = "on offer: " + strings.Join(names, ", ")
+	}
+	if len(missing) > 0 {
+		return fmt.Sprintf("no attached workspace worker serving you carries the toolchain(s) %s (%s)", strings.Join(missing, ", "), offer)
+	}
+	return fmt.Sprintf("no one worker carries %s together (%s); ask for fewer, or for those one worker has", strings.Join(asked, ", "), offer)
+}
+
+// OfferedToolchains is what a workspace for user of tenant, on an engine at
+// least as isolating as minEngine, may ask for (RFC HH §3): each toolchain a
+// worker eligible for it carries, with the engines it is carried on, sorted.
+// No root is asked for, so no personal worker counts: it takes only root
+// workspaces, and a root names no toolchain. Names only, never which worker
+// or how many: a caller learns nothing of the fleet beyond what it may use.
+func (d *Dispatcher) OfferedToolchains(tenant, user, minEngine string) map[string][]string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.offeredLocked(PlaceRequest{TenantID: tenant, UserID: user, Engine: minEngine})
+}
+
+// offeredLocked is OfferedToolchains for req's tenant, user, engine and
+// root. Under Dispatcher.mu.
+func (d *Dispatcher) offeredLocked(req PlaceRequest) map[string][]string {
+	out := map[string][]string{}
+	for _, w := range d.workers {
+		if !w.eligible(req) {
+			continue
+		}
+		for t := range w.tools {
+			if !slices.Contains(out[t], w.engine) {
+				out[t] = append(out[t], w.engine)
+			}
+		}
+	}
+	for _, engines := range out {
+		sort.Strings(engines)
+	}
+	return out
 }
 
 // Attached reports whether a worker of this id is attached to this replica
