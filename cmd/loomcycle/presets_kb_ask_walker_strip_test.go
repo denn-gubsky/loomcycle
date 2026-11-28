@@ -56,7 +56,7 @@ func TestKbAsk_WalkerProtocolTalkIsStrippedAfterASearch(t *testing.T) {
 	for name, tc := range leakedWalkerAnswers {
 		t.Run(name, func(t *testing.T) {
 			f := &askFake{score: 0.2, answers: map[string]string{"kb/classify": "NO", "kb/search": askSearchAnswer("partial"), "kb/walker": tc.text}}
-			out := runAsk(t, f, "Where is the retry limit set?", nil)
+			out := runAsk(t, f, "Where is the retry limit set?", noFirstCall(nil))
 			wantSpawns(t, f, "kb/classify", "kb/search", "kb/walker")
 			if got := answerBody(out); got != tc.want {
 				t.Errorf("answer = %q, want %q", got, tc.want)
@@ -71,7 +71,7 @@ func TestKbAsk_WalkerProtocolTalkIsStrippedAfterASearch(t *testing.T) {
 func TestKbAsk_SearchAnswerIsUnchangedByTheWalkerStrip(t *testing.T) {
 	const body = "It is set in [Guide](loom:doc/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?scope=tenant). Nothing is missing, and it fits the moves we made.\n- See [step](loom:chunk/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb?scope=tenant)."
 	f := &askFake{score: 0.05, answers: map[string]string{"kb/search": body + "\nCOVERAGE: complete"}}
-	out := runAsk(t, f, "Where is the retry limit set?", nil)
+	out := runAsk(t, f, "Where is the retry limit set?", noFirstCall(nil))
 	wantSpawns(t, f, "kb/search")
 	if got := answerBody(out); got != body {
 		t.Errorf("answer = %q, want the search answer unchanged: %q", got, body)

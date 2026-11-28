@@ -8352,7 +8352,7 @@ agents:
   kb/ask:
     provider: code-js
     # What a caller choosing an agent reads (list_agents, the Library).
-    description: "Answers one question from the tenant knowledge base, with links to the documents. A question about a period (since a date or version, in a month or year) or asking to list documents of a kind or a status is answered from a full listing. Optional run metadata depth: quick (at most 30 documents considered, a short answer; also picked when the question says briefly, in short, a quick list or top N), standard (the default) or deep (more relations and guide sections followed). Ask for quick when you do not need a full overview. Optional run metadata first_call: true answers a passage question first with one reranked search and one reader call (kb/answer), going on to the search agent when that finds nothing."
+    description: "Answers one question from the tenant knowledge base, with links to the documents. A question about a period (since a date or version, in a month or year) or asking to list documents of a kind or a status is answered from a full listing. Optional run metadata depth: quick (at most 30 documents considered, a short answer; also picked when the question says briefly, in short, a quick list or top N), standard (the default) or deep (more relations and guide sections followed). Ask for quick when you do not need a full overview. A passage question is answered first with one reranked search and one reader call (kb/answer), going on to the search agent when that finds nothing; run metadata first_call: false skips that first call, and depth deep always does."
     # The tool ceiling, and the whole of it: Decision asks the classifier
     # question, Agent runs kb/classify, kb/answer, kb/search, kb/survey or
     # kb/walker, and
@@ -8425,8 +8425,8 @@ agents:
       //    ROUTE: <route> | SCORE: <score or none> | CLASSIFIER: <source> | RUNS: <run:status, ...>
       //    followed by " | DEPTH: <quick|deep> (<caller|wording>)" when the
       //    depth is not standard (DEPTH, below).
-      // 5. THE FIRST CALL, opt-in: run metadata first_call true (the boolean or
-      //    the string "true"). A question bound for kb/search (a known item, or
+      // 5. THE FIRST CALL, on by default; run metadata first_call false (the
+      //    boolean or the string "false") turns it off. A question bound for kb/search (a known item, or
       //    anything the classifiers did not call an overview) goes to
       //    kb/answer first: one reranked search, the sections read by code, one
       //    reader call. Dated, listing and overview questions route as before.
@@ -8439,8 +8439,8 @@ agents:
       //    ("answer -> search (not found)") and adds, before DEPTH:
       //    " | FIRST: <outcome> | SECTIONS: <k> | RERANKED: true|false (<reason>)",
       //    which describe the first call even when a later step answered.
-      //    Without the flag nothing here runs, and the answer is byte for byte
-      //    what it was.
+      //    With first_call false nothing here runs, and the answer is byte for
+      //    byte what it was before the first call existed.
       //
       // When in doubt the cascade says overview: sending a question to the survey
       // costs a little, sending an overview to flat search loses the answer.
@@ -9142,11 +9142,11 @@ agents:
 
       // ---- the first call ----
 
-      // firstCallOn: run metadata first_call is true, the boolean or the
-      // string "true", and nothing else.
+      // firstCallOn: on unless run metadata first_call is false, the boolean
+      // or the string "false". Any other value, or none, leaves it on.
       function firstCallOn(metadata) {
         var v = metadata ? metadata.first_call : undefined;
-        return v === true || v === "true";
+        return v !== false && v !== "false";
       }
 
       // FIRST_LINE is kb/answer's last line, which its code writes.
@@ -9250,7 +9250,7 @@ agents:
 
   kb/answer:
     provider: code-js
-    description: "Answers one passage question from the tenant knowledge base in one shot: one reranked search, the best sections read by code, one reader call. Returns a short answer that leads, a Sources list of the sections it came from, and a FIRST line (found, not_found, no_sections or read_failed). kb/ask calls it first when run metadata first_call is true; it can also be called directly."
+    description: "Answers one passage question from the tenant knowledge base in one shot: one reranked search, the best sections read by code, one reader call. Returns a short answer that leads, a Sources list of the sections it came from, and a FIRST line (found, not_found, no_sections or read_failed). kb/ask calls it first for a passage question unless run metadata first_call is false or depth is deep; it can also be called directly."
     # The tool ceiling, and the whole of it: Document runs the one search and
     # reads the sections, Agent runs kb/read (the only child its code spawns).
     # No Calc: a code agent calls no model of its own.

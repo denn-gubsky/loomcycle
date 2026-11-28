@@ -9,7 +9,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 )
 
-// kb/ask's first call: with run metadata first_call true, a question bound for
+// kb/ask's first call: unless run metadata first_call is false, a question bound for
 // kb/search goes to kb/answer first, and on to kb/search only when that found
 // nothing or failed (presets_kb_ask_test.go holds the fake these tests drive).
 
@@ -46,18 +46,19 @@ func fcFlag(extra map[string]any) map[string]any {
 	return md
 }
 
-// TestKbAsk_FirstCallRoutesToKbAnswerOnlyWithTheFlag: with first_call true
-// (the boolean or the string), a question bound for kb/search goes to
-// kb/answer, and a found answer stands: kb/search is never started. Without
-// the flag the same question goes to kb/search.
-func TestKbAsk_FirstCallRoutesToKbAnswerOnlyWithTheFlag(t *testing.T) {
-	for _, v := range []any{true, "true"} {
+// TestKbAsk_FirstCallIsOnByDefaultAndOffOnlyWhenTheFlagIsFalse: with no
+// first_call flag, or any value but false (the boolean or the string), a
+// question bound for kb/search goes to kb/answer, and a found answer stands:
+// kb/search is never started. With first_call false the same question goes
+// to kb/search.
+func TestKbAsk_FirstCallIsOnByDefaultAndOffOnlyWhenTheFlagIsFalse(t *testing.T) {
+	want := fcFoundText + "\n\nROUTE: answer | SCORE: 0.05 | CLASSIFIER: decision | RUNS: r1:completed | FIRST: found | SECTIONS: 5 | RERANKED: true"
+	for _, md := range []map[string]any{nil, {}, {"first_call": true}, {"first_call": "true"}, {"first_call": "yes"}, {"first_call": 1}, {"depth": "standard"}} {
 		f := fcFake(0.05, "found", "complete")
-		out := runAsk(t, f, fcQuestion, map[string]any{"first_call": v})
+		out := runAsk(t, f, fcQuestion, md)
 		wantSpawns(t, f, "kb/answer")
-		want := fcFoundText + "\n\nROUTE: answer | SCORE: 0.05 | CLASSIFIER: decision | RUNS: r1:completed | FIRST: found | SECTIONS: 5 | RERANKED: true"
 		if out != want {
-			t.Errorf("first_call=%v: answer =\n%q\nwant\n%q", v, out, want)
+			t.Errorf("metadata %v: answer =\n%q\nwant\n%q", md, out, want)
 		}
 		if f.inputs[0]["prompt"] != fcQuestion || f.inputs[0]["untrusted"] != nil {
 			t.Errorf("kb/answer got %v, want the trusted question as its prompt", f.inputs[0])
@@ -65,15 +66,17 @@ func TestKbAsk_FirstCallRoutesToKbAnswerOnlyWithTheFlag(t *testing.T) {
 	}
 	// A known item and a middle-band NO take the first call too.
 	f := fcFake(0.9, "found", "complete")
-	runAsk(t, f, "Show me the overview of the scheduler.", fcFlag(nil))
+	runAsk(t, f, "Show me the overview of the scheduler.", nil)
 	wantSpawns(t, f, "kb/answer")
 	f = fcFake(0.3, "found", "complete")
-	runAsk(t, f, fcQuestion, fcFlag(nil))
+	runAsk(t, f, fcQuestion, nil)
 	wantSpawns(t, f, "kb/classify", "kb/answer")
 
-	f = fcFake(0.05, "found", "complete")
-	runAsk(t, f, fcQuestion, nil)
-	wantSpawns(t, f, "kb/search")
+	for _, v := range []any{false, "false"} {
+		f = fcFake(0.05, "found", "complete")
+		runAsk(t, f, fcQuestion, map[string]any{"first_call": v})
+		wantSpawns(t, f, "kb/search")
+	}
 }
 
 // TestKbAsk_FirstCallLeavesDatedListingAndOverviewRoutesAlone: the flag

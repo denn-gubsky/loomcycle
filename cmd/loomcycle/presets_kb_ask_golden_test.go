@@ -9,9 +9,10 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 )
 
-// kb/ask without the first_call flag: its output and every child it starts must
-// stay byte-identical to what it was before the first-call route was added.
-// testdata/kb_ask_no_flag_golden.json was recorded from kb/ask as it stood on
+// kb/ask with the first call turned off (run metadata first_call false): its
+// output and every child it starts must stay byte-identical to what it was
+// before the first-call route was added.
+// testdata/kb_ask_first_call_off_golden.json was recorded from kb/ask as it stood on
 // main before that change (presets_kb_ask_test.go holds the fake).
 
 // askGoldenCase is one run of kb/ask the golden file pins.
@@ -85,7 +86,7 @@ func runAskGolden(t *testing.T, c askGoldenCase, extra map[string]any) askGolden
 
 func readAskGolden(t *testing.T) map[string]askGoldenRecord {
 	t.Helper()
-	b, err := os.ReadFile(filepath.Join("testdata", "kb_ask_no_flag_golden.json"))
+	b, err := os.ReadFile(filepath.Join("testdata", "kb_ask_first_call_off_golden.json"))
 	if err != nil {
 		t.Fatalf("read the golden file: %v", err)
 	}
@@ -96,22 +97,19 @@ func readAskGolden(t *testing.T) map[string]askGoldenRecord {
 	return out
 }
 
-// TestKbAsk_WithoutTheFirstCallFlagOutputIsByteIdentical: with no first_call
-// flag, or one that is not true, kb/ask routes, prompts its children and
-// answers exactly as before the first-call route existed, on every route.
-func TestKbAsk_WithoutTheFirstCallFlagOutputIsByteIdentical(t *testing.T) {
+// TestKbAsk_FirstCallOffOutputIsByteIdentical: with first_call false (the
+// boolean or the string) kb/ask routes, prompts its children and answers
+// exactly as before the first-call route existed, on every route.
+func TestKbAsk_FirstCallOffOutputIsByteIdentical(t *testing.T) {
 	golden := readAskGolden(t)
 	cases := askGoldenCases()
 	if len(golden) != len(cases) {
 		t.Fatalf("the golden file holds %d cases, the test %d", len(golden), len(cases))
 	}
-	for _, flag := range []map[string]any{nil, {"first_call": false}, {"first_call": "false"}, {"first_call": "yes"}, {"first_call": 1}} {
+	for _, flag := range []map[string]any{{"first_call": false}, {"first_call": "false"}} {
 		for _, c := range cases {
-			name := c.name
-			if flag != nil {
-				b, _ := json.Marshal(flag)
-				name += " " + string(b)
-			}
+			b, _ := json.Marshal(flag)
+			name := c.name + " " + string(b)
 			t.Run(name, func(t *testing.T) {
 				want, ok := golden[c.name]
 				if !ok {

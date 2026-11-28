@@ -290,7 +290,7 @@ func TestKbAsk_DepthSetsWhetherAPartialSearchGoesOnToTheWalker(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := &askFake{score: tc.score, answers: askAnswers("NO", "partial")}
-			runAsk(t, f, "Where is the retry limit set?", map[string]any{"depth": tc.depth})
+			runAsk(t, f, "Where is the retry limit set?", noFirstCall(map[string]any{"depth": tc.depth}))
 			wantSpawns(t, f, tc.want...)
 		})
 	}
