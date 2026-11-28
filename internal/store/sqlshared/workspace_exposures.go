@@ -64,13 +64,22 @@ func collectExposures(d Dialect, rows Rows) ([]store.WorkspaceExposure, error) {
 // one over it for a moment is harmless; the unique (workspace_id, port) index
 // over live rows is exact.
 func WorkspaceExposureCreate(ctx context.Context, db DB, e store.WorkspaceExposure, max int) (store.WorkspaceExposure, error) {
+	return WorkspaceExposureCreateWith(ctx, db, e, max, func(fn func(Querier) error) error { return db.InTx(ctx, fn) })
+}
+
+// WorkspaceExposureCreateWith is WorkspaceExposureCreate with the backend's
+// own transaction. The count and the insert must be one write: SQLite runs
+// them under BEGIN IMMEDIATE, because a deferred transaction's count takes a
+// read snapshot that cannot become a write once another write commits, and
+// SQLite then answers SQLITE_BUSY at once instead of waiting.
+func WorkspaceExposureCreateWith(ctx context.Context, q Querier, e store.WorkspaceExposure, max int, inTx func(func(Querier) error) error) (store.WorkspaceExposure, error) {
 	if e.ID == "" || e.WorkspaceID == "" || e.Port < 1 || e.Port > 65535 {
 		return store.WorkspaceExposure{}, fmt.Errorf("workspace exposure create: id, workspace_id and a port are required")
 	}
 	if e.Kind != store.WorkspaceExposurePage && e.Kind != store.WorkspaceExposurePanel {
 		return store.WorkspaceExposure{}, fmt.Errorf("workspace exposure create: unknown kind %q", e.Kind)
 	}
-	err := db.InTx(ctx, func(tx Querier) error {
+	err := inTx(func(tx Querier) error {
 		var n int
 		if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM workspace_exposures WHERE tenant_id = ? AND workspace_id = ? AND `+exposureLive,
 			e.TenantID, e.WorkspaceID).Scan(&n); err != nil {
@@ -101,7 +110,7 @@ func WorkspaceExposureCreate(ctx context.Context, db DB, e store.WorkspaceExposu
 	if err != nil {
 		return store.WorkspaceExposure{}, fmt.Errorf("workspace exposure create: %w", err)
 	}
-	return WorkspaceExposureGet(ctx, db, e.TenantID, e.ID)
+	return WorkspaceExposureGet(ctx, q, e.TenantID, e.ID)
 }
 
 func WorkspaceExposureGet(ctx context.Context, q Querier, tenantID, id string) (store.WorkspaceExposure, error) {

@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -11,7 +12,9 @@ import (
 // The RFC GW exposure queries live in internal/store/sqlshared.
 
 func (s *Store) WorkspaceExposureCreate(ctx context.Context, row store.WorkspaceExposure, max int) (store.WorkspaceExposure, error) {
-	return sqlshared.WorkspaceExposureCreate(ctx, s.shared(), row, max)
+	return sqlshared.WorkspaceExposureCreateWith(ctx, s.shared(), row, max, func(fn func(sqlshared.Querier) error) error {
+		return s.immediateTx(ctx, func(conn *sql.Conn) error { return fn(sqlshared.SQLiteConn(conn)) })
+	})
 }
 
 func (s *Store) WorkspaceExposureGet(ctx context.Context, tenantID, id string) (store.WorkspaceExposure, error) {
