@@ -888,6 +888,87 @@ and remove the old `loom-dev` network once the stack is up:
 `docker network rm loom-dev`. In `versions.env`, `LOOMCYCLE_SIDECAR_VERSION` is no
 longer read; the deploy script writes `LOOMCYCLE_WS_WORKER_VERSION` in its place.
 
+
+### A worker for C++ and Go builds (optional)
+
+The session image has Python and Node but no Go, gcc or cmake, and a session cannot
+install them (read-only root, non-root user). For agents that build C, C++ or Go,
+run a **second** workspace worker on an image that has them, telling it which
+toolchains to probe for (`LOOMCYCLE_WORKSPACE_TOOLCHAINS`); the runtime then places
+a workspace that asks for `go` or `cpp` on it. Guide:
+[`../docs/WORKSPACES.md`](../docs/WORKSPACES.md) "Toolchains".
+
+1. **Build the image on the host.** loomcycle publishes no such image;
+   [`../deploy/workspace-images/Dockerfile.dev`](../deploy/workspace-images/Dockerfile.dev)
+   is an example (`FROM` the workspace session image, plus Go, gcc/g++, make, cmake
+   and pkg-config). Add what your builds need, then build it on the host, whose
+   Docker runs the sessions, with the release in `versions.env`
+   (`LOOMCYCLE_WS_WORKER_VERSION`):
+   ```bash
+   mkdir -p ~/images && cd ~/images
+   curl -fsSLO https://raw.githubusercontent.com/denn-gubsky/loomcycle/main/deploy/workspace-images/Dockerfile.dev
+   docker build -f Dockerfile.dev --build-arg LOOMCYCLE_WORKSPACE_VERSION=1.172.0 \
+     -t loomcycle-workspace-dev:1.172.0 .
+   ```
+   Build it again under the new tag each time the deploy moves the release.
+2. **Its own two directories** (a worker removes workspaces it does not know from
+   its root, so two workers never share one):
+   ```bash
+   sudo mkdir -p /srv/loomcycle/workspaces-dev /srv/loomcycle/wsed
+   sudo chown 65532:65532 /srv/loomcycle/workspaces-dev /srv/loomcycle/wsed
+   sudo chmod 0700 /srv/loomcycle/workspaces-dev /srv/loomcycle/wsed
+   ```
+3. **The service**, in a `docker-compose.override.yaml` beside `docker-compose.yaml`
+   (compose reads it with the main file, and the deploy script replaces only the
+   main file). It reuses `WORKSPACE_WORKER_TOKEN` (a worker is known by its token
+   and its `--id`, so one `workers:attach` token serves both) and runs under the
+   same `workspace` profile:
+   ```yaml
+   services:
+     workspace-worker-dev:
+       image: denngubsky/loomcycle-ws-worker:${LOOMCYCLE_WS_WORKER_VERSION:-1.172.0}
+       profiles: [workspace]
+       command: [--role, workspace, --id, cloud-ws-dev]   # keep the id: it owns the workspaces on disk
+       restart: unless-stopped
+       network_mode: "service:tailscale"
+       group_add: ["${DOCKER_GID:-}"]
+       environment:
+         LOOMCYCLE_WORKER_DISPATCHER: 127.0.0.1:7788
+         LOOMCYCLE_WORKER_INSECURE: "1"
+         LOOMCYCLE_WORKER_TOKEN: ${WORKSPACE_WORKER_TOKEN:-}
+         LOOMCYCLE_WORKSPACE_ROOT: /srv/loomcycle/workspaces-dev
+         LOOMCYCLE_WORKSPACE_ENGINE: container
+         LOOMCYCLE_WORKSPACE_CONTAINER_IMAGE: loomcycle-workspace-dev:${LOOMCYCLE_WS_WORKER_VERSION:-1.172.0}
+         LOOMCYCLE_WORKSPACE_CONTAINER_EGRESS_DIR: /srv/loomcycle/wsed
+         LOOMCYCLE_WORKSPACE_TOOLCHAINS: python,node,go,c,cpp,cmake,make
+       volumes:
+         - /var/run/docker.sock:/var/run/docker.sock   # PRIVILEGED — host Docker control
+         - /srv/loomcycle/workspaces-dev:/srv/loomcycle/workspaces-dev
+         - /srv/loomcycle/wsed:/srv/loomcycle/wsed
+       read_only: true
+       tmpfs:
+         - /scratch:size=1g,mode=0700,uid=65532,gid=65532
+       cap_drop: [ALL]
+       security_opt: ["no-new-privileges:true"]
+       depends_on:
+         loomcycle:
+           condition: service_healthy
+   ```
+   Then `make up`. The host's Docker uses the local image and does not try to pull
+   it.
+4. **Check.** `make logs S=workspace-worker-dev` names the toolchains it found
+   (`commands run in a container per workspace … toolchains="[python node go c cpp
+   cmake make]"`) and warns for a declared one its image lacks. An agent asks with
+   `Workspace op=open` and `"toolchains": ["cpp", "cmake"]`, or is pinned to them
+   with `toolchains:` in its `workspace` grant; `Workspace op=toolchains` lists what
+   is on offer.
+
+Go modules reach a session only through egress routes named `goproxy` and `gosum`,
+which you add in `config/loomcycle.yaml` under `workspace.egress.routes` and name in
+the agent's grant; C and C++ have no package route, so their libraries come from the
+image or the repository. Leave `python,node` out of the list if general workspaces
+should stay on the first worker.
+
 ---
 
 ## Troubleshooting

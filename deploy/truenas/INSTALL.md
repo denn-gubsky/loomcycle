@@ -563,6 +563,81 @@ http://TRUENAS_SCALE_HOST:8787/metrics | grep loomcycle_workspace_workers` shows
 then spawn `dev/exec` with `{"commands":["python3 --version"]}` — the reply carries
 the command's output.
 
+### A worker for C++ and Go builds (optional)
+
+The session image has Python and Node but no Go, gcc or cmake, and a session cannot
+install them (read-only root, non-root user). For agents that build C, C++ or Go,
+run a **second** workspace worker on an image that has them, and tell it which
+toolchains to probe for (`LOOMCYCLE_WORKSPACE_TOOLCHAINS`); the runtime then places
+a workspace that asks for `go` or `cpp` on it. Guide:
+[`../../docs/WORKSPACES.md`](../../docs/WORKSPACES.md) "Toolchains".
+
+1. **Build the image on the TrueNAS host.** loomcycle publishes no such image;
+   [`../workspace-images/Dockerfile.dev`](../workspace-images/Dockerfile.dev) is an
+   example (`FROM` the workspace session image, plus Go, gcc/g++, make, cmake and
+   pkg-config). The host's Docker runs the sessions, so it is the one that needs it:
+   ```sh
+   mkdir -p /mnt/APPS2/loomcycle/images && cd /mnt/APPS2/loomcycle/images
+   curl -fsSLO https://raw.githubusercontent.com/denn-gubsky/loomcycle/main/deploy/workspace-images/Dockerfile.dev
+   docker build -f Dockerfile.dev --build-arg LOOMCYCLE_WORKSPACE_VERSION=1.172.0 \
+     -t loomcycle-workspace-dev:1.172.0 .
+   ```
+   Use the release of the other loomcycle images in your compose, and add what your
+   builds need to the file first. Rebuild it when you move them to a new release.
+2. **Its own two directories**, like the first worker's (a worker removes workspaces
+   it does not know from its root, so two workers never share one):
+   ```sh
+   mkdir -p /mnt/APPS2/loomcycle/workspaces-dev /mnt/APPS2/loomcycle/wsed
+   chown 65532:65532 /mnt/APPS2/loomcycle/workspaces-dev /mnt/APPS2/loomcycle/wsed
+   chmod 0700 /mnt/APPS2/loomcycle/workspaces-dev /mnt/APPS2/loomcycle/wsed
+   ```
+3. **The service**, beside `workspace-worker` in the compose. It uses the same
+   `workspace.worker.env` token (a worker is known by its token and its `--id`, so
+   one `workers:attach` token serves both), with its own `--id`:
+   ```yaml
+     workspace-worker-dev:
+       image: denngubsky/loomcycle-ws-worker:1.172.0   # the same release as workspace-worker
+       command: [--role, workspace, --id, ws-dev]      # keep the id across restarts
+       restart: unless-stopped
+       depends_on:
+         loomcycle:
+           condition: service_healthy
+       env_file:
+         - /mnt/APPS2/loomcycle/config/workspace.worker.env
+       environment:
+         LOOMCYCLE_WORKER_DISPATCHER: loomcycle:7788
+         LOOMCYCLE_WORKER_INSECURE: "1"
+         LOOMCYCLE_WORKSPACE_ROOT: /mnt/APPS2/loomcycle/workspaces-dev
+         LOOMCYCLE_WORKSPACE_ENGINE: container
+         LOOMCYCLE_WORKSPACE_CONTAINER_IMAGE: loomcycle-workspace-dev:1.172.0   # built in step 1
+         LOOMCYCLE_WORKSPACE_CONTAINER_EGRESS_DIR: /mnt/APPS2/loomcycle/wsed
+         LOOMCYCLE_WORKSPACE_TOOLCHAINS: python,node,go,c,cpp,cmake,make
+       group_add: ["DOCKER_GID"]
+       volumes:
+         - /var/run/docker.sock:/var/run/docker.sock   # PRIVILEGED — host Docker control
+         - /mnt/APPS2/loomcycle/workspaces-dev:/mnt/APPS2/loomcycle/workspaces-dev
+         - /mnt/APPS2/loomcycle/wsed:/mnt/APPS2/loomcycle/wsed
+       read_only: true
+       tmpfs:
+         - /scratch:size=1g,mode=0700,uid=65532,gid=65532
+       cap_drop: [ALL]
+       security_opt: ["no-new-privileges:true"]
+       networks: [workers]
+   ```
+   The host's Docker uses the local image and does not try to pull it.
+4. **Check.** The worker's log names the toolchains it found
+   (`commands run in a container per workspace … toolchains="[python node go c cpp
+   cmake make]"`) and warns for a declared one its image lacks. An agent asks with
+   `Workspace op=open` and `"toolchains": ["cpp", "cmake"]`, or is pinned to them
+   with `toolchains:` in its `workspace` grant; `Workspace op=toolchains` lists what
+   is on offer.
+
+Go modules reach the session only through egress routes named `goproxy` and `gosum`,
+which you add to the overlay under `workspace.egress.routes` and name in the agent's
+grant; C and C++ have no package route, so their libraries come from the image or
+the repository. Leave `python,node` out of the list if general workspaces should
+stay on the first worker.
+
 ## Conversion workers
 
 Every file conversion runs in the `conversion-worker` containers (RFC GO,
