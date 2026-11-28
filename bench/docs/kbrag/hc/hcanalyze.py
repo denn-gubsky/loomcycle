@@ -8,6 +8,9 @@ ok row for every question and run it needs, condensed where it is scored on F1; 
 stop; no provider violation); anything less is reported as not tested, never scored on the part
 that ran. Bootstrap: paired over questions, 10,000 resamples, seed 1, the 98.33% CI
 (../analyze.bootstrap_ci with alpha = 0.05/3).
+
+Amendment 1 (post hoc, 2026-11-28) replaces checks 1 and 7 for a labelled exploratory reading:
+`amendment_1` per set and `gate_amendment_1` in the summary. The registered verdict is unchanged.
 """
 import argparse, json, os, sys
 
@@ -286,6 +289,9 @@ def analyze_cqa(work, out, data, test_qids):
             direct=o["F1_direct_on_condensed"], diff=round(d, 4), bound=hcconfig.CONDENSE_MAX_DIFF)
     else:
         put(c, 7, "condense_faithful", "not-run")
+    a1 = {}
+    a1_same_corpus(a1, work, "cqa", hit_docs)
+    a1_condense_extractive(a1, rows["oracle"], L["condensed"]["oracle"])
     every_run_answered(c, L, {a: [(q, 0) for q in test_qids] for a in T_ARMS["cqa"]})
     one_release(c, L)
 
@@ -309,6 +315,7 @@ def analyze_cqa(work, out, data, test_qids):
         x = paired(f1[a], f1[b], test_qids, 0.0) if len(f1[a]) == len(test_qids) else {"verdict": "not computed (incomplete)"}
         x["comparison"] = "%s - %s, condensed F1 (secondary, reported)" % (a, b)
         res["secondary"][a + " vs " + b] = x
+    res["amendment_1"] = amended(res, "cqa", a1)
     kt, kf = S["kb-today"]["usd_per_question"], S["kb-first"]["usd_per_question"]
     if kt and kf is not None:
         res["cost_check"] = {"kb_first": kf, "kb_today": kt, "max_ratio": hcconfig.COST_CQA_MAX_RATIO,
@@ -334,6 +341,8 @@ def analyze_p7(work, out, qs):
             cites = r.get("citations") or {"docs": [], "chunks": []}
             first_hits |= set(cites["docs"]) | {d for d in (r.get("chunk_docs") or {}).values() if d}
     common_checks(c, work, "p7", L, ok_rows, first_hits)
+    a1 = {}
+    a1_same_corpus(a1, work, "p7", first_hits)
     every_run_answered(c, L, {a: [(q, rep) for q in doc_q for rep in range(hcconfig.P7_REPS)] for a in T_ARMS["p7"]})
     one_release(c, L)
     complete = all(nruns[a].get(q) == hcconfig.P7_REPS for a in T_ARMS["p7"] for q in doc_q) and not res["problems"]
@@ -352,11 +361,75 @@ def analyze_p7(work, out, qs):
         x = paired(f1[a], f1[b], doc_q, 0.0)
         x["comparison"] = "%s - %s, cited-document F1 (secondary, reported)" % (a, b)
         res["secondary"][a + " vs " + b] = x
+    res["amendment_1"] = amended(res, "p7", a1)
     kt, kf = S["kb-today"]["usd_per_run"], S["kb-first"]["usd_per_run"]
     if kt and kf is not None:
         res["cost_check"] = {"kb_first": kf, "kb_today": kt, "max_ratio": hcconfig.COST_P7_MAX_RATIO,
                              "holds": kf <= hcconfig.COST_P7_MAX_RATIO * kt}
     return res
+
+
+# --- Amendment 1 (post hoc, owner ruling 2026-11-28): exploratory, never the headline ------
+# Two registered checks could not fail for the reason they guard. Check 7 scored the reader's
+# ANSWER: line against short gold spans, but the bundle's kb/read writes a sentence there, so
+# its direct F1 sits far below any condensed F1 whatever the condenser does. Check 1's hit test
+# failed on two documents that were in the tenant at the corpus snapshot and were left out by
+# the filter (the ontology, one untyped memory document): a wrong citation, not a corpus change.
+# The registered verdict stays the result; these replace those two checks for a labelled
+# exploratory reading only. Each replacement is shown to fail on a corrupted input in the tests.
+
+def _empty_answer(s):
+    return common.normalize(s or "") in ("", "not found", "no answer")
+
+
+def condense_extractive(condensed, direct):
+    """The condensed answer is drawn from the reader's own ANSWER: line (every word of it occurs
+    there), or it is empty (NO ANSWER / NOT FOUND) exactly when that line is."""
+    if _empty_answer(condensed) or _empty_answer(direct):
+        return _empty_answer(condensed) and _empty_answer(direct)
+    return set(common.normalize(condensed).split()) <= set(common.normalize(direct).split())
+
+
+def a1_condense_extractive(c, oracle_rows, condensed):
+    """A1 check 7: the share of the oracle's scored rows whose condense is extractive is at least
+    1 - CONDENSE_MAX_DIFF (the registered 0.03 bound, read as a share)."""
+    got = [condense_extractive(x["condensed"], x.get("direct"))
+           for x in (condensed.get((q, 0, r["attempt"])) for q, r in oracle_rows.items()) if x]
+    if not got:
+        put(c, 7, "condense_faithful", "not-run")
+        return
+    share, need = round(sum(got) / len(got), 4), round(1 - hcconfig.CONDENSE_MAX_DIFF, 4)
+    put(c, 7, "condense_faithful", "pass" if share >= need else "fail", extractive_share=share, min_share=need,
+        rows=len(got), not_extractive=len(got) - sum(got))
+
+
+def a1_same_corpus(c, work, set_name, hit_docs):
+    """A1 check 1: a cited document fails the set only when it was not in the tenant at the corpus
+    snapshot (neither kept nor dropped by the filter), i.e. the corpus changed under the runs.
+    Citations of snapshot documents the filter left out are reported, not failed."""
+    cj = jload(os.path.join(work, set_name, "corpus.json"))
+    if not cj:
+        put(c, 1, "same_corpus", "not-run")
+        return
+    snap = set(cj["corpus"]) | set(cj.get("dropped") or {})
+    hits = set(hit_docs)
+    new = sorted(hits - snap)
+    put(c, 1, "same_corpus", "fail" if new else "pass", not_in_snapshot=new[:20],
+        cited_left_out={d: cj["dropped"][d] for d in sorted(hits & set(cj.get("dropped") or {}))})
+
+
+def amended(res, set_name, a1_checks):
+    """The registered tests re-labelled with the A1 checks in place of the registered ones."""
+    checks = dict(res["checks"], **a1_checks)
+    out = {"checks": a1_checks, "tests": {}}
+    not_run = [n for n, x in checks.items() if x["status"] == "not-run"]
+    for t, x in res["tests"].items():
+        if "diff" not in x:
+            out["tests"][t] = dict(x)
+            continue
+        voided = [n for n, k in checks.items() if k["status"] == "fail" and t in VOIDS[set_name].get(n, ())]
+        out["tests"][t] = dict(x, verdict=verdict(x, voided, not_run))
+    return out
 
 
 def gate(cqa, p7):
@@ -396,6 +469,18 @@ def markdown(s):
         for n, c in x["checks"].items():
             rest = {k: v for k, v in c.items() if k != "status"}
             L.append("- check %s: **%s** %s" % (n, c["status"], json.dumps(rest, default=list) if rest else ""))
+    if "gate_amendment_1" in s:
+        g = s["gate_amendment_1"]
+        L += ["", "## Amendment 1 (post hoc, exploratory; not the registered result)", "",
+              "**Gate under Amendment 1:** %s" % ("P2 would open" if g["P2_opens"] else "closed")]
+        L += ["- %s" % r for r in g["reasons"]]
+        for set_name in ("cqa", "p7"):
+            a1 = s[set_name]["amendment_1"]
+            for n, c in a1["checks"].items():
+                rest = {k: v for k, v in c.items() if k != "status"}
+                L.append("- %s A1 check %s: **%s** %s" % (set_name, n, c["status"], json.dumps(rest, default=list)))
+            for t, r in a1["tests"].items():
+                L.append("- %s **%s** under A1: %s" % (set_name, t, r.get("verdict")))
     return "\n".join(L) + "\n"
 
 
@@ -410,6 +495,8 @@ def main():
     p7 = hcarms.load_set("p7", work).qs
     s = {"cqa": analyze_cqa(work, a.out, cqa_data, test), "p7": analyze_p7(work, a.out, p7)}
     s["gate"] = gate(s["cqa"], s["p7"])
+    s["gate_amendment_1"] = gate(dict(s["cqa"], tests=s["cqa"]["amendment_1"]["tests"]),
+                                 dict(s["p7"], tests=s["p7"]["amendment_1"]["tests"]))
     common.jdump(s, os.path.join(a.out, "summary.json"), indent=2, default=list)
     md = markdown(s)
     with open(os.path.join(a.out, "summary.md"), "w", encoding="utf-8") as f:
