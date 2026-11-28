@@ -144,6 +144,23 @@ func (s *Server) handleExposureTicket(w http.ResponseWriter, r *http.Request) {
 // other, the request's own credential as the document feed does. Either
 // way the route must still admit it.
 func (s *Server) reauthenticateExposureSocket(r *http.Request) (auth.Principal, error) {
+	// A frame's socket (RFC HI §1) re-resolves the credential its
+	// capability names, past the request cache: the recheck is the cache's
+	// own bound for a long-lived socket.
+	if frameCap, id, framed := exposureFrameOf(r); framed {
+		c, reason := s.verifiedExposureFrame(frameCap, id)
+		if reason != "" {
+			return auth.Principal{}, errFeedCredentialRevoked
+		}
+		if hard := exposureFrameHardEnd(c, s.exposeMaxLease(), time.Now()); !time.Now().Before(hard) {
+			return auth.Principal{}, errFeedCredentialRevoked
+		}
+		p, reason := s.exposureFrameHolder(r, c)
+		if reason != "" {
+			return auth.Principal{}, errFeedCredentialRevoked
+		}
+		return s.readmit(r, p)
+	}
 	t, id, ok := exposureTicketOf(r)
 	if !ok || r.Header.Get("Authorization") != "" {
 		return s.reauthenticateFeed(r)
@@ -163,6 +180,25 @@ func (s *Server) reauthenticateExposureSocket(r *http.Request) (auth.Principal, 
 // valid: for a ticket's socket, the end of the token the ticket names; for
 // any other, the request's credential's (credentialExpiry).
 func (s *Server) exposureSocketExpiry(r *http.Request) time.Time {
+	// A frame's socket ends at its capability's hard end, or its token's
+	// if that is sooner.
+	if frameCap, id, framed := exposureFrameOf(r); framed {
+		c, reason := s.verifiedExposureFrame(frameCap, id)
+		if reason != "" {
+			return time.Now()
+		}
+		end := exposureFrameHardEnd(c, s.exposeMaxLease(), time.Now())
+		if end.IsZero() {
+			return time.Now()
+		}
+		if c.Kind == ticketKindToken && s.store != nil {
+			if row, err := s.store.OperatorTokenDefGet(r.Context(), c.Ref); err == nil &&
+				!(row.ExpiresAt.IsZero() && row.RetiredAt.IsZero()) && row.ValidUntil().Before(end) {
+				end = row.ValidUntil()
+			}
+		}
+		return end
+	}
 	t, id, ok := exposureTicketOf(r)
 	if !ok || r.Header.Get("Authorization") != "" {
 		return s.credentialExpiry(r)

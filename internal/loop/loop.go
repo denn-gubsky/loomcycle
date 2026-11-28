@@ -190,6 +190,14 @@ type RunOptions struct {
 	// 0 waits forever. A review hold has its own deadline (ReviewTTL) and
 	// ignores this one.
 	IdleTimeout time.Duration
+	// IdleExtend, when non-nil, is asked when a park's IdleTimeout deadline
+	// passes, and only then (never on a timer): a time after now extends the
+	// wait to it, where it is asked again; the zero time, or one not after
+	// now, lets the run end. RFC HI D4: a leased workspace page keeps its
+	// parked run. The run's own idle window restarts only on the operator's
+	// next message, as without it. Called on the run's goroutine; it must
+	// bound its own blocking.
+	IdleExtend func(ctx context.Context) time.Time
 	// idledOut is set by the park that IdleTimeout ended, and read when the
 	// run names its stop reason. Both on the run's goroutine.
 	idledOut bool
@@ -1362,8 +1370,9 @@ func parkForInput(ctx context.Context, opts *RunOptions, deadline time.Time, pp 
 	t := time.NewTicker(parkHeartbeatInterval)
 	defer t.Stop()
 	var idle <-chan time.Time
+	var timer *time.Timer
 	if !deadline.IsZero() {
-		timer := time.NewTimer(time.Until(deadline))
+		timer = time.NewTimer(time.Until(deadline))
 		defer timer.Stop()
 		idle = timer.C
 	}
@@ -1384,6 +1393,10 @@ func parkForInput(ctx context.Context, opts *RunOptions, deadline time.Time, pp 
 		case <-pp.lifted():
 			pp.onLifted()
 			if idleWhilePaused {
+				if extendIdle(ctx, opts, timer) {
+					idleWhilePaused = false
+					continue
+				}
 				return endIdlePark(opts)
 			}
 		case <-idle:
@@ -1391,11 +1404,29 @@ func parkForInput(ctx context.Context, opts *RunOptions, deadline time.Time, pp 
 				idleWhilePaused = true
 				continue
 			}
+			if extendIdle(ctx, opts, timer) {
+				continue
+			}
 			return endIdlePark(opts)
 		case <-ctx.Done():
 			return steer.Message{}, parkGone
 		}
 	}
+}
+
+// extendIdle asks RunOptions.IdleExtend, at a passed idle deadline, whether
+// the wait goes on; when it does, timer (fired, so drained) is set to the
+// new end and true is returned.
+func extendIdle(ctx context.Context, opts *RunOptions, timer *time.Timer) bool {
+	if opts.IdleExtend == nil || timer == nil {
+		return false
+	}
+	until := time.Until(opts.IdleExtend(ctx))
+	if until <= 0 {
+		return false
+	}
+	timer.Reset(until)
+	return true
 }
 
 // endIdlePark ends a park whose idle deadline passed, unless a message raced

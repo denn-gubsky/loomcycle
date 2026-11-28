@@ -194,6 +194,12 @@ type WorkspaceExposeConfig struct {
 	// (`expose {idle_timeout_s}`, RFC HI §3). It defaults to IdleTimeoutS,
 	// so an agent can ask for more only once the operator raises it.
 	MaxIdleTimeoutS int `yaml:"max_idle_timeout_s,omitempty"`
+	// MaxLeaseS bounds one lease a client takes on a page (RFC HI §2): while
+	// it is live the page does not close idle and its parked run does not
+	// end. A pointer, as retry_attempts and keep_last_n are, so the unset
+	// key (nil, the default 28800) differs from an explicit 0, which turns
+	// leases off. Read it through MaxLeaseSeconds.
+	MaxLeaseS *int `yaml:"max_lease_s,omitempty"`
 	// RequestsPerSecond and BytesPerSecond bound one workspace's exposures:
 	// requests started, and response bytes sent.
 	RequestsPerSecond int   `yaml:"requests_per_second,omitempty"`
@@ -215,6 +221,8 @@ const (
 	DefaultWorkspaceExposeBytesPerS       = 8 << 20
 	DefaultWorkspaceExposeMessageBytes    = 16 << 20
 	DefaultWorkspaceExposeSocketLifetimeS = 14400
+	DefaultWorkspaceExposeMaxLeaseS       = 28800
+	maxWorkspaceExposeMaxLeaseS           = 86400
 	maxWorkspaceExposeMessageBytes        = 64 << 20
 	maxWorkspaceExposeSocketLifetimeS     = 86400
 	maxWorkspaceExposePerWorkspace        = 16
@@ -390,6 +398,10 @@ func (w WorkspaceConfig) Resolved() WorkspaceConfig {
 	}
 	if w.Expose.MaxIdleTimeoutS == 0 {
 		w.Expose.MaxIdleTimeoutS = w.Expose.IdleTimeoutS
+	}
+	if w.Expose.MaxLeaseS == nil {
+		v := DefaultWorkspaceExposeMaxLeaseS
+		w.Expose.MaxLeaseS = &v
 	}
 	if w.Expose.RequestsPerSecond == 0 {
 		w.Expose.RequestsPerSecond = DefaultWorkspaceExposeRequestsPerS
@@ -777,5 +789,18 @@ func validateWorkspaceExpose(e WorkspaceExposeConfig) error {
 	if e.MaxIdleTimeoutS != 0 && e.MaxIdleTimeoutS < idle {
 		return fmt.Errorf("workspace.expose.max_idle_timeout_s: %d is below idle_timeout_s (%d)", e.MaxIdleTimeoutS, idle)
 	}
+	// 0 is a value here (leases off), so the range starts at 0.
+	if e.MaxLeaseS != nil && (*e.MaxLeaseS < 0 || *e.MaxLeaseS > maxWorkspaceExposeMaxLeaseS) {
+		return fmt.Errorf("workspace.expose.max_lease_s: %d is out of range (0 to %d; 0 turns leases off)", *e.MaxLeaseS, maxWorkspaceExposeMaxLeaseS)
+	}
 	return nil
+}
+
+// MaxLeaseSeconds is workspace.expose.max_lease_s: the default when unset,
+// and 0 when the operator turned leases off.
+func (e WorkspaceExposeConfig) MaxLeaseSeconds() int {
+	if e.MaxLeaseS == nil {
+		return DefaultWorkspaceExposeMaxLeaseS
+	}
+	return *e.MaxLeaseS
 }

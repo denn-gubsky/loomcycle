@@ -536,6 +536,9 @@ type Server struct {
 	// exposures serves /v1/workspaces/exposures/… (RFC GW §5.3); nil while
 	// workspace.mode is off, and the route then answers 404.
 	exposures *exposureHandler
+	// frameCreds keeps a page frame capability's resolved credential for
+	// at most 30 s (RFC HI §1).
+	frameCreds exposureFrameCache
 
 	// metricsSampler is the v0.8.x process-resource sampler.
 	// Nil = the /v1/_metrics/* endpoints return 503. Set via
@@ -1271,6 +1274,18 @@ func (s *Server) SetWorkspaceExposures(x workspaceExposures, c config.WorkspaceE
 	// A page's socket re-checks its credential as the document feed does.
 	s.exposures.reauth = s.reauthenticateExposureSocket
 	s.exposures.expiry = s.exposureSocketExpiry
+	// A frame's capability (RFC HI §1): the route checks its life.
+	s.exposures.frame = s.exposureFrameAdmission
+}
+
+// exposureFrameAdmission verifies a frame request's capability for the
+// route's check of its life against the page's lease.
+func (s *Server) exposureFrameAdmission(frameCap, id string) (frameAdmission, bool) {
+	c, reason := s.verifiedExposureFrame(frameCap, id)
+	if reason != "" {
+		return frameAdmission{}, false
+	}
+	return frameAdmission{claims: c, maxLease: s.exposeMaxLease}, true
 }
 
 // handleWorkspaceExposure serves the route, or 404 with no bookkeeping.
@@ -3622,7 +3637,9 @@ func (s *Server) tenantTelemetryRoutes(mux *http.ServeMux) *http.ServeMux {
 // decides who). Here, beside routes, so the route censuses that read this
 // file see it.
 func (s *Server) exposureRoutes(mux *http.ServeMux) *http.ServeMux {
-	mux.Handle("/v1/workspaces/exposures/{id}/{path...}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleWorkspaceExposure))))
+	// The page's headers go on before the middleware, so its refusals carry
+	// them too (RFC HI §1: no referrer on every answer of the route).
+	mux.Handle("/v1/workspaces/exposures/{id}/{path...}", recoveryMiddleware(exposureHeadersFirst(s.authMiddleware(http.HandlerFunc(s.handleWorkspaceExposure)))))
 	// A one-time ticket for a page's socket, for a browser in strict sign-in
 	// mode (P9 plan D-P9-42 as ruled 2026-11-25). Gated as the page is.
 	mux.Handle("POST /v1/workspaces/exposure-tickets/{id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleExposureTicket))))
@@ -3630,6 +3647,13 @@ func (s *Server) exposureRoutes(mux *http.ServeMux) *http.ServeMux {
 	// no slash after it: the page itself is always under {id}/.
 	mux.Handle("GET /v1/workspaces/exposures/{id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleExposureState))))
 	mux.Handle("GET /v1/workspaces/exposures", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleExposureList))))
+	// A client's lease on a page (RFC HI §2). Beside the ticket, not under
+	// exposures/{id}/: there it would shadow the page's own /lease path.
+	mux.Handle("POST /v1/workspaces/exposure-leases/{id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleExposureLease))))
+	mux.Handle("DELETE /v1/workspaces/exposure-leases/{id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleExposureLeaseRelease))))
+	// A page's frame capability (RFC HI §1). Beside the ticket, not under
+	// exposures/{id}/, for the reason the lease is.
+	mux.Handle("POST /v1/workspaces/exposure-frames/{id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleExposureFrame))))
 	return mux
 }
 
@@ -4414,7 +4438,8 @@ func recoveryMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if rec := recover(); rec != nil {
-				slog.Error("panic recovered in HTTP handler", "method", r.Method, "path", r.URL.Path, "panic", rec)
+				// A frame capability in the path is never logged (RFC HI §1).
+				slog.Error("panic recovered in HTTP handler", "method", r.Method, "path", redactExposureFrame(r.URL.Path), "panic", rec)
 				// Best-effort 500. If headers are already sent (SSE has
 				// started writing) the WriteHeader call is a no-op and the
 				// client sees the connection close, which is the cleanest
@@ -4600,8 +4625,8 @@ func (s *Server) handleSystemChannelPublish(w http.ResponseWriter, r *http.Reque
 		writeJSONError(w, http.StatusBadRequest, "invalid_payload", "payload is not valid JSON")
 		return
 	}
-	if cap := builtin.ChannelMaxValueBytes; len(body.Payload) > cap {
-		writeJSONError(w, http.StatusRequestEntityTooLarge, "payload_too_large", fmt.Sprintf("payload (%d bytes) exceeds max %d", len(body.Payload), cap))
+	if frameCap := builtin.ChannelMaxValueBytes; len(body.Payload) > frameCap {
+		writeJSONError(w, http.StatusRequestEntityTooLarge, "payload_too_large", fmt.Sprintf("payload (%d bytes) exceeds max %d", len(body.Payload), frameCap))
 		return
 	}
 

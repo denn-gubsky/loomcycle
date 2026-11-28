@@ -419,6 +419,15 @@ func (s *Server) AuthConfiguredErr(ctx context.Context) (bool, error) {
 func (s *Server) authenticateRequest(r *http.Request) (auth.Principal, *uiAuth, bool) {
 	strict := s.cfg().ResolvedAuth.Strict()
 	ctx := r.Context()
+	// RFC HI §1: on the exposure route's frame path the capability in the
+	// path is the one credential, in every mode. Nothing else is read there
+	// (a cookie a browser sends with the frame's requests is ignored, a
+	// header or subprotocol beside it is refused), and no other path is
+	// ever read for one.
+	if frameCap, id, framed := exposureFrameOf(r); framed {
+		p, ok := s.redeemExposureFrame(r, frameCap, id)
+		return p, nil, ok
+	}
 	// RFC GJ: a one-time ticket on the client-tools upgrade, in every mode.
 	// After an Authorization header (a client that can send one does not
 	// need a ticket, and the ticket is then left unspent), before the
@@ -467,6 +476,9 @@ func (s *Server) authenticateRequest(r *http.Request) (auth.Principal, *uiAuth, 
 // authenticateRequest would try, valid or not.
 func (s *Server) credentialPresented(r *http.Request) bool {
 	strict := s.cfg().ResolvedAuth.Strict()
+	if _, _, framed := exposureFrameOf(r); framed {
+		return true
+	}
 	if _, ok := extractBearer(r, strict); ok || r.Header.Get("Authorization") != "" {
 		return true
 	}

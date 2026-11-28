@@ -28,6 +28,10 @@ type ExposeLimits struct {
 	// (RFC HI §3); zero is IdleTimeout, so an agent can ask for no more
 	// than the operator's own.
 	MaxIdleTimeout time.Duration
+	// MaxLease bounds one lease a client takes on a page (RFC HI §2,
+	// workspace.expose.max_lease_s, resolved by the config). Unlike the
+	// bounds above, zero is not a default: it turns leases off.
+	MaxLease time.Duration
 }
 
 // The bounds of an exposure's own fields.
@@ -187,6 +191,21 @@ func (m *Manager) Exposures(ctx context.Context, o Owner, name string) ([]store.
 // content shown to one user. A store fault is returned as it is (the route
 // fails closed on it).
 func (m *Manager) OpenExposure(ctx context.Context, tenantID, userID, id string) (store.WorkspaceExposure, store.WorkspaceRow, error) {
+	e, r, err := m.liveExposure(ctx, tenantID, userID, id)
+	if err != nil {
+		return store.WorkspaceExposure{}, store.WorkspaceRow{}, err
+	}
+	if now := m.now().UTC(); now.Sub(e.LastUsedAt) > exposureTouchEvery {
+		if err := m.store.WorkspaceExposureTouch(ctx, tenantID, id, now); err != nil {
+			m.log.Warn("cannot record an exposure's use", "exposure_id", id, "err", err)
+		}
+	}
+	return e, r, nil
+}
+
+// liveExposure is OpenExposure's decision without the use: the page as the
+// route would serve it, closing it idle when past its deadline.
+func (m *Manager) liveExposure(ctx context.Context, tenantID, userID, id string) (store.WorkspaceExposure, store.WorkspaceRow, error) {
 	none := func() (store.WorkspaceExposure, store.WorkspaceRow, error) {
 		return store.WorkspaceExposure{}, store.WorkspaceRow{}, ErrExposureNotFound
 	}
@@ -225,11 +244,6 @@ func (m *Manager) OpenExposure(ctx context.Context, tenantID, userID, id string)
 			m.tellClosed(ctx, r, e, SurfaceIdle)
 		}
 		return none()
-	}
-	if now.Sub(e.LastUsedAt) > exposureTouchEvery {
-		if err := m.store.WorkspaceExposureTouch(ctx, tenantID, id, now); err != nil {
-			m.log.Warn("cannot record an exposure's use", "exposure_id", id, "err", err)
-		}
 	}
 	return e, r, nil
 }

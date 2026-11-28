@@ -89,6 +89,14 @@ type ticketClaims struct {
 	// Authority is a digest of the minting credential's scopes, restrictions
 	// and authority mode; the handshake's principal must match it.
 	Authority string `json:"a"`
+	// Iat is a page frame capability's mint time, Unix milliseconds (RFC
+	// HI §1, lxf1 only): its own life of ten minutes counts from it.
+	Iat int64 `json:"iat,omitempty"`
+	// Who binds a frame capability to the minting principal's tenant,
+	// subject and app by a peppered digest keyed by the jti (lxf1 only).
+	// A capability sits in an address, so it names none of them in clear:
+	// Tenant, Subject and Client are empty on it.
+	Who string `json:"w,omitempty"`
 }
 
 // errTicketUnavailable: this server cannot mint tickets (no secret key).

@@ -590,4 +590,11 @@ var httpRoutes = []Route{
 	// page; the handler answers the page's own user alone.
 	row("GET /v1/workspaces/exposures/{id}", ScopeRunsRead, false, q("read", "run", "*")),
 	row("GET /v1/workspaces/exposures", ScopeRunsRead, false, q("read", "run", "*")),
+	// A client's lease on a page (RFC HI §2): gated as the page and its
+	// ticket; the handler admits the page's own user alone, by header.
+	row("POST /v1/workspaces/exposure-leases/{id}", ScopeRunsRead, false, q("read", "run", "*")),
+	row("DELETE /v1/workspaces/exposure-leases/{id}", ScopeRunsRead, false, q("read", "run", "*")),
+	// A page's frame capability (RFC HI §1): gated as the page and its
+	// ticket; the handler admits the page's own user alone, by header.
+	row("POST /v1/workspaces/exposure-frames/{id}", ScopeRunsRead, false, q("read", "run", "*")),
 }

@@ -112,9 +112,11 @@ func applicationProtocols(r *http.Request) []string {
 //     holds both ways; a socket quiet for SocketIdle, or open for
 //     SocketLifetime, is closed; and every socketRecheck the exposure is
 //     asked again, so unexpose, a release and the operator's switch close
-//     an open socket too.
+//     an open socket too. A frame's socket (frame set) closes as well once
+//     its capability's life ends (RFC HI D2): past its own ten minutes,
+//     when the page's lease does.
 func (h *exposureHandler) serveSocket(w http.ResponseWriter, r *http.Request, e store.WorkspaceExposure, row store.WorkspaceRow,
-	tenantID, userID, rest string) {
+	tenantID, userID, rest string, frame *frameAdmission) {
 	lim := h.socketLimits()
 	if h.reauth == nil || h.expiry == nil {
 		// A socket that could not re-check its credential is not opened.
@@ -258,10 +260,15 @@ func (h *exposureHandler) serveSocket(w http.ResponseWriter, r *http.Request, e 
 				closeBoth(client, app, websocket.StatusPolicyViolation, "the credential no longer holds")
 				return
 			}
-			if _, _, err := h.x.OpenExposure(ctx, tenantID, userID, e.ID); err != nil {
+			cur, _, err := h.x.OpenExposure(ctx, tenantID, userID, e.ID)
+			if err != nil {
 				// Closed (unexposed, released, the switch off), or no longer
 				// readable: either way the socket ends, closed.
 				closeBoth(client, app, websocket.StatusPolicyViolation, "the page was closed")
+				return
+			}
+			if frame != nil && !frame.validFor(cur, time.Now()) {
+				closeBoth(client, app, websocket.StatusPolicyViolation, "the page's frame expired")
 				return
 			}
 		case <-ctx.Done():

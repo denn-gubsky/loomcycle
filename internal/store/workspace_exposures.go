@@ -82,6 +82,15 @@ type WorkspaceExposureStore interface {
 	// for reason, and reports whether it was live. A closed row is never
 	// reopened.
 	WorkspaceExposureClose(ctx context.Context, tenantID, id, reason string, at time.Time) (bool, error)
+	// WorkspaceExposureExtendLease sets the live exposure's lease to end at
+	// until, unless it already ends later: the lease is the latest expiry
+	// any client asked for (RFC HI §2), so two clients renewing need no
+	// coordination. It returns the lease's end; *ErrNotFound when the
+	// tenant has no live exposure of this id.
+	WorkspaceExposureExtendLease(ctx context.Context, tenantID, id string, until time.Time) (time.Time, error)
+	// WorkspaceExposureClearLease ends the live exposure's lease, every
+	// client's, and reports whether there was a live row.
+	WorkspaceExposureClearLease(ctx context.Context, tenantID, id string) (bool, error)
 	// WorkspaceExposureTouch sets the live exposure's last_used_at to at.
 	WorkspaceExposureTouch(ctx context.Context, tenantID, id string, at time.Time) error
 	// WorkspaceExposureListIdle returns every tenant's live exposures last

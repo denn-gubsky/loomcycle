@@ -44,6 +44,7 @@ DELETE /v1/runs/x	runs:create	true	run agent:*
 DELETE /v1/runs/x/tree	runs:delete	false	delete run:*
 DELETE /v1/sessions/tree	runs:delete	false	delete run:*
 DELETE /v1/sessions/x	runs:delete	false	delete run:*
+DELETE /v1/workspaces/exposure-leases/x	runs:read	false	read run:*
 DELETE /v1/workspaces/exposures/x	runs:read	false	read run:*
 DELETE /v1/workspaces/exposures/x/x	runs:read	false	read run:*
 DELETE /v1/workspaces/exposures/x/x/x	runs:read	false	read run:*
@@ -625,6 +626,8 @@ POST /v1/sessions/x/replay	runs:create	true	run agent:*
 POST /v1/users/x/channels/x/ack	channel:publish	false	ack channel:x
 POST /v1/users/x/channels/x/publish	channel:publish	false	publish channel:x
 POST /v1/users/x/channels/x/subscribe	channel:publish	false	subscribe channel:x
+POST /v1/workspaces/exposure-frames/x	runs:read	false	read run:*
+POST /v1/workspaces/exposure-leases/x	runs:read	false	read run:*
 POST /v1/workspaces/exposure-tickets/x	runs:read	false	read run:*
 POST /v1/workspaces/exposures/x	runs:read	false	read run:*
 POST /v1/workspaces/exposures/x/x	runs:read	false	read run:*
