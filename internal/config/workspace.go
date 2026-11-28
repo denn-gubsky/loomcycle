@@ -190,6 +190,10 @@ type WorkspaceExposeConfig struct {
 	MaxConnections int `yaml:"max_connections,omitempty"`
 	// IdleTimeoutS closes an exposure no request used for this long.
 	IdleTimeoutS int `yaml:"idle_timeout_s,omitempty"`
+	// MaxIdleTimeoutS bounds the idle timeout an agent may ask for one page
+	// (`expose {idle_timeout_s}`, RFC HI §3). It defaults to IdleTimeoutS,
+	// so an agent can ask for more only once the operator raises it.
+	MaxIdleTimeoutS int `yaml:"max_idle_timeout_s,omitempty"`
 	// RequestsPerSecond and BytesPerSecond bound one workspace's exposures:
 	// requests started, and response bytes sent.
 	RequestsPerSecond int   `yaml:"requests_per_second,omitempty"`
@@ -383,6 +387,9 @@ func (w WorkspaceConfig) Resolved() WorkspaceConfig {
 	}
 	if w.Expose.IdleTimeoutS == 0 {
 		w.Expose.IdleTimeoutS = DefaultWorkspaceExposeIdleTimeoutS
+	}
+	if w.Expose.MaxIdleTimeoutS == 0 {
+		w.Expose.MaxIdleTimeoutS = w.Expose.IdleTimeoutS
 	}
 	if w.Expose.RequestsPerSecond == 0 {
 		w.Expose.RequestsPerSecond = DefaultWorkspaceExposeRequestsPerS
@@ -751,6 +758,7 @@ func validateWorkspaceExpose(e WorkspaceExposeConfig) error {
 		{"max_per_workspace", int64(e.MaxPerWorkspace), maxWorkspaceExposePerWorkspace},
 		{"max_connections", int64(e.MaxConnections), maxWorkspaceExposeConnections},
 		{"idle_timeout_s", int64(e.IdleTimeoutS), maxWorkspaceExposeIdleTimeoutS},
+		{"max_idle_timeout_s", int64(e.MaxIdleTimeoutS), maxWorkspaceExposeIdleTimeoutS},
 		{"requests_per_second", int64(e.RequestsPerSecond), maxWorkspaceExposeRequestsPerS},
 		{"bytes_per_second", e.BytesPerSecond, maxWorkspaceExposeBytesPerS},
 		{"max_message_bytes", e.MaxMessageBytes, maxWorkspaceExposeMessageBytes},
@@ -759,6 +767,15 @@ func validateWorkspaceExpose(e WorkspaceExposeConfig) error {
 		if b.v < 0 || b.v > b.max {
 			return fmt.Errorf("workspace.expose.%s: %d is out of range (1 to %d)", b.name, b.v, b.max)
 		}
+	}
+	// An agent's page timeout is bounded by the operator's own at least: a
+	// ceiling below the default would refuse a page the default allows.
+	idle := e.IdleTimeoutS
+	if idle == 0 {
+		idle = DefaultWorkspaceExposeIdleTimeoutS
+	}
+	if e.MaxIdleTimeoutS != 0 && e.MaxIdleTimeoutS < idle {
+		return fmt.Errorf("workspace.expose.max_idle_timeout_s: %d is below idle_timeout_s (%d)", e.MaxIdleTimeoutS, idle)
 	}
 	return nil
 }

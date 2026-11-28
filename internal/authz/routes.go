@@ -586,4 +586,8 @@ var httpRoutes = []Route{
 	row("/v1/workspaces/exposures/{id}/{path...}", ScopeRunsRead, false, q("read", "run", "*")),
 	// Its socket's one-time ticket (D-P9-42 as ruled): gated as the page.
 	row("POST /v1/workspaces/exposure-tickets/{id}", ScopeRunsRead, false, q("read", "run", "*")),
+	// A page's state and the caller's live pages (RFC HI §4): gated as the
+	// page; the handler answers the page's own user alone.
+	row("GET /v1/workspaces/exposures/{id}", ScopeRunsRead, false, q("read", "run", "*")),
+	row("GET /v1/workspaces/exposures", ScopeRunsRead, false, q("read", "run", "*")),
 }

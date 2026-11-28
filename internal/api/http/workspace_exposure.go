@@ -25,6 +25,10 @@ import (
 type workspaceExposures interface {
 	OpenExposure(ctx context.Context, tenantID, userID, id string) (store.WorkspaceExposure, store.WorkspaceRow, error)
 	DialExposure(ctx context.Context, r store.WorkspaceRow, port int) (io.ReadWriteCloser, error)
+	// The page's state on request (RFC HI §4).
+	ExposureState(ctx context.Context, tenantID, userID, id string) (store.WorkspaceExposure, error)
+	UserExposures(ctx context.Context, tenantID, userID string) ([]store.WorkspaceExposure, error)
+	ExposureDeadline(e store.WorkspaceExposure) time.Time
 }
 
 // exposeRouteLimits are workspace.expose's per-workspace bounds the route

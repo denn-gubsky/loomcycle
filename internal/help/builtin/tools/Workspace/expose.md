@@ -17,6 +17,10 @@ itself.
 - `port` (required) — the port your server listens on.
 - `title` — the page's title, one line, up to 200 bytes.
 - `kind` — `page` (the default) or `panel`.
+- `idle_timeout_s` — close the page after this many seconds no one used it,
+  for a page your user keeps open (a dashboard, a form filled in over the
+  day). At least 60, at most the operator's `max_idle_timeout_s`; without
+  it, the operator's `idle_timeout_s`.
 
 ## Returns
 
@@ -44,8 +48,9 @@ relative (`data.json`, not `/data.json`) or start them with `base_path`.
 - Needs the `expose` grant and the operator's `workspace.expose`.
 - At most 2 ports of one workspace exposed at once (the operator's
   `max_per_workspace`).
-- A page no one opened for 15 minutes closes (`idle_timeout_s`); so does
-  every page of the workspace when it is released or your run ends.
+- A page no one opened for 15 minutes closes (the operator's
+  `idle_timeout_s`, or the page's own); so does every page of the
+  workspace when it is released or your run ends.
 
 ## Errors
 
@@ -53,6 +58,8 @@ relative (`data.json`, not `/data.json`) or start them with `base_path`.
 - `expose_off` — the operator has not turned pages on.
 - `exists` — the port is exposed already.
 - `limit` — the workspace exposes the most ports it may; `unexpose` one.
+- `invalid_argument` — among others, an `idle_timeout_s` outside the
+  operator's bound; the detail names the bound.
 
 ## Examples
 
