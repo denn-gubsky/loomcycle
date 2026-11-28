@@ -104,3 +104,13 @@ A workspace for a data script:
 ```json result
 {"name": "analysis", "state": "ready", "engine": "host"}
 ```
+
+A workspace that can build C++ (`toolchains` lists what is on offer):
+
+```json
+{"op": "open", "name": "build", "toolchains": ["cpp", "cmake"]}
+```
+
+```json result
+{"name": "build", "state": "ready", "engine": "container"}
+```

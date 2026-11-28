@@ -17,8 +17,9 @@ None.
 
 ## Returns
 
-`{toolchains: [{name, engines}], general}`, sorted by name. `general` is
-what an `open` naming no toolchain asks for. An empty list means no worker
+`{toolchains: [{name, engines}], general, required?}`, sorted by name.
+`general` is what an `open` naming no toolchain asks for; `required`, when
+your grant names toolchains, is what every open adds. An empty list means no worker
 serves you now.
 
 ## Examples
@@ -31,11 +32,8 @@ serves you now.
 {"toolchains": [{"name": "cmake", "engines": ["container"]}, {"name": "cpp", "engines": ["container"]}, {"name": "node", "engines": ["container", "host"]}, {"name": "python", "engines": ["container", "host"]}], "general": ["python", "node"]}
 ```
 
-Then a workspace that can build C++:
-
-```json
-{"op": "open", "name": "build", "toolchains": ["cpp", "cmake"]}
-```
+Then `open` with `"toolchains": ["cpp", "cmake"]` gets a workspace that can
+build C++ (see Workspace/open).
 
 ## Errors
 
