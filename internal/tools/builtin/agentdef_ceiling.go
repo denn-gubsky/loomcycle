@@ -530,7 +530,9 @@ func ceilWorkspace(ctx context.Context, def mergedDef, base *mergedDef, held str
 // unionWorkspace is the wider of two grants, for a ceiling: the operations,
 // open, share, templates and routes either holds, and the weaker engine requirement — of
 // the sides that grant anything, since a side granting nothing names no
-// requirement.
+// requirement. Toolchains are left out: they only narrow where a workspace
+// goes and isolate nothing (RFC HH §4), so ceilWorkspace does not hold them
+// and a spawned child is held to its parent's anyway (NarrowWorkspace).
 func unionWorkspace(a, b tools.WorkspacePolicyValue) tools.WorkspacePolicyValue {
 	switch {
 	case !a.Grants():

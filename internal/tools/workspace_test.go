@@ -34,6 +34,12 @@ func TestRunPolicy_WorkspaceNarrowsForAChild(t *testing.T) {
 		{"a sharing parent and child keep share", WorkspacePolicyValue{Read: true, Share: true}, WorkspacePolicyValue{Read: true, Write: true, Share: true}, WorkspacePolicyValue{Read: true, Share: true}},
 		{"a child cannot share past its parent", read, WorkspacePolicyValue{Read: true, Share: true}, read},
 		{"templates needs both sides", WorkspacePolicyValue{Read: true, Templates: true}, WorkspacePolicyValue{Read: true}, read},
+		// RFC HH §4, D6: the toolchains either requires, so the stricter
+		// wins; a side requiring none adds none.
+		{"toolchains are the union", WorkspacePolicyValue{Read: true, Toolchains: []string{"cpp", "cmake"}}, WorkspacePolicyValue{Read: true, Toolchains: []string{"go", "cpp"}},
+			WorkspacePolicyValue{Read: true, Toolchains: []string{"go", "cpp", "cmake"}}},
+		{"a parent's toolchains hold for a child requiring none", WorkspacePolicyValue{Read: true, Toolchains: []string{"cpp"}}, read, WorkspacePolicyValue{Read: true, Toolchains: []string{"cpp"}}},
+		{"a child's toolchains hold", read, WorkspacePolicyValue{Read: true, Toolchains: []string{"go"}}, WorkspacePolicyValue{Read: true, Toolchains: []string{"go"}}},
 		{"a child keeps templates when both hold it", WorkspacePolicyValue{Read: true, Templates: true}, WorkspacePolicyValue{Read: true, Templates: true}, WorkspacePolicyValue{Read: true, Templates: true}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -68,6 +74,9 @@ func TestWorkspaceFor_ReadsTheBlockAndGrantRoundTrips(t *testing.T) {
 		{"open with routes", &config.AgentWorkspace{Open: true, Egress: []string{"pypi", "npm"}},
 			WorkspacePolicyValue{Open: true, Egress: []string{"pypi", "npm"}}, []string{}},
 		{"egress alone", &config.AgentWorkspace{Egress: []string{"pypi"}}, WorkspacePolicyValue{}, []string{}},
+		// RFC HH §4: the toolchains every workspace it opens must have.
+		{"open with toolchains", &config.AgentWorkspace{Open: true, Toolchains: []string{"cpp", "cmake"}},
+			WorkspacePolicyValue{Open: true, Toolchains: []string{"cpp", "cmake"}}, []string{}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			got := WorkspaceFor(c.in)

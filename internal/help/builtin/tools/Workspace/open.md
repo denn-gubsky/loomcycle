@@ -18,6 +18,9 @@ workspace unchanged.
   e.g. `["go", "cpp", "cmake"]`. Not with `toolchain`. A toolchain only
   narrows where the workspace goes: a worker reports one only when its image
   has it, and a workspace's session cannot install a compiler.
+  Your grant's `workspace.toolchains` (Context op=self shows them) are added
+  to every open but a root's; with neither argument they replace the
+  general workspace's `python` and `node`.
 - `egress` — the routes the workspace may reach the network through, from
   those your grant names (Context op=self shows them). Omit for all of them;
   `[]` for none. A command reaches a route at `http://egress/<route>/…`;

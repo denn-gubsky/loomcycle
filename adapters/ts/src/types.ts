@@ -6982,6 +6982,10 @@ export interface AgentWorkspaceGrant {
   egress?: string[];
   /** The least isolating engine the agent accepts. Unset = any. */
   engine?: '' | 'host' | 'container';
+  /** Toolchains every workspace the agent opens must carry, added to what
+   *  it asks for, e.g. `["cpp", "cmake"]` (RFC HH). Unset = none. A
+   *  sub-agent is held to its own and its parent's. */
+  toolchains?: string[];
 }
 
 export interface AgentDefOverlay {

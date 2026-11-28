@@ -13,8 +13,8 @@ func TestParseAgent_WorkspaceReachesTheAgent(t *testing.T) {
 		want        *AgentWorkspace
 	}{
 		{"absent", "", nil},
-		{"full", "workspace:\n  ops: [read, exec]\n  open: true\n  share: true\n  connect: true\n  durable: true\n  templates: true\n  egress: [pypi, npm]\n  engine: host\n",
-			&AgentWorkspace{Ops: []string{"read", "exec"}, Open: true, Share: true, Connect: true, Durable: true, Templates: true, Egress: []string{"pypi", "npm"}, Engine: "host"}},
+		{"full", "workspace:\n  ops: [read, exec]\n  open: true\n  share: true\n  connect: true\n  durable: true\n  templates: true\n  egress: [pypi, npm]\n  engine: host\n  toolchains: [cpp, cmake]\n",
+			&AgentWorkspace{Ops: []string{"read", "exec"}, Open: true, Share: true, Connect: true, Durable: true, Templates: true, Egress: []string{"pypi", "npm"}, Engine: "host", Toolchains: []string{"cpp", "cmake"}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			a, err := parseAgent([]byte("---\nname: coder\ndescription: d\n" + tc.lines + "---\nbody\n"))
@@ -41,7 +41,7 @@ func TestParseAgent_WorkspaceRefusesAnUnknownKey(t *testing.T) {
 // in it hash identically on the yaml path and the overlay path.
 func TestSign_WorkspaceExcludedFromHash(t *testing.T) {
 	bare := FromYAMLAgent(&Agent{Name: "x", SystemPrompt: "p"})
-	with := FromYAMLAgent(&Agent{Name: "x", SystemPrompt: "p", Workspace: &AgentWorkspace{Ops: []string{"exec"}, Open: true}})
+	with := FromYAMLAgent(&Agent{Name: "x", SystemPrompt: "p", Workspace: &AgentWorkspace{Ops: []string{"exec"}, Open: true, Toolchains: []string{"cpp"}}})
 	if Sign(bare) != Sign(with) {
 		t.Error("workspace leaked into the yaml-path hash")
 	}
@@ -49,7 +49,7 @@ func TestSign_WorkspaceExcludedFromHash(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := FromOverlay([]byte(`{"system_prompt":"p","workspace":{"ops":["exec"],"open":true}}`))
+	b, err := FromOverlay([]byte(`{"system_prompt":"p","workspace":{"ops":["exec"],"open":true,"toolchains":["cpp"]}}`))
 	if err != nil {
 		t.Fatal(err)
 	}

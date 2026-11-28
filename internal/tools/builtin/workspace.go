@@ -710,10 +710,13 @@ func (w *Workspace) open(ctx context.Context, o lifecycle.Owner, pol tools.Works
 		if err != nil {
 			return templateError(err)
 		}
+		// The grant's toolchains are required on every open (RFC HH D6):
+		// added to the template's own for placement. t is this call's copy.
+		t.Toolchains = unionToolchains(t.Toolchains, pol.Toolchains)
 		req.Template = &t
 		return w.finishOpen(ctx, o, req)
 	}
-	tc, refusal, ok := openToolchains(in)
+	tc, refusal, ok := openToolchains(in, pol.Toolchains)
 	if !ok {
 		return refusal
 	}
@@ -725,11 +728,14 @@ func (w *Workspace) open(ctx context.Context, o lifecycle.Owner, pol tools.Works
 // open that names no toolchain is placed where both are.
 var generalToolchains = []string{"python", "node"}
 
-// openToolchains is what an open's worker must carry (RFC HH §3): toolchain,
-// or every name of toolchains (duplicates dropped), or, with neither, the
-// general workspace's. Any well-formed name is taken: it only narrows
-// placement, and an unknown one is refused no_worker naming it.
-func openToolchains(in workspaceInput) ([]string, tools.Result, bool) {
+// openToolchains is what an open's worker must carry (RFC HH §3, §4):
+// toolchain, or every name of toolchains (duplicates dropped), with the
+// grant's required ones added; or, with neither asked, the grant's alone
+// when it names any, else the general workspace's. A grant pinned to cpp and
+// cmake wants a C++ worker, not one that must also have node. Any
+// well-formed name is taken: it only narrows placement, and an unknown one
+// is refused no_worker naming it.
+func openToolchains(in workspaceInput, required []string) ([]string, tools.Result, bool) {
 	var asked []string
 	switch {
 	case in.Toolchain != "":
@@ -739,6 +745,8 @@ func openToolchains(in workspaceInput) ([]string, tools.Result, bool) {
 			return nil, workspaceRefusal("invalid_argument", "toolchains: name at least one, or leave it out for a general workspace"), false
 		}
 		asked = *in.Toolchains
+	case len(required) > 0:
+		return slices.Clone(required), tools.Result{}, true
 	default:
 		return slices.Clone(generalToolchains), tools.Result{}, true
 	}
@@ -751,10 +759,22 @@ func openToolchains(in workspaceInput) ([]string, tools.Result, bool) {
 			out = append(out, name)
 		}
 	}
+	out = unionToolchains(out, required)
 	if len(out) > workspace.MaxToolchains {
-		return nil, workspaceRefusal("invalid_argument", fmt.Sprintf("toolchains: at most %d", workspace.MaxToolchains)), false
+		return nil, workspaceRefusal("invalid_argument", fmt.Sprintf("toolchains: at most %d, your grant's required ones included", workspace.MaxToolchains)), false
 	}
 	return out, tools.Result{}, true
+}
+
+// unionToolchains is a then b's names a lacks, never aliasing either.
+func unionToolchains(a, b []string) []string {
+	out := slices.Clone(a)
+	for _, t := range b {
+		if !slices.Contains(out, t) {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // toolchains lists what a workspace the run opens may ask for (RFC HH §3):
@@ -772,7 +792,13 @@ func (w *Workspace) toolchains(o lifecycle.Owner, pol tools.WorkspacePolicyValue
 		out = append(out, map[string]any{"name": name, "engines": offer[name]})
 	}
 	n := len(out)
-	res := workspaceOK(map[string]any{"toolchains": out, "general": generalToolchains})
+	body := map[string]any{"toolchains": out, "general": generalToolchains}
+	if len(pol.Toolchains) > 0 {
+		// What every open adds (RFC HH §4), and so what an open naming
+		// none asks for.
+		body["required"], body["general"] = pol.Toolchains, pol.Toolchains
+	}
+	res := workspaceOK(body)
 	res.Count = &n
 	return res
 }

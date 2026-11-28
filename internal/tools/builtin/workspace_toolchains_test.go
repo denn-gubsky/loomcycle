@@ -2,6 +2,7 @@ package builtin
 
 import (
 	"encoding/json"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -110,5 +111,74 @@ func TestWorkspaceToolchains_ListsTheCallersOfferByGrant(t *testing.T) {
 	readOnly.Open = false
 	if c := refusalClass(f.call(t, f.runCtx(t, "alice", "", readOnly), `{"op":"toolchains"}`)); c != "not_granted" {
 		t.Errorf("without open: %q, want not_granted", c)
+	}
+}
+
+// RFC HH §4, D6: the grant's toolchains are required on every open, added
+// to what the agent asks for; with nothing asked, they replace the general
+// workspace's python and node. A root takes none: it is the user's folder.
+func TestWorkspaceOpen_GrantToolchainsAreRequiredOnEveryOpen(t *testing.T) {
+	f, dev := devFixture(t)
+	pinned := wsFull
+	pinned.Toolchains = []string{"cpp"}
+	ctx := f.runCtx(t, "alice", "", pinned)
+	// Asks for python, which both carry and w1 wins on a tie: the grant's
+	// cpp sends it to zdev.
+	f.mustOK(t, ctx, `{"op":"open","name":"py","toolchain":"python"}`)
+	if got := f.row(t, ctx, "py").WorkerID; got != dev {
+		t.Errorf("python under a cpp grant: on %s, want %s", got, dev)
+	}
+	// Asks for nothing: the grant's list replaces python+node, which zdev
+	// lacks (no node), so zdev is the only fit.
+	f.mustOK(t, ctx, `{"op":"open","name":"plain"}`)
+	if got := f.row(t, ctx, "plain").WorkerID; got != dev {
+		t.Errorf("no toolchain under a cpp grant: on %s, want %s", got, dev)
+	}
+	// Asks for node, which zdev lacks: no worker carries node and cpp.
+	res := f.call(t, ctx, `{"op":"open","name":"js","toolchain":"node"}`)
+	if refusalClass(res) != "no_worker" || !strings.Contains(res.Text, "node, cpp") {
+		t.Errorf("node under a cpp grant = %s, want no_worker naming node and cpp together", res.Text)
+	}
+	// The offer reports what the grant requires.
+	if res := f.mustOK(t, ctx, `{"op":"toolchains"}`); !strings.Contains(res.Text, `"required":["cpp"]`) {
+		t.Errorf("toolchains = %s, want the grant's required list", res.Text)
+	}
+}
+
+// A template names its own toolchains; the grant's are added to them for
+// placement, as on every open.
+func TestWorkspaceOpen_GrantToolchainsJoinATemplates(t *testing.T) {
+	f := newWSFixture(t, lifecycle.Limits{})
+	// Here zdev carries node too, so the template's own toolchains (its
+	// source's worker's, or what the source was opened with) fit it.
+	dev := f.h.AddWorkerWithToolchains("zdev", 10, []string{"python", "node", "go", "cpp"})
+	f.tool.Manager.SetTemplateDir(filepath.Join(t.TempDir(), "templates"))
+	ctx := withMemoryScopes(f.runCtx(t, "alice", "", tplGrant), "user")
+	f.mustOK(t, ctx, `{"op":"open","name":"src","toolchain":"python"}`)
+	if got := f.row(t, ctx, "src").WorkerID; got != f.h.WorkerID {
+		t.Fatalf("src on %s, want %s", got, f.h.WorkerID)
+	}
+	f.mustOK(t, ctx, `{"op":"write","name":"src","path":"a.txt","content":"x"}`)
+	var ck struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(f.mustOK(t, ctx, `{"op":"checkpoint","name":"src"}`).Text), &ck); err != nil {
+		t.Fatal(err)
+	}
+	f.mustOK(t, ctx, `{"op":"save_template","name":"src","checkpoint":"`+ck.ID+`","as":"base","scope":"user"}`)
+
+	// Load zdev past w1, so load alone would send the copy to w1.
+	f.mustOK(t, ctx, `{"op":"open","name":"c1","toolchain":"cpp"}`)
+	f.mustOK(t, ctx, `{"op":"open","name":"c2","toolchain":"cpp"}`)
+
+	pinned := tplGrant
+	pinned.Toolchains = []string{"cpp"}
+	pctx := withMemoryScopes(f.runCtx(t, "alice", "", pinned), "user")
+	f.mustOK(t, pctx, `{"op":"open","name":"copy","template":"base"}`)
+	if got := f.row(t, pctx, "copy").WorkerID; got != dev {
+		t.Errorf("a template under a cpp grant: on %s, want %s", got, dev)
+	}
+	if res := f.mustOK(t, pctx, `{"op":"read","name":"copy","path":"a.txt"}`); res.Text != "x" {
+		t.Errorf("the template's file = %q", res.Text)
 	}
 }

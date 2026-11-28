@@ -8579,7 +8579,7 @@ func workspaceFromDiscovered(w *agents.AgentWorkspace) *AgentWorkspace {
 		return nil
 	}
 	return &AgentWorkspace{Ops: append([]string(nil), w.Ops...), Open: w.Open, Share: w.Share, Expose: w.Expose, Connect: w.Connect, Durable: w.Durable, Templates: w.Templates,
-		Roots: w.Roots, Egress: append([]string(nil), w.Egress...), Engine: w.Engine}
+		Roots: w.Roots, Egress: append([]string(nil), w.Egress...), Engine: w.Engine, Toolchains: append([]string(nil), w.Toolchains...)}
 }
 
 // NetPolicy is the operator's private-address policy (netguard.Policy), the
