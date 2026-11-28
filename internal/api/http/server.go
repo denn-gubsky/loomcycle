@@ -3630,6 +3630,10 @@ func (s *Server) exposureRoutes(mux *http.ServeMux) *http.ServeMux {
 	// no slash after it: the page itself is always under {id}/.
 	mux.Handle("GET /v1/workspaces/exposures/{id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleExposureState))))
 	mux.Handle("GET /v1/workspaces/exposures", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleExposureList))))
+	// A client's lease on a page (RFC HI §2). Beside the ticket, not under
+	// exposures/{id}/: there it would shadow the page's own /lease path.
+	mux.Handle("POST /v1/workspaces/exposure-leases/{id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleExposureLease))))
+	mux.Handle("DELETE /v1/workspaces/exposure-leases/{id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleExposureLeaseRelease))))
 	return mux
 }
 

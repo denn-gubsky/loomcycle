@@ -571,6 +571,7 @@ func (a *runAdmission) buildOptions() {
 		OnSteer:             a.onSteer,
 		CloseSteerIfEmpty:   a.closeSteer,
 		IdleTimeout:         s.cfg().Env.InteractiveIdleTimeout, // top-level only: sub-agents start elsewhere, with their own lifecycle
+		IdleExtend:          s.idleExtendFor(a.runID),           // RFC HI D4: a leased page keeps the parked run
 		Effort:              a.effort,
 		MarkStalled:         s.markStalledFn(a.providerID, a.model),
 		ObserveCall:         s.callObserver(a.runID),

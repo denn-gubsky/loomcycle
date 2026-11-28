@@ -29,6 +29,12 @@ type workspaceExposures interface {
 	ExposureState(ctx context.Context, tenantID, userID, id string) (store.WorkspaceExposure, error)
 	UserExposures(ctx context.Context, tenantID, userID string) ([]store.WorkspaceExposure, error)
 	ExposureDeadline(e store.WorkspaceExposure) time.Time
+	// A client's lease on a page, and the parked run it keeps (RFC HI §2,
+	// D4).
+	LeaseExposure(ctx context.Context, tenantID, userID, id string, ttl time.Duration) (time.Time, error)
+	ReleaseExposureLease(ctx context.Context, tenantID, userID, id string) error
+	RunLeaseEnd(ctx context.Context, runID string) (time.Time, error)
+	ExposeMaxLease() time.Duration
 }
 
 // exposeRouteLimits are workspace.expose's per-workspace bounds the route
