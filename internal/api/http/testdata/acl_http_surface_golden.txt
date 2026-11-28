@@ -44,10 +44,12 @@ DELETE /v1/runs/x	runs:create	true	run agent:*
 DELETE /v1/runs/x/tree	runs:delete	false	delete run:*
 DELETE /v1/sessions/tree	runs:delete	false	delete run:*
 DELETE /v1/sessions/x	runs:delete	false	delete run:*
+DELETE /v1/workspaces/exposures/x	runs:read	false	read run:*
 DELETE /v1/workspaces/exposures/x/x	runs:read	false	read run:*
 DELETE /v1/workspaces/exposures/x/x/x	runs:read	false	read run:*
 DELETE /v1/workspaces/exposures/x/x/x/y	runs:read	false	read run:*
 DELETE /v1/workspaces/exposures/x/x/x/y/z	runs:read	false	read run:*
+DELETE /v1/workspaces/exposures/x/y	runs:read	false	read run:*
 DELETE /v1/workspaces/exposures/x/y/x/y	runs:read	false	read run:*
 GET /.well-known/agent-card.json/extended	any	false	-
 GET /.well-known/oauth-authorization-server	any	false	-
@@ -216,10 +218,13 @@ GET /v1/users/x/agents	runs:read	true	read run:*
 GET /v1/users/x/agents/stream	runs:read	true	read run:*
 GET /v1/users/x/channels/x/peek	channel:read	false	subscribe channel:x
 GET /v1/users/x/interrupts	runs:read	true	read run:*
+GET /v1/workspaces/exposures	runs:read	false	read run:*
+GET /v1/workspaces/exposures/x	runs:read	false	read run:*
 GET /v1/workspaces/exposures/x/x	runs:read	false	read run:*
 GET /v1/workspaces/exposures/x/x/x	runs:read	false	read run:*
 GET /v1/workspaces/exposures/x/x/x/y	runs:read	false	read run:*
 GET /v1/workspaces/exposures/x/x/x/y/z	runs:read	false	read run:*
+GET /v1/workspaces/exposures/x/y	runs:read	false	read run:*
 GET /v1/workspaces/exposures/x/y/x/y	runs:read	false	read run:*
 HEAD /.well-known/agent-card.json/extended	any	false	-
 HEAD /.well-known/oauth-authorization-server	any	false	-
@@ -388,18 +393,23 @@ HEAD /v1/users/x/agents	runs:read	true	read run:*
 HEAD /v1/users/x/agents/stream	runs:read	true	read run:*
 HEAD /v1/users/x/channels/x/peek	channel:read	false	subscribe channel:x
 HEAD /v1/users/x/interrupts	runs:read	true	read run:*
+HEAD /v1/workspaces/exposures	runs:read	false	read run:*
+HEAD /v1/workspaces/exposures/x	runs:read	false	read run:*
 HEAD /v1/workspaces/exposures/x/x	runs:read	false	read run:*
 HEAD /v1/workspaces/exposures/x/x/x	runs:read	false	read run:*
 HEAD /v1/workspaces/exposures/x/x/x/y	runs:read	false	read run:*
 HEAD /v1/workspaces/exposures/x/x/x/y/z	runs:read	false	read run:*
+HEAD /v1/workspaces/exposures/x/y	runs:read	false	read run:*
 HEAD /v1/workspaces/exposures/x/y/x/y	runs:read	false	read run:*
 OPTIONS /healthz	any	false	-
 OPTIONS /v1/_oauth/revoke	substrate:admin	false	-
 OPTIONS /v1/_oauth/token	substrate:admin	false	-
+OPTIONS /v1/workspaces/exposures/x	runs:read	false	read run:*
 OPTIONS /v1/workspaces/exposures/x/x	runs:read	false	read run:*
 OPTIONS /v1/workspaces/exposures/x/x/x	runs:read	false	read run:*
 OPTIONS /v1/workspaces/exposures/x/x/x/y	runs:read	false	read run:*
 OPTIONS /v1/workspaces/exposures/x/x/x/y/z	runs:read	false	read run:*
+OPTIONS /v1/workspaces/exposures/x/y	runs:read	false	read run:*
 OPTIONS /v1/workspaces/exposures/x/y/x/y	runs:read	false	read run:*
 PATCH /healthz	any	false	-
 PATCH /scim/v2/Groups/x	scim:provision	false	manage principal:scim:groups
@@ -414,10 +424,12 @@ PATCH /v1/_users/x	substrate:tenant	false	manage principal:user:x
 PATCH /v1/runs/r	runs:create	true	run agent:*
 PATCH /v1/runs/tree	runs:create	true	run agent:*
 PATCH /v1/runs/x	runs:create	true	run agent:*
+PATCH /v1/workspaces/exposures/x	runs:read	false	read run:*
 PATCH /v1/workspaces/exposures/x/x	runs:read	false	read run:*
 PATCH /v1/workspaces/exposures/x/x/x	runs:read	false	read run:*
 PATCH /v1/workspaces/exposures/x/x/x/y	runs:read	false	read run:*
 PATCH /v1/workspaces/exposures/x/x/x/y/z	runs:read	false	read run:*
+PATCH /v1/workspaces/exposures/x/y	runs:read	false	read run:*
 PATCH /v1/workspaces/exposures/x/y/x/y	runs:read	false	read run:*
 POST /healthz	any	false	-
 POST /scim/v2/Groups	scim:provision	false	manage principal:scim:groups
@@ -614,10 +626,12 @@ POST /v1/users/x/channels/x/ack	channel:publish	false	ack channel:x
 POST /v1/users/x/channels/x/publish	channel:publish	false	publish channel:x
 POST /v1/users/x/channels/x/subscribe	channel:publish	false	subscribe channel:x
 POST /v1/workspaces/exposure-tickets/x	runs:read	false	read run:*
+POST /v1/workspaces/exposures/x	runs:read	false	read run:*
 POST /v1/workspaces/exposures/x/x	runs:read	false	read run:*
 POST /v1/workspaces/exposures/x/x/x	runs:read	false	read run:*
 POST /v1/workspaces/exposures/x/x/x/y	runs:read	false	read run:*
 POST /v1/workspaces/exposures/x/x/x/y/z	runs:read	false	read run:*
+POST /v1/workspaces/exposures/x/y	runs:read	false	read run:*
 POST /v1/workspaces/exposures/x/y/x/y	runs:read	false	read run:*
 PUT /healthz	any	false	-
 PUT /scim/v2/Groups/x	scim:provision	false	manage principal:scim:groups
@@ -636,8 +650,10 @@ PUT /v1/runs/r/inbox/a.pdf	runs:create	false	use gateway:inbox_put
 PUT /v1/runs/tree/breakpoints	runs:create	true	steer run:*
 PUT /v1/runs/x/breakpoints	runs:create	true	steer run:*
 PUT /v1/runs/x/inbox/x	runs:create	false	use gateway:inbox_put
+PUT /v1/workspaces/exposures/x	runs:read	false	read run:*
 PUT /v1/workspaces/exposures/x/x	runs:read	false	read run:*
 PUT /v1/workspaces/exposures/x/x/x	runs:read	false	read run:*
 PUT /v1/workspaces/exposures/x/x/x/y	runs:read	false	read run:*
 PUT /v1/workspaces/exposures/x/x/x/y/z	runs:read	false	read run:*
+PUT /v1/workspaces/exposures/x/y	runs:read	false	read run:*
 PUT /v1/workspaces/exposures/x/y/x/y	runs:read	false	read run:*

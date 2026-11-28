@@ -94,7 +94,7 @@ func TestRestart_LostClosesItsPages(t *testing.T) {
 	})
 	o := f.run(t, "alice")
 	r := f.open(t, o, "web")
-	e, err := f.m.Expose(ctx, o, "web", 8000, "", "")
+	e, err := f.m.Expose(ctx, o, "web", 8000, "", "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}

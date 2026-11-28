@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/workspace/lifecycle"
 )
@@ -110,4 +112,48 @@ func TestWorkspaceExpose_StrictArguments(t *testing.T) {
 			t.Errorf("%s = %q, want invalid_argument", in, c)
 		}
 	}
+}
+
+// RFC HI §3: expose's idle_timeout_s within the operator's
+// max_idle_timeout_s is the page's own, on its row and its surface event; one
+// over the bound is refused in the tool result, naming the bound.
+func TestWorkspaceExpose_IdleTimeoutWithinTheOperatorsBound(t *testing.T) {
+	f := newWSFixture(t, lifecycle.Limits{})
+	f.tool.Manager.SetExpose(lifecycle.ExposeLimits{Enabled: true, MaxPerWorkspace: 2, IdleTimeout: 10 * time.Minute,
+		MaxIdleTimeout: 2 * time.Hour})
+	log := &eventLog{}
+	ctx := tools.WithEventEmitter(f.runCtx(t, "alice", "", wsExposer), log.add)
+	f.mustOK(t, ctx, `{"op":"open","name":"web"}`)
+	res := f.call(t, ctx, `{"op":"expose","name":"web","port":8000,"idle_timeout_s":7201}`)
+	if c := refusalClass(res); c != "invalid_argument" || !strings.Contains(res.Text, "7200") {
+		t.Errorf("idle_timeout_s over the bound = %s, want invalid_argument naming 7200", res.Text)
+	}
+	before := time.Now()
+	res = f.mustOK(t, ctx, `{"op":"expose","name":"web","port":8000,"idle_timeout_s":7200}`)
+	var out struct {
+		ID string `json:"exposure_id"`
+	}
+	_ = json.Unmarshal([]byte(res.Text), &out)
+	e, err := f.st.WorkspaceExposureGet(context.Background(), "acme", out.ID)
+	if err != nil || e.IdleTimeoutS == nil || *e.IdleTimeoutS != 7200 {
+		t.Fatalf("stored = %+v, %v; want idle_timeout_s 7200", e, err)
+	}
+	evs := log.ofType(providers.EventSurface)
+	if len(evs) != 1 || evs[0].Surface.ExpiresAt == nil || evs[0].Surface.ExpiresAt.Before(before.Add(119*time.Minute)) {
+		t.Errorf("surface = %+v, want expires_at the page's own 2h from now", evs)
+	}
+}
+
+// A page unexposed no longer counts toward max_per_workspace: its row is
+// kept closed (RFC HI D6), and the count is of live pages.
+func TestWorkspaceExpose_AClosedPageFreesItsPlace(t *testing.T) {
+	f := exposeFixture(t, true)
+	ctx := f.runCtx(t, "alice", "", wsExposer)
+	f.mustOK(t, ctx, `{"op":"open","name":"web"}`)
+	f.mustOK(t, ctx, `{"op":"expose","name":"web","port":8000}`)
+	f.mustOK(t, ctx, `{"op":"expose","name":"web","port":8001}`)
+	f.mustOK(t, ctx, `{"op":"unexpose","name":"web","port":8000}`)
+	f.mustOK(t, ctx, `{"op":"expose","name":"web","port":8002}`)
+	f.mustOK(t, ctx, `{"op":"unexpose","name":"web","port":8001}`)
+	f.mustOK(t, ctx, `{"op":"expose","name":"web","port":8000}`)
 }

@@ -25,6 +25,11 @@ var widenedLegacyKeys = []struct {
 }{
 	{"usage_archive", []string{"period_start", "tenant_id", "user_id", "provider", "model", "credential_source"}},
 	{"usage_archive", []string{"period_start", "tenant_id", "user_id", "provider", "model", "credential_source", "purpose"}},
+	// workspace_exposures lost its table-level UNIQUE (workspace_id, port)
+	// (RFC HI P1, postgres 0148): a closed row is kept, so the key moves to
+	// a partial index over live rows (workspace_exposures_live_port). The
+	// rebuild only drops a key, so no row can collide.
+	{"workspace_exposures", []string{"workspace_id", "port"}},
 }
 
 // rebuildWidenedKeys rebuilds every table still on a key in widenedLegacyKeys

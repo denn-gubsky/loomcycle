@@ -22,8 +22,16 @@ func (s *Store) WorkspaceExposureListByWorkspace(ctx context.Context, tenantID, 
 	return sqlshared.WorkspaceExposureListByWorkspace(ctx, s.shared(), tenantID, workspaceID)
 }
 
-func (s *Store) WorkspaceExposureDelete(ctx context.Context, tenantID, id string) (bool, error) {
-	return sqlshared.WorkspaceExposureDelete(ctx, s.shared(), tenantID, id)
+func (s *Store) WorkspaceExposureListByUser(ctx context.Context, tenantID, userID string) ([]store.WorkspaceExposure, error) {
+	return sqlshared.WorkspaceExposureListByUser(ctx, s.shared(), tenantID, userID)
+}
+
+func (s *Store) WorkspaceExposureClose(ctx context.Context, tenantID, id, reason string, at time.Time) (bool, error) {
+	return sqlshared.WorkspaceExposureClose(ctx, s.shared(), tenantID, id, reason, at)
+}
+
+func (s *Store) WorkspaceExposurePurgeClosed(ctx context.Context, before time.Time) (int64, error) {
+	return sqlshared.WorkspaceExposurePurgeClosed(ctx, s.shared(), before)
 }
 
 func (s *Store) WorkspaceExposureTouch(ctx context.Context, tenantID, id string, at time.Time) error {

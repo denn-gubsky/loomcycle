@@ -366,6 +366,16 @@ func columnsSection2() schemaPlan {
 		// The toolchains a workspace was opened with (RFC HH §5); NULL,
 		// unknown, for every row before. Mirrors postgres 0147.
 		`ALTER TABLE workspaces ADD COLUMN toolchains TEXT`,
+		// A page's state (RFC HI P1): its workspace and run at expose
+		// time, its own idle timeout, its lease, and why it closed; live,
+		// no lease and the operator's timeout for every row before.
+		// Mirrors postgres 0148.
+		`ALTER TABLE workspace_exposures ADD COLUMN workspace_name TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE workspace_exposures ADD COLUMN run_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE workspace_exposures ADD COLUMN idle_timeout_s INTEGER`,
+		`ALTER TABLE workspace_exposures ADD COLUMN lease_expires_at INTEGER`,
+		`ALTER TABLE workspace_exposures ADD COLUMN closed_at INTEGER`,
+		`ALTER TABLE workspace_exposures ADD COLUMN closed_reason TEXT NOT NULL DEFAULT ''`,
 	}}
 }
 
@@ -400,6 +410,11 @@ func indexesSection() schemaPlan {
 		// Here, after addColumns, so an upgraded DB has owner_kind first.
 		// Mirrors postgres 0139.
 		`CREATE INDEX IF NOT EXISTS workspaces_by_owner_kind ON workspaces(owner_kind, state)`,
+		// RFC HI P1: one live page per port of a workspace (a closed row
+		// keeps no port), and a user's pages. Here, after addColumns, so
+		// an upgraded DB has closed_at first. Mirrors postgres 0148.
+		`CREATE UNIQUE INDEX IF NOT EXISTS workspace_exposures_live_port ON workspace_exposures (workspace_id, port) WHERE closed_at IS NULL`,
+		`CREATE INDEX IF NOT EXISTS workspace_exposures_by_user ON workspace_exposures (tenant_id, user_id)`,
 		// v0.8.5: facets cost retros + experiment audits by which
 		// agent_def_id the run actually ran against. Partial index
 		// keeps it small — only DB-resolved runs have a non-NULL value.
