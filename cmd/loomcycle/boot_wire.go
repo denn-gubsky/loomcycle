@@ -311,7 +311,7 @@ func (b *boot) bindStoreToTools() {
 		// RFC GW §5.5: template archives rest under the data directory.
 		b.workspaces.SetTemplateDir(b.cfg.WorkspaceTemplateDir())
 		b.workspaces.SetExpose(lifecycle.ExposeLimits{Enabled: ws.Expose.Enabled, MaxPerWorkspace: ws.Expose.MaxPerWorkspace,
-			IdleTimeout: time.Duration(ws.Expose.IdleTimeoutS) * time.Second})
+			IdleTimeout: time.Duration(ws.Expose.IdleTimeoutS) * time.Second, MaxIdleTimeout: time.Duration(ws.Expose.MaxIdleTimeoutS) * time.Second})
 		// RFC GW P12: durable workspaces, off unless the operator turns them on.
 		b.workspaces.SetDurable(lifecycle.DurableLimits{Enabled: ws.Durable.Enabled, MaxPerUser: ws.Durable.MaxPerUser})
 		// RFC GW P11: a git fork's branch is held to workspace.push.

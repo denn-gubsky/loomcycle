@@ -3626,6 +3626,10 @@ func (s *Server) exposureRoutes(mux *http.ServeMux) *http.ServeMux {
 	// A one-time ticket for a page's socket, for a browser in strict sign-in
 	// mode (P9 plan D-P9-42 as ruled 2026-11-25). Gated as the page is.
 	mux.Handle("POST /v1/workspaces/exposure-tickets/{id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleExposureTicket))))
+	// A page's state, and the caller's live pages (RFC HI §4). The id with
+	// no slash after it: the page itself is always under {id}/.
+	mux.Handle("GET /v1/workspaces/exposures/{id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleExposureState))))
+	mux.Handle("GET /v1/workspaces/exposures", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleExposureList))))
 	return mux
 }
 

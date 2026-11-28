@@ -67,7 +67,7 @@ func (w *Workspace) Description() string {
 		"read, write, edit, glob, grep with the same arguments as the Read, Write, Edit, Glob and Grep tools (no `volume`); " +
 		"run_cell (`code`, optional `kernel` python|node, `timeout_s`) runs code in an interpreter that keeps its variables between cells, reset_kernel starts it clean. " +
 		"view (`path`) shows you a PNG, JPEG, GIF or WebP from the workspace as a picture, e.g. a chart you drew. " +
-		"start (`command`, optional `cwd`, `port`) runs a command that keeps running after the call, a server, and returns its id; stop (`server`) ends it; logs (`server`) reads its latest output, or without server lists the servers; request (`port`, `method`, `path`, optional `headers`, `body`) sends one HTTP request to a port a running server of the workspace declared and returns its status, headers and body (cut at 1 MiB); screenshot (`port`, optional `path`, `width`, `height`) loads that port's page (default /) in a headless browser in the workspace and shows you the picture, on a worker whose sessions carry the browser; expose (`port`, optional `title`, `kind` page|panel) publishes that port to your user as a page in their chat and returns its base_path, unexpose (`port`) withdraws it; await (optional `timeout_s`) returns the next update your application posted to the address its servers find in LOOMCYCLE_UPDATE_URL (what the person did in the page), or timed_out. " +
+		"start (`command`, optional `cwd`, `port`) runs a command that keeps running after the call, a server, and returns its id; stop (`server`) ends it; logs (`server`) reads its latest output, or without server lists the servers; request (`port`, `method`, `path`, optional `headers`, `body`) sends one HTTP request to a port a running server of the workspace declared and returns its status, headers and body (cut at 1 MiB); screenshot (`port`, optional `path`, `width`, `height`) loads that port's page (default /) in a headless browser in the workspace and shows you the picture, on a worker whose sessions carry the browser; expose (`port`, optional `title`, `kind` page|panel, `idle_timeout_s`) publishes that port to your user as a page in their chat and returns its base_path, unexpose (`port`) withdraws it; await (optional `timeout_s`) returns the next update your application posted to the address its servers find in LOOMCYCLE_UPDATE_URL (what the person did in the page), or timed_out. " +
 		"git_status, git_diff (optional `path`, `staged`, `rev`), git_log (optional `rev`, `max`) read a git workspace's repository; git_commit (`message`, optional `paths`, `all`), git_branch (optional `create`, `from`; without create lists them) and git_checkout (`branch`, or `rev` detached) change it; or use git in exec. " +
 		"git_fetch (`name`) brings a git workspace's forge branches in as origin/*; git_pull also fast-forwards the current branch to its origin/ twin (when it has diverged, merge or rebase with exec); git_push (optional `force`) pushes your own branch, and only it, to the forge (needs your git_remote push). " +
 		"share (`name`, `with`: another run of your user by its agent id, `access`: read or read_write, optional `connect`: also its exposed pages) and unshare (`name`, `with`). " +
@@ -102,6 +102,7 @@ func (w *Workspace) InputSchema() json.RawMessage {
 			"body":             {"type": "string", "description": "request: the body to send, up to 1 MiB."},
 			"title":            {"type": "string", "description": "expose: the page's title, shown to the user (one line, up to 200 bytes)."},
 			"kind":             {"type": "string", "enum": ["page","panel"], "description": "expose: how the chat shows it (default page)."},
+			"idle_timeout_s":   {"type": "integer", "minimum": 60, "description": "expose: close the page after this many seconds no one used it, for a page the user keeps open (a dashboard). Default and ceiling are the operator's."},
 			"width":            {"type": "integer", "minimum": 1, "maximum": 1920, "description": "screenshot: the browser's viewport width in pixels (default 1280)."},
 			"height":           {"type": "integer", "minimum": 1, "maximum": 1080, "description": "screenshot: the browser's viewport height in pixels (default 800)."},
 			"server":           {"type": "string", "description": "stop, logs: the server's id, as start returned it (srv-1, ...)."},
@@ -188,7 +189,7 @@ var workspaceOpArgs = map[string][]string{
 	// RFC GW §5.3: the next update the workspace's application posted.
 	"await": {"name", "timeout_s"},
 	// RFC GW §5.3: publish a port to the run's user, and withdraw it.
-	"expose":   {"name", "port", "title", "kind"},
+	"expose":   {"name", "port", "title", "kind", "idle_timeout_s"},
 	"unexpose": {"name", "port"},
 	"share":    {"name", "with", "access", "connect"},
 	"unshare":  {"name", "with"},
@@ -355,6 +356,9 @@ type workspaceInput struct {
 	Body       string            `json:"body"`
 	Title      string            `json:"title"`
 	Kind       string            `json:"kind"`
+	// IdleTimeoutS is expose's page idle timeout (RFC HI §3); zero is the
+	// operator's.
+	IdleTimeoutS int `json:"idle_timeout_s"`
 	// Width and Height are screenshot's viewport; zero is the default.
 	Width  int `json:"width"`
 	Height int `json:"height"`

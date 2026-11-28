@@ -25,7 +25,7 @@ func (w *Workspace) exposeOp(ctx context.Context, o lifecycle.Owner, in workspac
 		}
 		return workspaceOK(map[string]any{"name": in.Name, "port": in.Port, "closed": ok})
 	}
-	e, err := w.Manager.Expose(ctx, o, in.Name, in.Port, in.Title, in.Kind)
+	e, err := w.Manager.Expose(ctx, o, in.Name, in.Port, in.Title, in.Kind, in.IdleTimeoutS)
 	switch {
 	case errors.Is(err, lifecycle.ErrExposeOff):
 		return workspaceRefusal("expose_off", err.Error())
@@ -38,7 +38,7 @@ func (w *Workspace) exposeOp(ctx context.Context, o lifecycle.Owner, in workspac
 	case err != nil:
 		return workspaceError(err, in.Name)
 	}
-	tools.EventEmitter(ctx)(surfaceOpened(in.Name, e.ID, e.Title, e.Kind, w.Manager.ExposeIdleTimeout()))
+	tools.EventEmitter(ctx)(surfaceOpened(in.Name, e.ID, e.Title, e.Kind, w.Manager.ExposureIdleTimeout(e)))
 	return workspaceOK(map[string]any{"name": in.Name, "exposure_id": e.ID, "port": e.Port, "title": e.Title,
 		"kind": e.Kind, "base_path": lifecycle.ExposurePrefix(e.ID)})
 }

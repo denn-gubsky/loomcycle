@@ -198,12 +198,16 @@ func WorkspaceSetState(ctx context.Context, q Querier, tenantID, id string, from
 	return n > 0, nil
 }
 
-// WorkspaceDelete removes the row and its exposures in one transaction: an
-// exposure never outlives its workspace (RFC GW §5.3).
+// WorkspaceDelete removes the row and closes its live exposures in one
+// transaction: no page stays live past its workspace (RFC GW §5.3). The
+// closed rows stay for the exposure sweep to purge (RFC HI D6), so a client
+// can still learn its page went with the release; the lifecycle closes them
+// first with the precise reason, and this is the backstop.
 func WorkspaceDelete(ctx context.Context, db DB, tenantID, id string) (bool, error) {
 	var n int64
 	err := db.InTx(ctx, func(tx Querier) error {
-		if _, err := tx.Exec(ctx, `DELETE FROM workspace_exposures WHERE tenant_id = ? AND workspace_id = ?`, tenantID, id); err != nil {
+		if _, err := tx.Exec(ctx, `UPDATE workspace_exposures SET closed_at = ?, closed_reason = ? WHERE tenant_id = ? AND workspace_id = ? AND `+exposureLive,
+			tx.Dialect().TimeArg(time.Now().UTC()), store.WorkspaceExposureClosedReleased, tenantID, id); err != nil {
 			return err
 		}
 		var err error

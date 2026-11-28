@@ -44,8 +44,8 @@ func testWorkspaceExposuresAreBoundedAndTenantScoped(t *testing.T, s store.Store
 	if l, _ := s.WorkspaceExposureListByWorkspace(ctx, "other", "ws1"); len(l) != 0 {
 		t.Errorf("another tenant's list = %v", l)
 	}
-	if ok, _ := s.WorkspaceExposureDelete(ctx, "other", "ex1"); ok {
-		t.Error("another tenant deleted the exposure")
+	if ok, _ := s.WorkspaceExposureClose(ctx, "other", "ex1", store.WorkspaceExposureClosedUnexposed, time.Now()); ok {
+		t.Error("another tenant closed the exposure")
 	}
 	if l, _ := s.WorkspaceExposureListByWorkspace(ctx, "acme", "ws1"); len(l) != 2 {
 		t.Errorf("list = %v", l)
@@ -58,12 +58,13 @@ func testWorkspaceExposuresAreBoundedAndTenantScoped(t *testing.T, s store.Store
 	if err != nil || len(idle) != 1 || idle[0].ID != "ex3" {
 		t.Errorf("idle = %v, %v; want ex3 only (ex1 was touched)", idle, err)
 	}
-	if ok, err := s.WorkspaceExposureDelete(ctx, "acme", "ex3"); !ok || err != nil {
-		t.Errorf("delete = %v, %v", ok, err)
+	if ok, err := s.WorkspaceExposureClose(ctx, "acme", "ex3", store.WorkspaceExposureClosedIdle, time.Now()); !ok || err != nil {
+		t.Errorf("close = %v, %v", ok, err)
 	}
 }
 
-// Deleting a workspace deletes its exposures with it, and no other's.
+// Deleting a workspace closes its live exposures (released) and keeps the
+// rows, and touches no other workspace's.
 func testWorkspaceExposuresGoWithTheirWorkspace(t *testing.T, s store.Store) {
 	ctx := context.Background()
 	createWorkspace(t, s, mkWorkspace("ws1", "acme", "run1", "w", "wk1"))
@@ -76,11 +77,88 @@ func testWorkspaceExposuresGoWithTheirWorkspace(t *testing.T, s store.Store) {
 	if ok, err := s.WorkspaceDelete(ctx, "acme", "ws1"); !ok || err != nil {
 		t.Fatalf("delete workspace = %v, %v", ok, err)
 	}
+	got, err := s.WorkspaceExposureGet(ctx, "acme", "ex1")
+	if err != nil || got.Live() || got.ClosedReason != store.WorkspaceExposureClosedReleased {
+		t.Errorf("the deleted workspace's exposure = %+v, %v; want kept, closed released", got, err)
+	}
+	if l, _ := s.WorkspaceExposureListByUser(ctx, "acme", "alice"); len(l) != 1 || l[0].ID != "ex2" {
+		t.Errorf("the user's live pages = %v, want ex2 only", l)
+	}
+	if e, err := s.WorkspaceExposureGet(ctx, "acme", "ex2"); err != nil || !e.Live() {
+		t.Errorf("another workspace's exposure: %+v, %v", e, err)
+	}
+}
+
+// RFC HI P1: a row carries its new fields both ways (nil and a value); a
+// closed row is kept, read back by Get only, holds neither the count nor its
+// port, is closed once, and is purged only after the given time.
+func testWorkspaceExposuresKeepClosedRows(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	createWorkspace(t, s, mkWorkspace("ws1", "acme", "run1", "w", "wk1"))
+	plain, err := s.WorkspaceExposureCreate(ctx, mkExposure("ex1", "acme", "ws1", 8000), 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plain.IdleTimeoutS != nil || plain.LeaseExpiresAt != nil || plain.ClosedAt != nil || plain.ClosedReason != "" ||
+		plain.WorkspaceName != "" || plain.RunID != "" || !plain.Live() {
+		t.Errorf("a row without the new fields read back %+v; want nil and empty", plain)
+	}
+	idle := 3600
+	withAll := mkExposure("ex2", "acme", "ws1", 8001)
+	withAll.WorkspaceName, withAll.RunID, withAll.IdleTimeoutS = "w", "run1", &idle
+	got, err := s.WorkspaceExposureCreate(ctx, withAll, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.IdleTimeoutS == nil || *got.IdleTimeoutS != 3600 || got.WorkspaceName != "w" || got.RunID != "run1" {
+		t.Errorf("a row with the new fields read back %+v", got)
+	}
+	closedAt := time.Now().Add(-2 * time.Hour).UTC().Truncate(time.Microsecond)
+	if ok, err := s.WorkspaceExposureClose(ctx, "acme", "ex1", store.WorkspaceExposureClosedUnexposed, closedAt); !ok || err != nil {
+		t.Fatalf("close = %v, %v", ok, err)
+	}
+	if ok, _ := s.WorkspaceExposureClose(ctx, "acme", "ex1", store.WorkspaceExposureClosedIdle, time.Now()); ok {
+		t.Error("a closed row closed again")
+	}
+	c, err := s.WorkspaceExposureGet(ctx, "acme", "ex1")
+	if err != nil || c.Live() || !c.ClosedAt.Equal(closedAt) || c.ClosedReason != store.WorkspaceExposureClosedUnexposed {
+		t.Errorf("the closed row = %+v, %v; want closed unexposed at %v", c, err, closedAt)
+	}
+	if l, _ := s.WorkspaceExposureListByWorkspace(ctx, "acme", "ws1"); len(l) != 1 || l[0].ID != "ex2" {
+		t.Errorf("the workspace's list = %v, want the live ex2 only", l)
+	}
+	if l, _ := s.WorkspaceExposureListByUser(ctx, "acme", "alice"); len(l) != 1 || l[0].ID != "ex2" {
+		t.Errorf("the user's list = %v, want the live ex2 only", l)
+	}
+	if l, _ := s.WorkspaceExposureListByUser(ctx, "other", "alice"); len(l) != 0 {
+		t.Errorf("another tenant's user list = %v", l)
+	}
+	if l, _ := s.WorkspaceExposureListIdle(ctx, time.Now().Add(time.Hour)); len(l) != 1 || l[0].ID != "ex2" {
+		t.Errorf("the idle list = %v, want the live ex2 only", l)
+	}
+	if err := s.WorkspaceExposureTouch(ctx, "acme", "ex1", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if c2, _ := s.WorkspaceExposureGet(ctx, "acme", "ex1"); !c2.LastUsedAt.Equal(c.LastUsedAt) {
+		t.Error("a touch moved a closed row")
+	}
+	// The closed row holds neither the count (max 2) nor port 8000.
+	if _, err := s.WorkspaceExposureCreate(ctx, mkExposure("ex3", "acme", "ws1", 8000), 2); err != nil {
+		t.Fatalf("a new page on a closed page's port, within the live count: %v", err)
+	}
+	if n, err := s.WorkspaceExposurePurgeClosed(ctx, closedAt); n != 0 || err != nil {
+		t.Errorf("purge before the close = %d, %v; want none", n, err)
+	}
+	if n, err := s.WorkspaceExposurePurgeClosed(ctx, time.Now()); n != 1 || err != nil {
+		t.Errorf("purge after the close = %d, %v; want the one closed row", n, err)
+	}
 	var nf *store.ErrNotFound
 	if _, err := s.WorkspaceExposureGet(ctx, "acme", "ex1"); !errors.As(err, &nf) {
-		t.Errorf("the deleted workspace's exposure = %v, want not found", err)
+		t.Errorf("the purged row = %v, want not found", err)
 	}
-	if _, err := s.WorkspaceExposureGet(ctx, "acme", "ex2"); err != nil {
-		t.Errorf("another workspace's exposure: %v", err)
+	for _, id := range []string{"ex2", "ex3"} {
+		if _, err := s.WorkspaceExposureGet(ctx, "acme", id); err != nil {
+			t.Errorf("the purge took live %s: %v", id, err)
+		}
 	}
 }

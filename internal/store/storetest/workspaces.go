@@ -36,6 +36,7 @@ func RunWorkspaces(t *testing.T, factory Factory) {
 		"RootNeedsAUserAndIsNotDurable":         testWorkspaceRootNeedsAUserAndIsNotDurable,
 		"ExposuresAreBoundedAndTenantScoped":    testWorkspaceExposuresAreBoundedAndTenantScoped,
 		"ExposuresGoWithTheirWorkspace":         testWorkspaceExposuresGoWithTheirWorkspace,
+		"ExposuresKeepClosedRows":               testWorkspaceExposuresKeepClosedRows,
 		"DurableNameIsUniquePerUser":            testWorkspaceDurableNameIsUniquePerUser,
 		"PinAndUnpinAreCompareAndSet":           testWorkspacePinAndUnpinAreCompareAndSet,
 		"ParkedRowIsReachedByNoRun":             testWorkspaceParkedRowIsReachedByNoRun,

@@ -306,7 +306,9 @@ func TestExposureRoute_CarriesTheRequestUnderTheSandboxPolicy(t *testing.T) {
 func TestExposureRoute_ClosedByUnexposeReleaseIdleAndTheSwitch(t *testing.T) {
 	ctx := context.Background()
 	for name, close := range map[string]func(f *exposureFixture){
-		"unexpose": func(f *exposureFixture) { _, _ = f.st.WorkspaceExposureDelete(ctx, "acme", testExposureID) },
+		"unexpose": func(f *exposureFixture) {
+			_, _ = f.st.WorkspaceExposureClose(ctx, "acme", testExposureID, store.WorkspaceExposureClosedUnexposed, time.Now())
+		},
 		"release": func(f *exposureFixture) {
 			_, _ = f.st.WorkspaceSetState(ctx, "acme", "ws_1", store.WorkspaceReady, store.WorkspaceReleasing)
 		},
