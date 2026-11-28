@@ -329,6 +329,41 @@ func TestKBOntologist_ManyRowsOfOneDocumentPassTheFloor(t *testing.T) {
 	}
 }
 
+// TestKBOntologist_EachSectionHasItsOwnCap: eight more relation kinds of 5 statements
+// fill the relations' five places, and the class on 4 rows (fewer than any of them)
+// is still a candidate. Under one shared cap of ten it lost its place to them.
+func TestKBOntologist_EachSectionHasItsOwnCap(t *testing.T) {
+	f := newOntFixture(t)
+	people := f.parts(f.doc("Guide"), "Person", 2)
+	teams := f.parts(f.doc("Guide"), "Team", 2)
+	for k := 0; k < 8; k++ {
+		for i := 0; i < 5; i++ {
+			f.edge(people[i%2], teams[i%2], fmt.Sprintf("relkind%d", k), "proposed")
+		}
+	}
+	rep := runOntologist(t, f, ontShippedPolicy(t), `{"mode":"report"}`).report
+	if ontCandidate(rep, "publication") == nil {
+		t.Errorf("candidates = %v, want publication kept beside the relation kinds", ontNames(rep))
+	}
+	rels := 0
+	cs, _ := rep["candidates"].([]any)
+	for _, c := range cs {
+		if m, _ := c.(map[string]any); m["section"] == "relations" {
+			rels++
+		}
+	}
+	if rels != 5 {
+		t.Errorf("relation candidates = %d, want 5 (%v)", rels, ontNames(rep))
+	}
+	if ontCandidate(rep, "advises") == nil {
+		t.Errorf("candidates = %v, want advises (the largest kind) kept", ontNames(rep))
+	}
+	// 11 relation kinds pass the floor (advises, knows, supervises, relkind0–7): 6 cut.
+	if dropped, _ := rep["dropped"].(map[string]any); dropped["cap"] != float64(6) {
+		t.Errorf("dropped = %v, want cap 6", dropped)
+	}
+}
+
 // TestKBOntologist_ReportSaysABacklogStopsThePass: 30 open proposals filed by
 // kb/ontologist make a propose pass stop; the same 30 filed by another agent do not.
 func TestKBOntologist_ReportSaysABacklogStopsThePass(t *testing.T) {

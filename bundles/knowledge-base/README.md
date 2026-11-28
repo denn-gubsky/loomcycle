@@ -954,7 +954,7 @@ report on a real tenant.
 | `proposed` | already has an open proposal of the same name |
 | `below_floor` | a type on fewer than 3 rows, or in one document on fewer than 20; a kind with fewer than 3 statements that are neither rejected nor expired |
 | `bad_name` | is not one line of at most 80 characters |
-| `cap` | is past the ten largest (at most ten proposals a pass) |
+| `cap` | is past the five largest of its section (at most five types and five relation kinds a pass) |
 
 Types the runtime owns (`root`, `section`, `image`, `mermaid`, `canvas`) and
 the operational document types (`SourceStub`, `SyncReport`, `Annotation`) are
