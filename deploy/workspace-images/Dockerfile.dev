@@ -1,0 +1,53 @@
+# Dockerfile.dev — an EXAMPLE workspace session image for Go, C and C++ builds
+# (RFC HH §6). It is the published workspace session image
+# (Dockerfile.workspace: Python, Node, git, the document helpers) plus Go, gcc
+# and g++, make, cmake and pkg-config, all from Debian's archive.
+#
+# loomcycle does not publish this image (RFC HH D5): a compiler image is large,
+# collects CVEs quickly, and the right set differs per team. Copy this file, add
+# what your builds need, and build it on the host whose container daemon runs
+# the sessions:
+#
+#   docker build -f deploy/workspace-images/Dockerfile.dev \
+#     -t loomcycle-workspace-dev:1.173.0 deploy/workspace-images
+#
+# Keep LOOMCYCLE_WORKSPACE_VERSION on the runtime's own release, as with the
+# published session image. For a dev image that also takes screenshots, pass
+# --build-arg LOOMCYCLE_WORKSPACE_IMAGE=denngubsky/loomcycle-workspace-browser.
+#
+# Then run a workspace worker on it (container engine) that probes for what it
+# carries, so the runtime places a Go or C++ workspace there:
+#
+#   LOOMCYCLE_WORKSPACE_ENGINE=container
+#   LOOMCYCLE_WORKSPACE_CONTAINER_IMAGE=loomcycle-workspace-dev:1.173.0
+#   LOOMCYCLE_WORKSPACE_TOOLCHAINS=python,node,go,c,cpp,cmake,make
+#
+# docs/WORKSPACES.md "Toolchains" is the guide; README.md beside this file has
+# the short version.
+#
+# A session runs this image with a read-only root, every capability dropped,
+# as the worker's non-root uid and with no network but the egress routes, so
+# nothing can be installed into it at run time: what a build needs from the
+# system goes in here. Go modules come through the goproxy and gosum routes,
+# Rust crates through crates and crates-dl; C and C++ have no package route,
+# so their headers and libraries come from this image or the repository.
+
+ARG LOOMCYCLE_WORKSPACE_IMAGE=denngubsky/loomcycle-workspace
+ARG LOOMCYCLE_WORKSPACE_VERSION=1.173.0
+FROM ${LOOMCYCLE_WORKSPACE_IMAGE}:${LOOMCYCLE_WORKSPACE_VERSION}
+
+USER root
+RUN set -eux; \
+    apt-get update; \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        golang build-essential cmake pkg-config; \
+    apt-get clean; \
+    rm -rf /var/lib/apt/lists/*; \
+    command -v go cc gcc c++ g++ make cmake pkg-config
+
+# Back to the base image's user, so USER, WORKDIR and CMD stay as the
+# published session image has them. HOME stays /workspace, so GOPATH, the
+# module cache and the build cache are in the workspace, the one writable place
+# besides /tmp. Go's own default GOTOOLCHAIN=auto fetches a newer Go a module
+# asks for as a module, through the workspace's goproxy route.
+USER 65532:65532
