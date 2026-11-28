@@ -809,7 +809,7 @@ the board's settings are environment variables of the `loomboard` service.
    ```bash
    mkdir -p ~/work/loomcycle-cloud-deploy/bin
    install -m 755 deploy/loomcycle-cloud-deploy ~/work/loomcycle-cloud-deploy/bin/
-   printf 'LOOMCYCLE_VERSION=1.171.0\nLOOMCYCLE_WS_WORKER_VERSION=1.171.0\nLOOMBOARD_VERSION=0.4.0\n' > versions.env
+   printf 'LOOMCYCLE_VERSION=1.172.0\nLOOMCYCLE_WS_WORKER_VERSION=1.172.0\nLOOMBOARD_VERSION=0.4.0\n' > versions.env
    ~/work/loomcycle-cloud-deploy/bin/loomcycle-cloud-deploy status
    ```
 2. A key pair for CI (`ssh-keygen -t ed25519 -N "" -f ~/work/loomcycle-cloud-deploy/ci_deploy`).

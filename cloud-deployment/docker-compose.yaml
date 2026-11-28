@@ -256,7 +256,7 @@ services:
   # (INSTALL.md → "Workspace worker"). Its image is published with each MINOR
   # release from 1.171.0: on a patch tag keep it on the minor's x.y.0.
   workspace-worker:
-    image: denngubsky/loomcycle-ws-worker:${LOOMCYCLE_WS_WORKER_VERSION:-1.171.0}
+    image: denngubsky/loomcycle-ws-worker:${LOOMCYCLE_WS_WORKER_VERSION:-1.172.0}
     profiles: [workspace]
     command: [--role, workspace, --id, cloud-ws1]   # keep the id: it owns the workspaces on disk
     restart: unless-stopped
@@ -269,7 +269,7 @@ services:
       LOOMCYCLE_WORKER_TOKEN: ${WORKSPACE_WORKER_TOKEN:-}
       LOOMCYCLE_WORKSPACE_ROOT: ${WORKSPACE_DIR:-/srv/loomcycle/workspaces}
       LOOMCYCLE_WORKSPACE_ENGINE: container
-      LOOMCYCLE_WORKSPACE_CONTAINER_IMAGE: denngubsky/loomcycle-workspace-browser:${LOOMCYCLE_WS_WORKER_VERSION:-1.171.0}
+      LOOMCYCLE_WORKSPACE_CONTAINER_IMAGE: denngubsky/loomcycle-workspace-browser:${LOOMCYCLE_WS_WORKER_VERSION:-1.172.0}
       LOOMCYCLE_WORKSPACE_CONTAINER_EGRESS_DIR: ${WORKSPACE_EGRESS_DIR:-/srv/loomcycle/wse}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock   # PRIVILEGED — host Docker control
