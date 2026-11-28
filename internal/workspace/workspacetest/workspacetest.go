@@ -98,8 +98,15 @@ func (h *Harness) StartWorker() {
 // other, which is how a test puts two workspaces on two workers.
 func (h *Harness) AddWorker(id string, capacity int) string {
 	h.t.Helper()
+	return h.AddWorkerWithToolchains(id, capacity, h.opt.Toolchains)
+}
+
+// AddWorkerWithToolchains is AddWorker for a worker reporting toolchains
+// instead of the first worker's (RFC HH).
+func (h *Harness) AddWorkerWithToolchains(id string, capacity int, toolchains []string) string {
+	h.t.Helper()
 	opt := h.opt
-	opt.ID, opt.Root, opt.Capacity = id, h.t.TempDir(), capacity
+	opt.ID, opt.Root, opt.Capacity, opt.Toolchains = id, h.t.TempDir(), capacity, toolchains
 	workerID := "tenant:" + h.tenant + "/" + id
 	ctx, cancel := context.WithCancel(context.Background())
 	finished := make(chan struct{})
