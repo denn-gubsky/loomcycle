@@ -499,6 +499,17 @@ func askSearchAnswer(cov string) string {
 }
 
 // askAnswers is every agent kb/ask may spawn, with kb/classify answering classify.
+// noFirstCall turns kb/ask's first call off (run metadata first_call false)
+// for a test of the kb/search route itself, which the first call otherwise
+// takes ahead of it; the extra metadata is kept.
+func noFirstCall(md map[string]any) map[string]any {
+	out := map[string]any{"first_call": false}
+	for k, v := range md {
+		out[k] = v
+	}
+	return out
+}
+
 func askAnswers(classify, coverage string) map[string]string {
 	return map[string]string{"kb/classify": classify, "kb/search": askSearchAnswer(coverage), "kb/walker": askWalkerAnswer, "kb/survey": askSurveyAnswer}
 }
@@ -534,7 +545,7 @@ func TestKbAsk_HighDecisionScoreRoutesToSurveyWithoutAskingTheAgent(t *testing.T
 
 func TestKbAsk_LowDecisionScoreRoutesToSearchWithoutAskingTheAgent(t *testing.T) {
 	f := &askFake{score: 0.07, answers: askAnswers("YES", "complete")}
-	out := runAsk(t, f, "What is the default echo setting?", nil)
+	out := runAsk(t, f, "What is the default echo setting?", noFirstCall(nil))
 	wantSpawns(t, f, "kb/search")
 	wantRouteLine(t, out, "ROUTE: search | SCORE: 0.07 | CLASSIFIER: decision | RUNS: r1:completed")
 }
@@ -543,7 +554,7 @@ func TestKbAsk_LowDecisionScoreRoutesToSearchWithoutAskingTheAgent(t *testing.T)
 // is not walked.
 func TestKbAsk_PartialCoverageAtOrBelowLowScoreStaysWithSearch(t *testing.T) {
 	f := &askFake{score: 0.1, answers: askAnswers("YES", "partial")}
-	out := runAsk(t, f, "Find the release guide.", nil)
+	out := runAsk(t, f, "Find the release guide.", noFirstCall(nil))
 	wantSpawns(t, f, "kb/search")
 	wantRouteLine(t, out, "ROUTE: search | SCORE: 0.1 | CLASSIFIER: decision | RUNS: r1:completed")
 }
@@ -558,7 +569,7 @@ func TestKbAsk_MiddleBandScoreAsksTheClassifyAgent(t *testing.T) {
 	} {
 		t.Run(tc.reply, func(t *testing.T) {
 			f := &askFake{score: 0.3, answers: askAnswers(tc.reply, "complete")}
-			out := runAsk(t, f, askQuestion, nil)
+			out := runAsk(t, f, askQuestion, noFirstCall(nil))
 			wantSpawns(t, f, tc.spawns...)
 			if f.spawns[0] != "kb/classify\n"+askQuestion {
 				t.Errorf("kb/classify got %q, want the question alone", f.spawns[0])
@@ -579,7 +590,7 @@ func TestKbAsk_DecisionErrorAsksTheClassifyAgentAndReportsTheCode(t *testing.T) 
 	} {
 		t.Run(tc.code, func(t *testing.T) {
 			f := &askFake{decErr: tc.text, answers: askAnswers("NO", "complete")}
-			out := runAsk(t, f, askQuestion, nil)
+			out := runAsk(t, f, askQuestion, noFirstCall(nil))
 			if f.decCalls != 1 {
 				t.Errorf("decision calls = %d, want 1", f.decCalls)
 			}
@@ -609,7 +620,7 @@ func TestKbAsk_FailedClassifySpawnRoutesToSurvey(t *testing.T) {
 // The measurement's switch: run metadata classifier=agent asks kb/classify only.
 func TestKbAsk_AgentClassifierMetadataSkipsTheDecisionCall(t *testing.T) {
 	f := &askFake{score: 0.9, answers: askAnswers("NO", "complete")}
-	out := runAsk(t, f, askQuestion, map[string]any{"classifier": "agent"})
+	out := runAsk(t, f, askQuestion, noFirstCall(map[string]any{"classifier": "agent"}))
 	if f.decCalls != 0 {
 		t.Errorf("decision calls = %d, want 0 with classifier=agent", f.decCalls)
 	}
@@ -621,7 +632,7 @@ func TestKbAsk_AgentClassifierMetadataSkipsTheDecisionCall(t *testing.T) {
 // with the ids the search found.
 func TestKbAsk_PartialCoverageAfterAgentNoFallsBackToWalkerWithHitIDs(t *testing.T) {
 	f := &askFake{score: 0.2, answers: askAnswers("NO", "partial")}
-	out := runAsk(t, f, askQuestion, nil)
+	out := runAsk(t, f, askQuestion, noFirstCall(nil))
 	wantSpawns(t, f, "kb/classify", "kb/search", "kb/walker")
 	walk := f.spawns[2]
 	if !strings.HasPrefix(walk, "kb/walker\n"+askQuestion) {
@@ -654,7 +665,7 @@ func TestKbAsk_PartialCoverageAfterAnAgentOnlyNoStaysWithSearch(t *testing.T) {
 		{"no decision model", &askFake{noDecision: true, answers: askAnswers("NO", "partial")}, nil, "none (not_configured)"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			out := runAsk(t, tc.f, askQuestion, tc.metadata)
+			out := runAsk(t, tc.f, askQuestion, noFirstCall(tc.metadata))
 			wantSpawns(t, tc.f, "kb/classify", "kb/search")
 			wantRouteLine(t, out, "ROUTE: search | SCORE: "+tc.score+" | CLASSIFIER: agent | RUNS: r1:completed, r2:completed")
 		})
@@ -671,7 +682,7 @@ func TestKbAsk_DecoratedCoverageLineIsRead(t *testing.T) {
 		t.Run(line, func(t *testing.T) {
 			f := &askFake{score: 0.2, answers: map[string]string{"kb/classify": "NO",
 				"kb/search": "It is set in [Guide](" + askHitDoc + "?scope=tenant).\n" + line, "kb/walker": askWalkerAnswer}}
-			out := runAsk(t, f, askQuestion, nil)
+			out := runAsk(t, f, askQuestion, noFirstCall(nil))
 			wantSpawns(t, f, "kb/classify", "kb/search", "kb/walker")
 			wantRouteLine(t, out, "ROUTE: search -> walker (partial coverage) | SCORE: 0.2 | CLASSIFIER: agent | RUNS: r1:completed, r2:completed, r3:completed")
 		})
@@ -682,7 +693,7 @@ func TestKbAsk_DecoratedCoverageLineIsRead(t *testing.T) {
 // answer the caller reads.
 func TestKbAsk_SearchAnswerIsReturnedWithoutItsCoverageLine(t *testing.T) {
 	f := &askFake{score: 0.05, answers: askAnswers("NO", "complete")}
-	out := runAsk(t, f, askQuestion, nil)
+	out := runAsk(t, f, askQuestion, noFirstCall(nil))
 	if strings.Contains(out, "COVERAGE") {
 		t.Errorf("the answer still carries the COVERAGE line:\n%s", out)
 	}
@@ -705,7 +716,7 @@ func TestKbAsk_ClassifyVerdictIsTheLastLineExactly(t *testing.T) {
 	} {
 		t.Run(tc.reply, func(t *testing.T) {
 			f := &askFake{score: 0.3, answers: askAnswers(tc.reply, "complete")}
-			out := runAsk(t, f, askQuestion, nil)
+			out := runAsk(t, f, askQuestion, noFirstCall(nil))
 			wantRouteLine(t, out, "ROUTE: "+tc.route+" | SCORE: 0.3 | CLASSIFIER: "+tc.source+" | RUNS: r1:completed, r2:completed")
 		})
 	}
@@ -715,7 +726,7 @@ func TestKbAsk_ClassifyVerdictIsTheLastLineExactly(t *testing.T) {
 // tool is not registered at all, so the binding does not exist.
 func TestKbAsk_NoDecisionToolIsReportedAsNotConfigured(t *testing.T) {
 	f := &askFake{noDecision: true, answers: askAnswers("NO", "complete")}
-	out := runAsk(t, f, askQuestion, nil)
+	out := runAsk(t, f, askQuestion, noFirstCall(nil))
 	wantSpawns(t, f, "kb/classify", "kb/search")
 	wantRouteLine(t, out, "ROUTE: search | SCORE: none (not_configured) | CLASSIFIER: agent | RUNS: r1:completed, r2:completed")
 }
@@ -726,7 +737,7 @@ func TestKbAsk_SearchThatDidNotCompleteGoesToWalker(t *testing.T) {
 	for _, status := range []string{"failed", "timeout", "cancelled"} {
 		t.Run(status, func(t *testing.T) {
 			f := &askFake{score: 0.05, statuses: map[string]string{"kb/search": status}, answers: askAnswers("NO", "complete")}
-			out := runAsk(t, f, askQuestion, nil)
+			out := runAsk(t, f, askQuestion, noFirstCall(nil))
 			wantSpawns(t, f, "kb/search", "kb/walker")
 			if !strings.HasPrefix(out, askWalkerReturned+"\n\nROUTE:") {
 				t.Errorf("want the walker's answer; got %q", out)
@@ -741,7 +752,7 @@ func TestKbAsk_SearchThatDidNotCompleteGoesToWalker(t *testing.T) {
 func TestKbAsk_SearchAtIterationLimitGoesToWalkerWithItsIDs(t *testing.T) {
 	f := &askFake{score: 0.05, statuses: map[string]string{"kb/search": "max_iterations"},
 		answers: map[string]string{"kb/search": "So far: [Guide](" + askHitDoc + "?scope=tenant)", "kb/walker": askWalkerAnswer}}
-	out := runAsk(t, f, askQuestion, nil)
+	out := runAsk(t, f, askQuestion, noFirstCall(nil))
 	wantSpawns(t, f, "kb/search", "kb/walker")
 	if !strings.Contains(f.spawns[1], askHitDoc) {
 		t.Errorf("the walker's prompt is missing the hit %s:\n%s", askHitDoc, f.spawns[1])
@@ -753,7 +764,7 @@ func TestKbAsk_SearchAtIterationLimitGoesToWalkerWithItsIDs(t *testing.T) {
 // search gave.
 func TestKbAsk_FailedFallbackWalkKeepsTheSearchAnswer(t *testing.T) {
 	f := &askFake{score: 0.2, statuses: map[string]string{"kb/walker": "failed"}, answers: askAnswers("NO", "partial")}
-	out := runAsk(t, f, askQuestion, nil)
+	out := runAsk(t, f, askQuestion, noFirstCall(nil))
 	wantSpawns(t, f, "kb/classify", "kb/search", "kb/walker")
 	want := "It is set in [Guide](" + askHitDoc + "?scope=tenant), see [step](" + askHitChunk + "?scope=tenant).\n\nROUTE:"
 	if !strings.HasPrefix(out, want) {
@@ -779,7 +790,7 @@ func TestKbAsk_UntrustedQuestionIsForwardedByReferenceNotAsTrustedText(t *testin
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := &askFake{score: tc.score, answers: askAnswers(tc.reply, tc.cov)}
-			runAskSegments(t, f, []loop.PromptContentBlock{{Type: "untrusted-block", Kind: "user_input", Text: secretQ}}, nil)
+			runAskSegments(t, f, []loop.PromptContentBlock{{Type: "untrusted-block", Kind: "user_input", Text: secretQ}}, noFirstCall(nil))
 			wantSpawns(t, f, tc.want...)
 			if len(f.decStates) != 1 || f.decStates[0]["question"] != secretQ {
 				t.Errorf("Decision states = %v, want the untrusted question as data", f.decStates)
@@ -823,7 +834,7 @@ func TestKbAsk_TrustedFramingBesideAnUntrustedQuestionReachesTheChildAsTrustedTe
 			runAskSegments(t, f, []loop.PromptContentBlock{
 				{Type: "trusted-text", Text: framing},
 				{Type: "untrusted-block", Kind: "user_input", Text: secretQ},
-			}, nil)
+			}, noFirstCall(nil))
 			wantSpawns(t, f, tc.want...)
 			if len(f.decStates) != 1 || f.decStates[0]["question"] != secretQ {
 				t.Errorf("Decision states = %v, want only the untrusted question as data", f.decStates)
@@ -885,7 +896,7 @@ func TestKbAsk_TheOverviewOfOneThingRoutesToSearchAsAKnownItem(t *testing.T) {
 		for name, metadata := range map[string]map[string]any{"cascade": nil, "classifier=agent": {"classifier": "agent"}} {
 			t.Run(name+"/"+p.known, func(t *testing.T) {
 				f := &askFake{score: 0.9, answers: askAnswers("YES", "partial")}
-				out := runAsk(t, f, p.known, metadata)
+				out := runAsk(t, f, p.known, noFirstCall(metadata))
 				if f.decCalls != 0 {
 					t.Errorf("decision calls = %d, want 0: the rule answers first", f.decCalls)
 				}
