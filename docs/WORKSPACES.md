@@ -61,9 +61,10 @@ The worker reads:
 | `LOOMCYCLE_WORKSPACE_CAPACITY` | 8 | The workspaces it holds at most. |
 | `LOOMCYCLE_WORKSPACE_IDLE_STREAMS` | 16 | Idle op streams it keeps open, 1–32. |
 | `LOOMCYCLE_WORKSPACE_COMMANDS` | any | Comma-separated programs a command may start with, e.g. `python3,node`; a listed interpreter still runs any code. |
+| `LOOMCYCLE_WORKSPACE_TOOLCHAINS` | `python,node` | The toolchains it probes for and reports when found, e.g. `python,node,go,cpp,cmake` (see Toolchains). |
 | `LOOMCYCLE_WORKER_TLS_CA`, `_CERT`, `_KEY`, `_SERVER_NAME`, `LOOMCYCLE_WORKER_INSECURE` | — | TLS to the endpoint, as for conversion workers. |
 
-A worker is known by its token's grant and its name (`--id`, by default the host name): `tenant:<tenant>/<name>` or `shared/<name>`. Keep the name the same across restarts, or the runtime will read every workspace on its disk as unknown and remove it. On `host` the worker reports `python` and `node` when it finds them on its `PATH`, on `container` when its session image has them; a workspace opened without a `toolchain` goes only to a worker with both. [WORKERS.md](WORKERS.md#workspace-workers) and [CONFIGURATION.md](CONFIGURATION.md#workspace-workers-workspace) have the full settings.
+A worker is known by its token's grant and its name (`--id`, by default the host name): `tenant:<tenant>/<name>` or `shared/<name>`. Keep the name the same across restarts, or the runtime will read every workspace on its disk as unknown and remove it. The worker reports the toolchains of `LOOMCYCLE_WORKSPACE_TOOLCHAINS` it finds, on `host` on its `PATH`, on `container` in its session image; a workspace opened without a toolchain goes only to a worker with `python` and `node` (see Toolchains). [WORKERS.md](WORKERS.md#workspace-workers) and [CONFIGURATION.md](CONFIGURATION.md#workspace-workers-workspace) have the full settings.
 
 ### A personal worker's roots
 
@@ -113,7 +114,7 @@ loomcycle worker --role workspace
 
 A session starts at a workspace's first command and stays for the next ones, so what a command installs into the workspace (a virtual environment, `node_modules`) is there for the next. A session that is gone is started again at the next command: the files are kept, a running server and `/tmp` are not. A command past its timeout, or one the runtime stopped waiting for, is killed inside the session with everything it started; a process that leaves its process group lives until the workspace is released, which removes the session.
 
-**Running it.** The worker will not run this engine as root: run it as a user that may use the container daemon (the `docker` group, or a rootless daemon), on a machine or VM given to it, since starting containers is close to root on the host. The sessions have no such right. At start the worker runs one throwaway session to check the daemon, the runtime and the image, reports the image's `python3` and `node` as its toolchains, and removes the sessions a previous run left. A worker that itself runs in a container and drives the host's daemon sets `LOOMCYCLE_WORKSPACE_CONTAINER_HOST_ROOT` to its root as the host sees it.
+**Running it.** The worker will not run this engine as root: run it as a user that may use the container daemon (the `docker` group, or a rootless daemon), on a machine or VM given to it, since starting containers is close to root on the host. The sessions have no such right. At start the worker runs one throwaway session to check the daemon, the runtime and the image, reports the toolchains it finds in the image (see Toolchains), and removes the sessions a previous run left. A worker that itself runs in a container and drives the host's daemon sets `LOOMCYCLE_WORKSPACE_CONTAINER_HOST_ROOT` to its root as the host sees it.
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -140,7 +141,7 @@ workspace:
     root: /srv/loomcycle/workspaces   # default <LOOMCYCLE_DATA_DIR>/workspaces
 ```
 
-The runtime starts `loomcycle worker --role workspace` as its child on a Unix socket in a private (0700) directory. The child presents a random token made for this boot, which the runtime accepts on that socket only, never on the network endpoint; it needs no worker endpoint and no minted token. The child is restarted with backoff if it exits, exits itself if the runtime dies, and is stopped at shutdown. Its workspaces live under the root, so after a crash the next start reconciles them. It takes `LOOMCYCLE_WORKSPACE_CAPACITY`, `_IDLE_STREAMS` and `_COMMANDS` from the runtime's environment when set, and nothing else of it; its toolchains are whatever the host has.
+The runtime starts `loomcycle worker --role workspace` as its child on a Unix socket in a private (0700) directory. The child presents a random token made for this boot, which the runtime accepts on that socket only, never on the network endpoint; it needs no worker endpoint and no minted token. The child is restarted with backoff if it exits, exits itself if the runtime dies, and is stopped at shutdown. Its workspaces live under the root, so after a crash the next start reconciles them. It takes `LOOMCYCLE_WORKSPACE_CAPACITY`, `_IDLE_STREAMS`, `_COMMANDS` and `_TOOLCHAINS` from the runtime's environment when set, and nothing else of it; its toolchains are those it probes for that the host has.
 
 **It runs every command as the runtime's own user, with no isolation.** The child's environment is scrubbed and a command sees only `PATH`, but it runs as the same user: it can read the runtime's data directory and database, its config and secrets files, and on Linux the runtime's environment through `/proc`, provider keys included. The boot log says so, and so does `loomcycle doctor`. Use local mode only where you trust every agent that may use it.
 
@@ -170,9 +171,10 @@ agents:
       durable: true              # may open durable workspaces, kept for the user's next run (default false)
       roots: true                # may open a workspace on a folder of the user's own machine (default false)
       engine: host               # least isolating engine it accepts; unset = any
+      toolchains: [go]           # required on every workspace it opens; see Toolchains
 ```
 
-`exec`, `run_cell`, `reset_kernel`, `start`, `stop`, `logs`, `request` and `await` need `exec`; `write` and `edit` need `write`; `read`, `view`, `glob`, `grep`, `list` and `status` need `read`; `open` needs `open: true`; `expose` and `unexpose` need `expose: true`; `open` with `lifetime: "durable"` needs `durable: true`; `open` with `root` needs `roots: true`; `request` on a workspace shared with the run needs `connect: true` instead of `exec`. A sub-agent holds only what both it and its parent hold, before and after a resume. The grant is not per-run overridable, and an agent a tenant member authors may not set it. A grant on an agent without the tool, or while `workspace.mode` is off, does nothing; the boot log and `loomcycle doctor` name such agents.
+`exec`, `run_cell`, `reset_kernel`, `start`, `stop`, `logs`, `request` and `await` need `exec`; `write` and `edit` need `write`; `read`, `view`, `glob`, `grep`, `list` and `status` need `read`; `open` needs `open: true`; `expose` and `unexpose` need `expose: true`; `open` with `lifetime: "durable"` needs `durable: true`; `open` with `root` needs `roots: true`; `request` on a workspace shared with the run needs `connect: true` instead of `exec`. A sub-agent holds only what both it and its parent hold, before and after a resume; its `toolchains`, which only narrow where a workspace goes, are the union of both. The grant is not per-run overridable, and an agent a tenant member authors may not set it. A grant on an agent without the tool, or while `workspace.mode` is off, does nothing; the boot log and `loomcycle doctor` name such agents.
 
 ## Egress
 
@@ -246,7 +248,8 @@ One tool, `Workspace`, with an `op`:
 
 | op | What it does | Arguments |
 |---|---|---|
-| `open` | open (or return) a workspace of this run | `name`, `toolchain` (`python` or `node`; omit for a worker with both), `lifetime` (`durable`: see Durable workspaces) |
+| `open` | open (or return) a workspace of this run | `name`, `toolchain` or `toolchains` (see Toolchains; omit both for a worker with `python` and `node`), `lifetime` (`durable`: see Durable workspaces) |
+| `toolchains` | the toolchains on offer to this agent, each with its engines (see Toolchains) | — |
 | `list` | this run's workspaces | — |
 | `status` | its state, and whether its directory is on the worker | `name` |
 | `release` | delete it now; a durable one is kept for the user's next run unless `discard` | `name`, `discard` |
@@ -288,6 +291,96 @@ A worked example: an agent writes a script, runs it and reads what it wrote.
 ```
 
 The read returns `144`. When the run ends, the workspace is deleted. A command that exits non-zero, or times out (`"timed_out": true`), is returned as a failed call with its output.
+
+## Toolchains
+
+A worker reports the **toolchains** it carries, and the runtime places a workspace only on a worker that carries every toolchain asked for (RFC HH). A session cannot install a compiler: its root is read-only and it runs as a non-root user. So a C++ or Go build needs a worker whose image has the compiler, and a way to land on it.
+
+**What a worker reports.** It probes for the toolchains `LOOMCYCLE_WORKSPACE_TOOLCHAINS` names, `python,node` when unset, and reports the ones it finds. The image (or, on `host`, the `PATH`) is the truth: the setting says what to look for, not what to claim. On `container` the worker runs one throwaway session of its image at start and checks each toolchain there; on `host` it looks each one up on its `PATH`. A local worker (`workspace.mode: local`) takes the variable from the runtime's environment.
+
+```sh
+LOOMCYCLE_WORKSPACE_TOOLCHAINS=python,node,go,c,cpp,cmake,make
+```
+
+Each entry is a name from the catalog, or `name=binary[|binary…]` for a toolchain the catalog lacks or a binary under another name (`zig=zig`, `go1.26=go1.26`). With several binaries, the first one found counts.
+
+| Name | Probed binaries |
+|---|---|
+| `python` | `python3` \| `python` |
+| `node` | `node` |
+| `go` | `go` |
+| `c` | `cc` \| `gcc` \| `clang` |
+| `cpp` | `c++` \| `g++` \| `clang++` |
+| `cmake` | `cmake` |
+| `make` | `make` |
+| `rust` | `cargo` |
+| `java` | `javac` |
+| `dotnet` | `dotnet` |
+| `ruby` | `ruby` |
+| `php` | `php` |
+
+- **Checked before anything runs.** Names and binaries are a lowercase letter then up to 31 of `a-z 0-9 . + _ -` (so a binary is never a path), at most 8 binaries a toolchain and 32 toolchains, none listed twice. A malformed entry stops the worker at start, naming it. The runtime also refuses, at attach, a worker that reports a name outside that rule.
+- **Missing means not reported.** A declared toolchain the probe does not find is left out, and the worker logs a warning naming it (`a declared toolchain was not found`). With the variable unset nothing is logged, as before.
+- **Names only.** The probe checks that a binary is there, never its version. To tell versions apart, give them names of their own.
+
+**How an agent asks.** `open` takes `toolchain` (one name) or `toolchains` (a list, all required), not both. Any well-formed name is accepted; a name no worker carries is refused `no_worker`. With neither, the workspace is a general one, on a worker with `python` and `node`. Neither is taken with `template` (the template names its own) or `root`.
+
+```json
+{"op": "open", "name": "build", "toolchains": ["cpp", "cmake"]}
+```
+
+`Workspace op=toolchains` lists what the agent may ask for: every toolchain carried by an attached worker that could take a workspace of its own (one serving its tenant, on an engine at least the grant's `engine`; a personal worker, which takes only roots, is not counted), with the engines it is on, as `{toolchains: [{name, engines}], general, required?}`. It names toolchains only, never workers, hosts or how many there are. It needs the grant's `open`, and is not offered over loomcycle's MCP server (an MCP `open` still takes `toolchain` and `toolchains`).
+
+```json
+{"toolchains": [{"name": "cmake", "engines": ["container"]}, {"name": "cpp", "engines": ["container"]}, {"name": "node", "engines": ["container", "host"]}, {"name": "python", "engines": ["container", "host"]}], "general": ["python", "node"]}
+```
+
+**When nothing matches.** The refusal stays `no_worker`, and its detail says why, so an agent does not set about installing a compiler: `no attached workspace worker serving you carries the toolchain(s) rust (on offer: cpp, go, node, python)`, or, when every name is on offer but on different workers, `no one worker carries go, cpp together (…); ask for fewer, or for those one worker has`.
+
+**Pinning an agent.** The grant's `toolchains` are required on every workspace the agent opens, whatever its prompt says:
+
+```yaml
+agents:
+  cpp-builder:
+    tools: [Workspace]
+    workspace:
+      ops: [read, write, exec]
+      open: true
+      toolchains: [cpp, cmake]
+```
+
+- They are added to what the agent asks for. When it asks for nothing, they replace the general workspace's `python` and `node`: this agent's `open` goes to a worker with `cpp` and `cmake`, not one that must also have `node`.
+- They are added to a template's toolchains when the agent opens a template.
+- They do not apply to a root, the user's own folder.
+- A sub-agent is held to the union of its own and its parent's.
+- They only narrow where a workspace goes and grant nothing, so they are not part of the definition's `content_sha256`, and an author's own list does not bound an agent it authors.
+- A fork (in a run, or at spawn) is made on its source's worker, and is not checked against them.
+
+`Context op=self` shows the agent's toolchains with the rest of its grant.
+
+**Templates.** A template requires the toolchains its source workspace was opened with, not everything its worker carried: one saved from a workspace opened with `[go]` on a worker with six toolchains opens on any worker with `go`. A fork keeps its source's list. A workspace opened before this release has no list, and a template saved from it requires its worker's whole list, as before. A durable workspace whose worker is lost is not placed again elsewhere (see Durable workspaces).
+
+**Egress for builds.** A build reaches packages only through the routes its workspace holds (see Egress):
+
+- **Go:** a session's `GOPROXY` and `GOSUMDB` point at routes named exactly `goproxy` and `gosum`, which the operator adds (`https://proxy.golang.org/`, `https://sum.golang.org/`). Every module is still checked against the checksum database. With Go's default `GOTOOLCHAIN=auto`, a newer Go that a module asks for is downloaded through the same `goproxy` route.
+- **Rust:** cargo reads crates through routes named `crates` (`https://index.crates.io/`) and `crates-dl` (`https://static.crates.io/`), on the `container` engine only.
+- **C and C++** have no package route. Headers and libraries come from the image or are vendored in the repository.
+
+**A worker for C++ and Go builds.** The published session image has no Go, gcc or cmake. [`deploy/workspace-images/Dockerfile.dev`](../deploy/workspace-images/Dockerfile.dev) is an example image built `FROM` it with Go, gcc and g++, make, cmake and pkg-config. loomcycle does not publish it: build it on the host whose container daemon runs the sessions, adding what your builds need. Run it as a second worker beside the general one, with its own `--id`, workspace root and egress directory. Never point two workers at one root: each would remove the other's workspaces as unknown.
+
+```sh
+docker build -f deploy/workspace-images/Dockerfile.dev -t loomcycle-workspace-dev:<version> deploy/workspace-images
+
+LOOMCYCLE_WORKER_DISPATCHER=runtime.internal:7788 \
+LOOMCYCLE_WORKER_TOKEN=<the workers:attach token> \
+LOOMCYCLE_WORKSPACE_ROOT=/var/lib/loomcycle/workspaces-dev \
+LOOMCYCLE_WORKSPACE_ENGINE=container \
+LOOMCYCLE_WORKSPACE_CONTAINER_IMAGE=loomcycle-workspace-dev:<version> \
+LOOMCYCLE_WORKSPACE_TOOLCHAINS=python,node,go,c,cpp,cmake,make \
+loomcycle worker --role workspace --id ws-dev
+```
+
+The same `workers:attach` token serves both workers, since each is known by its own name. A general workspace may land on either worker, since both carry `python` and `node`. To keep general work off the dev worker, leave `python` and `node` out of its list; it then takes only workspaces that ask for what it carries. The TrueNAS and cloud install guides show it as a compose service ("A worker for C++ and Go builds").
 
 ## The interpreter
 
@@ -356,7 +449,7 @@ The read returns `144`. When the run ends, the workspace is deleted. A command t
 
 ## Templates
 
-A template is a named starting state: a checkpoint's files, installed packages included, kept by the runtime after the run that saved it ends (RFC GW §5.5, P6). `open` with `template` starts a new workspace as a copy of it, on any worker that has its toolchains.
+A template is a named starting state: a checkpoint's files, installed packages included, kept by the runtime after the run that saved it ends (RFC GW §5.5, P6). `open` with `template` starts a new workspace as a copy of it, on any worker that has its toolchains: those its source workspace was opened with (see Toolchains).
 
 ```json
 {"op": "save_template", "name": "py", "checkpoint": "ck_3f9a1c0e5b7d2a64", "as": "pandas-ready", "scope": "user"}
@@ -370,7 +463,7 @@ A template is a named starting state: a checkpoint's files, installed packages i
 | `save_template` | keep a checkpoint of the run's own workspace as a template | `templates` | `name`, `checkpoint`, `as`, `scope` |
 | `templates` | the templates the run may open | `open` or `templates` | `all_users` (a tenant operator's session) |
 | `delete_template` | delete a template | `templates` | `template`, `scope`, `owner` (a tenant operator's session) |
-| `open` with `template` | a new workspace as a copy of a template | `open` | `name`, `template` (not with `toolchain`) |
+| `open` with `template` | a new workspace as a copy of a template | `open` | `name`, `template` (not with `toolchain` or `toolchains`) |
 
 - **Who sees one.** A `user` template is open to its author's runs only (runs of the same user); a `tenant` one to every run of the tenant. Saving or deleting a `tenant` template also needs the tenant value in the agent's `memory_scopes`. A template never leaves its tenant; a run with no user id sees tenant templates only and cannot save a user one. An isolated member (`substrate:user`) lists and opens its tenant's templates, but cannot save or delete one. `open` takes the user's own template of a name first, then the tenant's. Over the MCP server a session uses templates as its token's tenant and subject (the subject in the user's place, so a run of that user and the session share user templates); saving or deleting a tenant template there needs a tenant-operator token (`substrate:tenant` or `substrate:admin`). Such a session may also clean up its tenant's user templates: `templates` with `all_users: true` lists every user's (each with its `owner`), and `delete_template` with `scope: user` and `owner` deletes one; the audit line names both the operator and the owner. Never another tenant's, never a member token, and never from inside a run, whatever bearer started it.
 - **Never overwritten.** A name already in that scope is refused with `exists`: delete it first, or save as another name.
@@ -731,7 +824,7 @@ A command and everything it started is killed at its timeout. Its output is kept
 |---|---|---|
 | `workspaces_off` | `workspace.mode` is off, or the runtime has no store. | Set `workspace.mode`. |
 | `not_granted` | The agent's grant does not allow the op. | Widen its `workspace` grant (Context op=self shows it). |
-| `no_worker` | No attached worker serves the run's tenant with that toolchain and engine. A run with no tenant (open mode, no `tenant_id`) is served only by a local worker whose tenant resolved to the empty one. | Check the worker attached (its log, `loomcycle_workspace_workers`), its tenant (the boot log and `loomcycle doctor` name the local worker's), and that it reported the toolchain. |
+| `no_worker` | No attached worker serves the run's tenant with those toolchains and that engine; the detail names the toolchains no such worker carries (or says no one worker carries them together) and lists those on offer. A run with no tenant (open mode, no `tenant_id`) is served only by a local worker whose tenant resolved to the empty one. | Check the worker attached (its log, `loomcycle_workspace_workers`), its tenant (the boot log and `loomcycle doctor` name the local worker's), and that it reported the toolchain (`LOOMCYCLE_WORKSPACE_TOOLCHAINS`, and its warning for one it did not find). |
 | `at_capacity` | Every worker that could take it is full. | Release workspaces, or raise the worker's capacity. |
 | `limit` | The run or the tenant holds as many workspaces as allowed. | `release` one, or raise `max_per_run` / `max_per_tenant`. |
 | `not_found` | This run has no workspace of that name. Another run's workspace is reported the same way. | Open it in this run. |
