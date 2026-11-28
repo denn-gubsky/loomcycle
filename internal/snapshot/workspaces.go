@@ -6,13 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"regexp"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/snapshot/migrations"
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/toolchainname"
 	"github.com/denn-gubsky/loomcycle/internal/workerid"
 )
 
@@ -236,9 +236,6 @@ func restorableWorkspace(ctx context.Context, s store.Store, e WorkspaceEntry, o
 	return row, ""
 }
 
-// toolchainName is a toolchain's name as RFC HH §1 lets a worker report one.
-var toolchainName = regexp.MustCompile(`^[a-z][a-z0-9.+_-]{0,31}$`)
-
 // maxRestoredToolchains is the wire's bound on a worker's list
 // (dispatch's maxListed): no workspace was opened with more.
 const maxRestoredToolchains = 64
@@ -252,7 +249,7 @@ func restoredToolchains(in []string) []string {
 		return nil
 	}
 	for _, n := range in {
-		if !toolchainName.MatchString(n) {
+		if !toolchainname.Valid(n) {
 			return nil
 		}
 	}
