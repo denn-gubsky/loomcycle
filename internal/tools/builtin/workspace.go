@@ -687,7 +687,7 @@ func (w *Workspace) open(ctx context.Context, o lifecycle.Owner, pol tools.Works
 		// A root is the user's folder as it is: no template, no toolchain
 		// (the lifecycle refuses durable, and every other mismatch).
 		if in.Template != "" || asksToolchains {
-			return workspaceRefusal("invalid_argument", "a root is your folder as it is: open it without template or toolchain")
+			return workspaceRefusal("invalid_argument", "a root is your folder as it is: open it without template, toolchain or toolchains")
 		}
 		return w.finishOpen(ctx, o, req)
 	}
@@ -743,6 +743,10 @@ func openToolchains(in workspaceInput, required []string) ([]string, tools.Resul
 	case in.Toolchains != nil:
 		if len(*in.Toolchains) == 0 {
 			return nil, workspaceRefusal("invalid_argument", "toolchains: name at least one, or leave it out for a general workspace"), false
+		}
+		// Bounded before the dedupe below, which is quadratic.
+		if len(*in.Toolchains) > workspace.MaxToolchains {
+			return nil, workspaceRefusal("invalid_argument", fmt.Sprintf("toolchains: at most %d", workspace.MaxToolchains)), false
 		}
 		asked = *in.Toolchains
 	case len(required) > 0:
