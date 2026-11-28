@@ -326,3 +326,47 @@ func personalHash(user string) string {
 	sum := sha256.Sum256([]byte(user))
 	return hex.EncodeToString(sum[:])[:16]
 }
+
+// RFC HH §5: the toolchains a workspace was opened with travel with its row,
+// unknown (nil) kept apart from none ([]). A list that is not one of names a
+// worker could report is restored as unknown, so a hand-edited file cannot
+// make a template saved from the row require something odd; save_template
+// then falls back to the worker's list.
+func TestSnapshotWorkspaces_ToolchainsTravelAndABadListIsRestoredAsUnknown(t *testing.T) {
+	w, closeSrc := newWSSource(t)
+	defer closeSrc()
+	long := make([]string, 65)
+	for i := range long {
+		long[i] = "go"
+	}
+	cases := map[string][]string{
+		"ws_none":    nil,
+		"ws_empty":   {},
+		"ws_go":      {"go"},
+		"ws_several": {"python", "node", "cpp", "go1.26"},
+		"ws_badname": {"go", "Bad Name"},
+		"ws_slash":   {"../go"},
+		"ws_toomany": long,
+	}
+	for id, tc := range cases {
+		w.add(t, store.WorkspaceRow{ID: id, Name: strings.TrimPrefix(id, "ws_"), OwnerRunID: w.alice, Toolchains: tc}, store.WorkspaceReady)
+	}
+	dst, closeDst := newTestStore(t)
+	defer closeDst()
+	res, _ := restoreInto(t, w.st, dst, workspaceRestoreOptions())
+	for id, sent := range cases {
+		want := sent
+		switch id {
+		case "ws_badname", "ws_slash", "ws_toomany":
+			want = nil
+		}
+		r, ok := wsRow(t, dst, id)
+		if !ok {
+			t.Errorf("%s not restored (warnings %v)", id, res.Warnings)
+			continue
+		}
+		if (r.Toolchains == nil) != (want == nil) || !slices.Equal(r.Toolchains, want) {
+			t.Errorf("%s restored toolchains %#v, want %#v", id, r.Toolchains, want)
+		}
+	}
+}

@@ -211,7 +211,7 @@ var pinnedEntryKeys = map[string][]string{
 	// a reference ($cred:/$ghapp: name), and the restore refuses any other.
 	"WorkspacesSection": {"version", "entries"},
 	"WorkspaceEntry": {"id", "tenant_id", "user_id", "name", "worker_id", "kind", "lifetime", "engine", "owner_kind",
-		"owner_run_id", "owner_agent_id", "root_run_id", "state", "root", "egress", "shares", "git", "created_at"},
+		"owner_run_id", "owner_agent_id", "root_run_id", "state", "root", "egress", "shares", "git", "toolchains", "created_at"},
 	"WorkspaceShareEntry": {"run_id", "agent_id", "access", "connect", "created_at"},
 	"WorkspaceGitEntry":   {"url", "branch", "base_ref", "base", "default_branch", "credential", "mirror"},
 

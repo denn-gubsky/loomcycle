@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -61,7 +62,11 @@ type WorkspaceEntry struct {
 	Egress       []string              `json:"egress"`
 	Shares       []WorkspaceShareEntry `json:"shares"`
 	Git          *WorkspaceGitEntry    `json:"git,omitempty"`
-	CreatedAt    time.Time             `json:"created_at"`
+	// Toolchains are the ones the workspace was opened with (RFC HH §5).
+	// Never omitted: null (unknown, and every snapshot before) and []
+	// (required none) restore apart.
+	Toolchains []string  `json:"toolchains"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 // WorkspaceShareEntry is one share of a workspace as it travels.
@@ -128,7 +133,7 @@ func captureWorkspaces(ctx context.Context, s store.Store, out *WorkspacesSectio
 			Kind: r.Kind, Lifetime: r.Lifetime, Engine: r.Engine, OwnerKind: r.OwnerKind,
 			OwnerRunID: r.OwnerRunID, OwnerAgentID: r.OwnerAgentID, RootRunID: r.RootRunID,
 			State: string(r.State), Root: r.Root, Egress: r.Egress, Shares: sharesOut(r.Shares), Git: gitOut(r.Git),
-			CreatedAt: r.CreatedAt.UTC(),
+			Toolchains: r.Toolchains, CreatedAt: r.CreatedAt.UTC(),
 		})
 	}
 	return nil
@@ -202,7 +207,7 @@ func restorableWorkspace(ctx context.Context, s store.Store, e WorkspaceEntry, o
 	row := store.WorkspaceRow{
 		ID: e.ID, TenantID: e.TenantID, UserID: e.UserID, Name: e.Name, WorkerID: e.WorkerID,
 		Kind: e.Kind, Lifetime: e.Lifetime, Engine: e.Engine, Root: e.Root, Git: gitIn(e.Git),
-		State: store.WorkspaceLost, Egress: keepRoutes(e.Egress, opts.WorkspaceEgressRoutes),
+		Toolchains: restoredToolchains(e.Toolchains), State: store.WorkspaceLost, Egress: keepRoutes(e.Egress, opts.WorkspaceEgressRoutes),
 	}
 	if _, err := s.WorkspaceGet(ctx, e.TenantID, e.ID); err == nil {
 		return store.WorkspaceRow{}, "the target holds a workspace of that id"
@@ -229,6 +234,29 @@ func restorableWorkspace(ctx context.Context, s store.Store, e WorkspaceEntry, o
 		return store.WorkspaceRow{}, fmt.Sprintf("owner kind %q is not one a snapshot carries", e.OwnerKind)
 	}
 	return row, ""
+}
+
+// toolchainName is a toolchain's name as RFC HH §1 lets a worker report one.
+var toolchainName = regexp.MustCompile(`^[a-z][a-z0-9.+_-]{0,31}$`)
+
+// maxRestoredToolchains is the wire's bound on a worker's list
+// (dispatch's maxListed): no workspace was opened with more.
+const maxRestoredToolchains = 64
+
+// restoredToolchains is the list a restored row keeps: the entry's, when it
+// is one a worker could have offered, else nil (unknown), so a template
+// saved from the row falls back to its worker's list rather than requiring
+// what a hand-edited file says.
+func restoredToolchains(in []string) []string {
+	if in == nil || len(in) > maxRestoredToolchains {
+		return nil
+	}
+	for _, n := range in {
+		if !toolchainName.MatchString(n) {
+			return nil
+		}
+	}
+	return slices.Clone(in)
 }
 
 // workerOfOwner reports whether a row of tenant and user may point at
