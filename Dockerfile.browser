@@ -10,7 +10,7 @@
 # Wire it: run a `pinchtab/pinchtab` server sidecar, add an mcp_servers.browser
 # (transport: stdio, command: /usr/local/bin/pinchtab, args: [--server,
 # http://pinchtab:9867, mcp]) and grant the agent mcp__browser__* — see
-# docs/SANDBOX.md.
+# deploy/truenas/INSTALL.md, "Browser + workspace variant".
 #
 # Same pre-built binary as Dockerfile.release (goreleaser builds every arch in its
 # `builds:` stage; this only COPYs it). pinchtab/pinchtab is multi-arch, so the

@@ -35,7 +35,7 @@
 /internal/tools/builtin/crypto*         @denn-gubsky
 
 # Sandboxes, filesystem fences, egress policy
-/internal/tools/builtin/bash*           @denn-gubsky
+/internal/workspace/                    @denn-gubsky
 /internal/tools/builtin/narrowing*      @denn-gubsky
 /internal/tools/builtin/httptool*       @denn-gubsky
 /internal/tools/builtin/webfetch*       @denn-gubsky
