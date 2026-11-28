@@ -3,7 +3,9 @@ package storetest
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -39,6 +41,7 @@ func RunWorkspaces(t *testing.T, factory Factory) {
 		"ParkedRowIsReachedByNoRun":             testWorkspaceParkedRowIsReachedByNoRun,
 		"CountDurableByUser":                    testWorkspaceCountDurableByUser,
 		"ParkingKeepsTheGitRecord":              testWorkspaceParkingKeepsTheGitRecord,
+		"ToolchainsKeepUnknownApartFromNone":    testWorkspaceToolchainsKeepUnknownApartFromNone,
 	} {
 		t.Run(name, func(t *testing.T) {
 			s, cleanup := factory(t)
@@ -703,5 +706,38 @@ func testWorkspaceSetGitIsTenantScoped(t *testing.T, s store.Store) {
 	}
 	if ok, err := s.WorkspaceSetGit(ctx, "acme", "ws_nope", next); err != nil || ok {
 		t.Fatalf("a missing row: %v, %v", ok, err)
+	}
+}
+
+// testWorkspaceToolchainsKeepUnknownApartFromNone: the toolchains a
+// workspace was opened with (RFC HH §5) read back as written on every read,
+// and nil (unknown: a row from before the column) never reads back as an
+// empty list (required none) or the other way round.
+func testWorkspaceToolchainsKeepUnknownApartFromNone(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	for i, want := range [][]string{nil, {}, {"go"}, {"python", "node", "cpp"}} {
+		id, name := fmt.Sprintf("ws_t%d", i), fmt.Sprintf("work%d", i)
+		row := mkWorkspace(id, "acme", "run-1", name, "w1")
+		row.Toolchains = want
+		got := createWorkspace(t, s, row)
+		r, err := s.WorkspaceGet(ctx, "acme", id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		listed, err := s.WorkspaceListByOwnerRun(ctx, "acme", "run-1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var fromList store.WorkspaceRow
+		for _, l := range listed {
+			if l.ID == id {
+				fromList = l
+			}
+		}
+		for read, have := range map[string][]string{"create": got.Toolchains, "get": r.Toolchains, "list by owner run": fromList.Toolchains} {
+			if (have == nil) != (want == nil) || !slices.Equal(have, want) {
+				t.Errorf("%s of %v: toolchains %#v, want %#v", read, want, have, want)
+			}
+		}
 	}
 }
