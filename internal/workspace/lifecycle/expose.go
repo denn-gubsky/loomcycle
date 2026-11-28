@@ -28,6 +28,10 @@ type ExposeLimits struct {
 	// (RFC HI §3); zero is IdleTimeout, so an agent can ask for no more
 	// than the operator's own.
 	MaxIdleTimeout time.Duration
+	// MaxLease bounds one lease a client takes on a page (RFC HI §2,
+	// workspace.expose.max_lease_s, resolved by the config). Unlike the
+	// bounds above, zero is not a default: it turns leases off.
+	MaxLease time.Duration
 }
 
 // The bounds of an exposure's own fields.
