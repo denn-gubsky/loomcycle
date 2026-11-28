@@ -28,8 +28,9 @@ import (
 // and a fetch with a preflight is answered by the route itself.
 //
 // It needs a Chrome or Chromium: LOOMCYCLE_TEST_CHROME names one, else the
-// usual places are tried. Without one it is skipped (CI has none); the
-// header-free HTTP and socket path it drives is covered without a browser by
+// usual places are tried (CI's ubuntu runners have one). Without one it is
+// skipped; the header-free HTTP and socket path it drives is covered without
+// a browser by
 // TestExposureFrame_ServesThePageWithoutAHeader and
 // TestExposureFrame_OpensTheSocketWithoutACredential.
 func TestExposureFrame_ASandboxedIframeRunsAMultiFileApp(t *testing.T) {
@@ -101,8 +102,21 @@ func TestExposureFrame_ASandboxedIframeRunsAMultiFileApp(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
+	// The browser's profile is not t.TempDir(): Chrome's helper processes
+	// may still write to it after the browser is killed, and the testing
+	// package fails a test whose temp dir it cannot remove. Removed best
+	// effort instead.
+	profile, err := os.MkdirTemp("", "loomcycle-frame-chrome-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		for i := 0; i < 50 && os.RemoveAll(profile) != nil; i++ {
+			time.Sleep(100 * time.Millisecond)
+		}
+	})
 	cmd := exec.CommandContext(ctx, chrome, "--headless=new", "--disable-gpu", "--no-first-run", "--no-default-browser-check",
-		"--disable-extensions", "--user-data-dir="+t.TempDir(), board.URL)
+		"--disable-extensions", "--user-data-dir="+profile, board.URL)
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start the browser: %v", err)
 	}
