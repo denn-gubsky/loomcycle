@@ -594,4 +594,7 @@ var httpRoutes = []Route{
 	// ticket; the handler admits the page's own user alone, by header.
 	row("POST /v1/workspaces/exposure-leases/{id}", ScopeRunsRead, false, q("read", "run", "*")),
 	row("DELETE /v1/workspaces/exposure-leases/{id}", ScopeRunsRead, false, q("read", "run", "*")),
+	// A page's frame capability (RFC HI §1): gated as the page and its
+	// ticket; the handler admits the page's own user alone, by header.
+	row("POST /v1/workspaces/exposure-frames/{id}", ScopeRunsRead, false, q("read", "run", "*")),
 }

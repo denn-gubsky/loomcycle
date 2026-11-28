@@ -87,6 +87,10 @@ type exposureHandler struct {
 	// (credentialExpiry). Without both, no socket is opened.
 	reauth func(r *http.Request) (auth.Principal, error)
 	expiry func(r *http.Request) time.Time
+	// frame verifies the capability of a request on the frame path (RFC HI
+	// §1) for the route's half of its check, its life against the page's
+	// lease. Without it no frame is served.
+	frame func(frameCap, id string) (frameAdmission, bool)
 }
 
 func newExposureHandler(x workspaceExposures, lim exposeRouteLimits) *exposureHandler {
@@ -101,6 +105,60 @@ func exposureNotFound(w http.ResponseWriter) {
 
 func (h *exposureHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	setExposureHeaders(w.Header())
+	// RFC HI §1: on the frame path the middleware admitted the request by
+	// the capability alone (exposureFrameOf), never a cookie, a bearer or a
+	// ticket; the route checks what needs the page's row.
+	frameCap, _, framed := exposureFrameOf(r)
+	var frame *frameAdmission
+	if framed {
+		f, ok := frameAdmission{}, false
+		if h.frame != nil {
+			f, ok = h.frame(frameCap, r.PathValue("id"))
+		}
+		if !ok {
+			http.Error(w, "this page's frame is not valid", http.StatusUnauthorized)
+			return
+		}
+		frame = &f
+	} else if !h.bearerAdmitted(w, r) {
+		return
+	}
+	p, ok := auth.PrincipalFromContext(r.Context())
+	// D22, D-P9-8: the workspace's own user, by a principal that names one.
+	// Open mode authenticates nobody and the legacy token names no user:
+	// neither reaches a page.
+	if !ok || p.Legacy || p.TenantID == "" || p.Subject == "" {
+		exposureNotFound(w)
+		return
+	}
+	id := r.PathValue("id")
+	if frame != nil && frame.needsLease(time.Now()) {
+		// Past its own ten minutes a capability holds only while the page
+		// is leased (D2). Asked before the page is opened, so a stale
+		// capability's request never counts as a use that keeps the page.
+		st, err := h.x.ExposureState(r.Context(), p.TenantID, p.Subject, id)
+		switch {
+		case errors.Is(err, lifecycle.ErrExposureNotFound):
+			exposureNotFound(w)
+			return
+		case err != nil:
+			slog.WarnContext(r.Context(), "workspace exposure: cannot read the exposure", "err", err)
+			http.Error(w, "the page cannot be served now", http.StatusServiceUnavailable)
+			return
+		case !st.Live():
+			exposureNotFound(w)
+			return
+		case !frame.validFor(st, time.Now()):
+			exposureFrameExpired(w)
+			return
+		}
+	}
+	h.serve(w, r, p, id, frameCap, frame)
+}
+
+// bearerAdmitted is the header form's own check of how the middleware
+// admitted the request; it answers the refusal itself.
+func (h *exposureHandler) bearerAdmitted(w http.ResponseWriter, r *http.Request) bool {
 	// The bearer in the Authorization header, and nothing else: no cookie
 	// (a browser sent to this address must run nothing), no token in the
 	// address, no subprotocol (WebSocket is P9 PR 5).
@@ -114,17 +172,20 @@ func (h *exposureHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	socketBearer := isWebSocketUpgrade(r) && socketBearerOffered(r)
 	if viaCookie || !(headerBearer || socketBearer) {
 		http.Error(w, "this route takes the bearer in the Authorization header", http.StatusUnauthorized)
-		return
+		return false
 	}
-	p, ok := auth.PrincipalFromContext(r.Context())
-	// D22, D-P9-8: the workspace's own user, by a principal that names one.
-	// Open mode authenticates nobody and the legacy token names no user:
-	// neither reaches a page.
-	if !ok || p.Legacy || p.TenantID == "" || p.Subject == "" {
-		exposureNotFound(w)
-		return
-	}
-	id := r.PathValue("id")
+	return true
+}
+
+// exposureFrameExpired answers a frame whose capability's life ended (D2):
+// the client mints another.
+func exposureFrameExpired(w http.ResponseWriter) {
+	http.Error(w, "this page's frame has expired; mint another", http.StatusUnauthorized)
+}
+
+// serve opens page id for p and serves the request, by its bearer or, with
+// frame set, by the frame capability frameCap.
+func (h *exposureHandler) serve(w http.ResponseWriter, r *http.Request, p auth.Principal, id, frameCap string, frame *frameAdmission) {
 	e, row, err := h.x.OpenExposure(r.Context(), p.TenantID, p.Subject, id)
 	switch {
 	case errors.Is(err, lifecycle.ErrExposureNotFound):
@@ -133,6 +194,10 @@ func (h *exposureHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case err != nil:
 		slog.WarnContext(r.Context(), "workspace exposure: cannot read the exposure", "err", err)
 		http.Error(w, "the page cannot be served now", http.StatusServiceUnavailable)
+		return
+	}
+	if frame != nil && !frame.validFor(e, time.Now()) {
+		exposureFrameExpired(w)
 		return
 	}
 	if isUpgrade(r) && !isWebSocketUpgrade(r) {
@@ -151,8 +216,18 @@ func (h *exposureHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if rest == "" || rest[0] != '/' {
 		rest = "/" + rest
 	}
+	if frame != nil {
+		// The application sees its own path: the frame prefix, with the
+		// capability, is cut as the page prefix is, and a Location it sends
+		// is put back under it.
+		var ok bool
+		if rest, prefix, ok = exposureFrameRest(r, id, frameCap); !ok {
+			http.Error(w, "this page's frame is not valid", http.StatusUnauthorized)
+			return
+		}
+	}
 	if isWebSocketUpgrade(r) {
-		h.serveSocket(w, r, e, row, p.TenantID, p.Subject, rest)
+		h.serveSocket(w, r, e, row, p.TenantID, p.Subject, rest, frame)
 		return
 	}
 	rp := &httputil.ReverseProxy{
@@ -163,6 +238,12 @@ func (h *exposureHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			pr.Out.Host = pr.In.Host
 			for _, name := range []string{"Authorization", "Proxy-Authorization", "Cookie"} {
 				pr.Out.Header.Del(name)
+			}
+			if frame != nil {
+				// The frame's own address, capability and all, would be the
+				// Referer of what its document loads (a browser that ignored
+				// the no-referrer policy): the application never gets it.
+				pr.Out.Header.Del("Referer")
 			}
 		},
 		Transport: &http.Transport{
@@ -325,10 +406,23 @@ func exposureKept(in http.Header) http.Header {
 	return out
 }
 
-// setExposureHeaders puts the sandbox policy on an answer.
+// setExposureHeaders puts the sandbox policy on an answer, and no referrer
+// (RFC HI §1): a page's request to another site never carries the page's
+// address, a frame's capability included, in its Referer.
 func setExposureHeaders(h http.Header) {
 	h.Set("Content-Security-Policy", exposurePolicy)
 	h.Set("X-Content-Type-Options", "nosniff")
+	h.Set("Referrer-Policy", "no-referrer")
+}
+
+// exposureHeadersFirst puts the route's headers on every answer before the
+// middleware runs, so its own refusals (a bad credential, a scope or an
+// access rule) carry them too.
+func exposureHeadersFirst(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		setExposureHeaders(w.Header())
+		next.ServeHTTP(w, r)
+	})
 }
 
 // underPrefix rewrites a redirect the application sends to a path of its
