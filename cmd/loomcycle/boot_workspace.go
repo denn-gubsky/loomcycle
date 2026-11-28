@@ -21,9 +21,10 @@ import (
 const localWorkspaceID = "local"
 
 // localWorkspacePassEnv are the core's workspace-worker settings a local
-// child takes when the operator set them: its capacity, its idle streams and
-// the programs an exec may start with, and the host egress ports.
-var localWorkspacePassEnv = []string{"LOOMCYCLE_WORKSPACE_CAPACITY", "LOOMCYCLE_WORKSPACE_IDLE_STREAMS", "LOOMCYCLE_WORKSPACE_COMMANDS", "LOOMCYCLE_WORKSPACE_HOST_EGRESS"}
+// child takes when the operator set them: its capacity, its idle streams,
+// the programs an exec may start with, the host egress ports and the
+// toolchains it probes for (RFC HH).
+var localWorkspacePassEnv = []string{"LOOMCYCLE_WORKSPACE_CAPACITY", "LOOMCYCLE_WORKSPACE_IDLE_STREAMS", "LOOMCYCLE_WORKSPACE_COMMANDS", "LOOMCYCLE_WORKSPACE_HOST_EGRESS", "LOOMCYCLE_WORKSPACE_TOOLCHAINS"}
 
 // startLocalWorkspace starts workspace.mode local (RFC GW D9): one child
 // `loomcycle worker --role workspace` on a Unix socket in a private (0700)
