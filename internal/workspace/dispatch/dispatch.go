@@ -1002,15 +1002,7 @@ func (d *Dispatcher) Place(ctx context.Context, req PlaceRequest) ([]string, err
 	var matched []cand
 	d.mu.Lock()
 	for _, w := range d.workers {
-		// engineServes is checked at attach too; again here so a shared
-		// host worker can never be handed a workspace, whatever let it in.
-		if !w.servesUser(req.TenantID, req.UserID) || !engineServes(w.serves, w.engine) || workspace.EngineRank(w.engine) < workspace.EngineRank(req.Engine) {
-			continue
-		}
-		// A personal worker takes only its user's root workspaces, on a
-		// root it offers; any other worker never takes one (D-P13-4).
-		if w.serves.Personal != (req.Root != "") ||
-			(req.Root != "" && !slices.Contains(w.labels, workspace.RootLabelPrefix+req.Root)) {
+		if !w.eligible(req) {
 			continue
 		}
 		ok := true
@@ -1061,6 +1053,23 @@ func (d *Dispatcher) Place(ctx context.Context, req PlaceRequest) ([]string, err
 		out[i] = c.id
 	}
 	return out, nil
+}
+
+// eligible reports whether w may hold a workspace req asks for, before its
+// toolchains, labels and load are looked at: it serves the tenant (and the
+// user, for a personal worker), runs an engine at least as isolating as
+// asked, and is a personal worker exactly when a root is asked for, offering
+// that root. Under Dispatcher.mu.
+func (w *worker) eligible(req PlaceRequest) bool {
+	// engineServes is checked at attach too; again here so a shared host
+	// worker can never be handed a workspace, whatever let it in.
+	if !w.servesUser(req.TenantID, req.UserID) || !engineServes(w.serves, w.engine) || workspace.EngineRank(w.engine) < workspace.EngineRank(req.Engine) {
+		return false
+	}
+	// A personal worker takes only its user's root workspaces, on a root it
+	// offers; any other worker never takes one (D-P13-4).
+	return w.serves.Personal == (req.Root != "") &&
+		(req.Root == "" || slices.Contains(w.labels, workspace.RootLabelPrefix+req.Root))
 }
 
 // Attached reports whether a worker of this id is attached to this replica
