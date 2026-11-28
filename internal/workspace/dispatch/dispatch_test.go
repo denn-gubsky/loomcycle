@@ -747,3 +747,19 @@ func TestAttach_APersonalWorkerTokenIsRefusedWithPersonalWorkersOff(t *testing.T
 		t.Fatalf("%d workers attached", n)
 	}
 }
+
+// RFC HH §2: a Hello naming a toolchain outside the name rule is refused at
+// attach, so a broken or hostile worker's names never reach placement.
+func TestAttach_AMalformedToolchainNameIsRefused(t *testing.T) {
+	d, target := core(t, newMemStore(), dispatch.Options{})
+	for _, name := range []string{"Go", "go/bin", "go;rm", ""} {
+		f := dialFake(t, target, tokAcme)
+		_, err := f.hello(&workspacepb.Hello{WorkerId: "w1", ProtocolVersion: workspace.ProtocolVersion, Engine: workspace.EngineHost, Capacity: 4, Toolchains: []string{"python", name}})
+		if status.Code(err) != codes.InvalidArgument || !strings.Contains(err.Error(), "toolchain") {
+			t.Errorf("%q: err = %v, want InvalidArgument naming the toolchain", name, err)
+		}
+	}
+	if n := len(d.Workers()); n != 0 {
+		t.Fatalf("%d workers attached", n)
+	}
+}

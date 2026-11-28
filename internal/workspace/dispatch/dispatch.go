@@ -563,6 +563,14 @@ func (d *Dispatcher) admit(owner string, att auth.WorkerAttach, h *workspacepb.H
 	if len(h.GetToolchains()) > maxListed || len(h.GetLabels()) > maxListed || len(h.GetHeldWorkspaces()) > maxHeld {
 		return nil, nil, status.Error(codes.InvalidArgument, "the Hello lists too many toolchains, labels or workspaces")
 	}
+	// A guard against a broken or hostile worker, not an authority (RFC HH
+	// §2): the attach token already trusts it, and a false name only
+	// misplaces its own tenant's workspaces.
+	for _, t := range h.GetToolchains() {
+		if !workspace.ValidToolchainName(t) {
+			return nil, nil, status.Errorf(codes.InvalidArgument, "toolchain name %q is not 1 to %d of a-z 0-9 . + _ - starting with a letter", t, workspace.MaxToolchainNameLen)
+		}
+	}
 	if b := h.GetBuildVersion(); b != d.opt.BuildVersion {
 		d.log.Warn("workspace worker runs another build", "worker", h.GetWorkerId(), "worker_build", b, "build", d.opt.BuildVersion)
 	}
