@@ -41,9 +41,13 @@ class FakeClient:
         self.search_inputs = search_inputs or [{"op": "search", "scope": "tenant", "query": "q", "limit": 20}]
         self.ver, self.fail, self.wrong = version, set(fail), set(wrong)  # wrong: {(arm, qid)}
         self.n, self.runs, self.bodies, self.first = 0, {}, [], {}
+        self.up = 10 ** 6  # seconds since the fake server started: older than any row
 
     def version(self):
         return {"version": self.ver, "commit": "c0ffee"}
+
+    def uptime(self):
+        return self.up
 
     def disallowed(self, pairs):
         return []

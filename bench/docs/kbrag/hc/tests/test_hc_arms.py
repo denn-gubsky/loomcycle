@@ -151,6 +151,15 @@ class TestRunner(unittest.TestCase):
                 {"agent": "kb/answer", "provider": "code-js", "model": ""}]
         self.assertEqual(hcarms.pinned_violations(rows), [("kb/read", "ollama-local", "m")])
 
+    def test_a_server_restart_during_a_run_fails_the_row(self):
+        lc = FakeClient()
+        lc.up = 0  # the process started after the row did
+        r = runner(lc, self.data, ["rag-lc"], self.out)
+        r.run([("q1", 0)])
+        row = r.rows["rag-lc"][0]
+        self.assertEqual(row["status"], "failed")
+        self.assertIn("server restarted", row["error"])
+
     def test_resume_skips_ok_rows_and_retries_a_failed_one_once(self):
         lc = FakeClient(fail={"q2"})
         runner(lc, self.data, ["kb-today"], self.out).run(hcarms.plan(self.qids, 1))

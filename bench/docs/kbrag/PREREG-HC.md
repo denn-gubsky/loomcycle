@@ -1,6 +1,6 @@
 # RFC HC gate study: the first call against today's kb/ask and passage RAG (pre-registration)
 
-> **DRAFT. Not in force until Amendment 0 is committed.** Amendment 0 records the model
+> **In force from Amendment 0 (2026-11-28, at the end of this file).** Amendment 0 records the model
 > profile, every tenant fork with its `content_sha256`, the state of both tenants, and the
 > confirmation of the points marked "to be confirmed". It is written after the tuning on the
 > dev split and committed before the first scored run. Nothing scored runs before it.
@@ -262,18 +262,141 @@ Rows run under more than one recorded tenant state make the set incomplete.
 | question order and arm rotation | 20261127 (and `order:<qid>:<rep>`) |
 | the test set | RFC DM's `random.Random(20260929)` draw, unchanged |
 
-## Amendment 0 — (stub; filled after the dev tuning, committed before the first scored run)
+## Amendment 0 — 2026-11-28 (committed before the first scored run)
 
-- Date and time (UTC); loomcycle version and commit (both tenants, one deployment).
-- The P1 bundle commit; each tenant def created for the study (`kb/answer`, `kb/read`, the
-  flagged `kb/ask`, the Haiku forks, `kbhc/ask-af`, `kbhc/search-af` or the names used) with
-  its `content_sha256`; `tenant_state.json` digests per tenant.
-- The model profile as served (provider/model per agent), the decision model and reranker.
-- The state of both tenants (RFC GM ontology, the walker arms and the Haiku `kb/walker`
-  override on the ConditionalQA tenant; corpus and coverage at the start: check 1 and 2
-  inputs, the sweep logs).
-- The dev-split tuning log: every prompt version tried, on which questions, with its scores.
-- Confirmation or change of: check 7's 0.03, the oracle's block shape, the answer-first arm
-  under its own names.
-- The env variable names used (never their values), and the output roots.
-- The spend baseline.
+**In force from this commit.** Every point below was settled after the dev tuning and before
+any scored run. No test question and no p7 question has been run.
+
+### Deployment and agents
+
+- **One deployment, both tenants:** loomcycle **1.172.0**, commit `ad14d7d81`. The scored
+  runs of each set run on this release only (check 9). The deployment upgraded from 1.171.0
+  during the dev tuning (below); no scored row exists from before it.
+- **The P1 agents are served by the deployed bundle, not by tenant copies.** The build with
+  P1 (#3030, `0b0230c70`) is deployed, so `kb/answer`, `kb/ask` (with its `first_call` flag)
+  and `kb/survey` are the bundle's static agents on both tenants, with no tenant def. This
+  replaces "created as tenant AgentDefs ... copied byte for byte" in *Tenants, models and
+  setup*. The repo's `bundles/knowledge-base/loomcycle.yaml` and the embedded bundle hold
+  the same `kb/answer`, `kb/read`, `kb/ask` and `kb/search`.
+- **Tenant defs, identical on both tenants** (`content_sha256`):
+
+  | agent | what | content_sha256 |
+  |---|---|---|
+  | `kb/classify` | Haiku fork of the static def | `2aa44e04…aeb970` |
+  | `kb/search` | Haiku fork | `f96dc990…db3fdb` |
+  | `kb/screen` | Haiku fork | `2391e650…97022d` |
+  | `kb/walker` | Haiku fork | `efc32fed…1a7026` |
+  | `kb/read` | Haiku fork; prompt = the bundle's, untuned | `2ef94dc2…a29f62` |
+  | `kbhc/search-af` | `kb/search` + Haiku + the answer-first sentence | `0c86a041…d9408b`¹ |
+  | `kbhc/ask-af` | `kb/ask`'s code, search route → `kbhc/search-af` | `3881294d…af8dcb` |
+
+  ¹ `kbhc/search-af`: `sha256:0c86a0414175e215f44b6e1cf4c9a3543220d7a7ddb329437b6004f817d9408b`;
+  `kbhc/ask-af`: `sha256:3881294d7e24f5ea8718c11103b0a276922f219408c0a211f9e99a4a93af8dcb`.
+  Full hashes of every row are in each tenant's `tenant_state.json` (work dir).
+
+  Each Haiku fork differs from the 1.172.0 static def in provider and model only (the
+  static `tier` cleared), checked field by field after the upgrade. `kbhc/ask-af`'s code is
+  the static `kb/ask` code with that one replacement; `kbhc/search-af`'s prompt is the static
+  `kb/search` prompt with "Search, read what you need, then answer in a few sentences."
+  replaced by "Search, read what you need, then answer. The first line of your reply is the
+  answer itself, on its own line: yes or no, a number, a date, a name or a short phrase when
+  the question allows one, with no preamble and no hedge. Then explain in a few sentences."
+  A `kb/annotate` Haiku fork also exists on both tenants, for the sweep only.
+- **Recorded tenant state** (`hc/tenant_state.py --record`, on 1.172.0): ConditionalQA
+  tenant digest `d83d52c125454d63`, development tenant digest `20b14f9ec7285285`.
+
+### Model profile
+
+- Every model-backed agent a scored run can reach is pinned to `anthropic` /
+  `claude-haiku-5-5` by the defs above; the code agents (`kb/ask`, `kbhc/ask-af`,
+  `kb/answer`, `kb/survey`) call no model. The decision model and the reranker are the
+  deployment's local models.
+- **Changed since the plan:** the deployment's tier routing now sends the `low` and `middle`
+  tiers to local models (Haiku stays only in two user tiers). The plan's "the low tier is
+  Haiku" no longer holds. It does not touch the study, since every reachable model agent is
+  pinned and the runner stops on a model run served by anything else.
+
+### Tenant state at the start
+
+- **ConditionalQA tenant:** the RFC GM ontology (gov.uk taxonomy) stays. The walker arms
+  `kb/walker-shipped` and `kb/walker-p7full` were retired on 2026-11-27 by another session
+  before this amendment; the Haiku `kb/walker` fork above is the one walker.
+- **Sweep** (`hc/sweep.py`, write annotate, Haiku, code agents): ConditionalQA tenant 27
+  passes, development tenant 2 passes (442 calls); $1.93 together, more than the plan's
+  $0.5 because the ConditionalQA tenant held about 4,800 stale annotations.
+- **Checks 1 and 2** (after the sweep):
+
+  | | ConditionalQA tenant | development tenant |
+  |---|---|---|
+  | documents listed / in the corpus / left out | 656 / 652 / 4 | 452 / 429 / 23 |
+  | annotation coverage (pass ≥ 0.99) | 1.0 | 0.9907 |
+  | stale annotations (pass ≤ 0.01) | 0.0 | 0.0024 |
+
+  The ConditionalQA corpus is exactly the 652 mapped pages. The 4 left out are 2 annotation
+  documents, the ontology and one untyped memory document.
+- **Ingest maps rebuilt.** The benchmark's `docmap.json` / `chunks.json` were not reachable,
+  so they were rebuilt read-only from the tenant with the benchmark ingest's own slug and
+  tree-order rules: 652 of 652 pages mapped, every title checked, no page imported.
+
+### Smoke test (4 dev questions × 5 arms, not scored)
+
+20 of 20 runs ok, all on Haiku; $0.032. Per question: `kb-today` $0.0034, `kb-first`
+$0.0011 (1 of 4 escalated "answer -> search"), `kb-today+answer-first` $0.0031, `rag-lc`
+$0.0003, oracle $0.0002. Every first call reranked.
+
+### Dev-split tuning log (every look)
+
+A fixed sample of 100 dev questions, `random.Random(20261128).sample` of the 1,715, the
+same 100 for every version; output roots `<work>/tune/v0`, `<work>/tune/v1`.
+
+| look (UTC, 2026-11-28) | version | arm | n scored | F1 | F1 yes/no | F1 span |
+|---|---|---|---|---|---|---|
+| 06:27 | v0 (bundle `kb/read`) | `rag-lc` | 91² | 0.630 | 0.745 (47) | 0.508 (44) |
+| 06:33 | v0 (answer-first as above) | `kb-today+answer-first` | 100 | 0.647 | 0.774 (53) | 0.504 (47) |
+| 06:52 | v1 (`kb/read` + "never Possibly, Maybe or It depends") | `rag-lc` | 91² | 0.628 | 0.723 | 0.525 |
+| 06:58 | v1 (answer-first + "no Probably, no label such as Answer:, no markdown") | `kb-today+answer-first` | 100 | 0.644 | 0.774 | 0.497 |
+
+² 9 `rag-lc` v0 rows were cut by the server restarts (below) and are left out of both
+versions' comparison. v1 had no cut row; on all 100 its `rag-lc` F1 is 0.634.
+
+v1 removed the hedge words but moved no score: question by question 14 wins / 15 losses
+(`rag-lc`) and 18 / 21 (answer-first), within the run-to-run noise of a 100-question
+sample. **v0 is kept for both prompts**: `kb/read` runs the bundle's prompt unchanged, and
+`kbhc/search-af` the answer-first sentence above. The v1 defs were retired and the v0 defs
+promoted again. Most reader misses were ConditionalQA yes/no calls that turn on the
+situation, which a prompt change would only overfit. Tuning cost $0.68.
+
+### Harness change
+
+- **A server restart fails the row.** The 1.171.0 → 1.172.0 upgrade restarted the server
+  twice during the tuning. Each in-flight Document search was cut ("interrupted: the runtime
+  shut down") and `kb/answer` reported `no_sections` as a normal answer, so the runner wrote
+  9 ok rows with no answer. The runner now reads the server's uptime after each run; a
+  process younger than the row fails it, and the one retry reruns it (check 8). A test
+  covers it.
+- The deployment is not upgraded or restarted on purpose while a set's scored runs are in
+  progress.
+
+### Confirmations
+
+- **Check 7:** the bound is **0.03** (owner ruling), confirmed.
+- **The oracle's block shape** matches the merged `kb/answer`: the harness reads `HEAD`,
+  `ASK`, `CONFIG` and `MIN_TEXT` from the bundle at run time (#3028), and the repo bundle
+  equals the deployed one for `kb/answer`.
+- **The answer-first arm under its own names** (`kbhc/ask-af` → `kbhc/search-af`),
+  confirmed (owner ruling 2026-11-27).
+- **Dropped arms** as in *Arms*: `rag-ext`, the `low`-reader arm, K = 10/20.
+- **Seeds** as in *Seeds*, unchanged.
+- **p7:** no look since the three listed in *Splits*.
+
+### Environment, output roots, spend
+
+- Env variable names: `KBRAG_HC_WORK`, `KBRAG_HC_CQA_BASE`, `KBRAG_HC_CQA_TOKEN`,
+  `KBRAG_HC_CQA_TENANT`, `KBRAG_HC_DEV_BASE`, `KBRAG_HC_DEV_TOKEN`, `KBRAG_HC_DEV_TENANT`,
+  `KBRAG_P7_GOLD`. Values live in a file outside the repo and are never printed.
+- Output roots: `<work>/study` for the scored runs; `<work>/tune` (tuning) and
+  `<work>/smoke` (smoke test) hold no scored row.
+- **Spend baseline** recorded 2026-11-27T14:00:08Z (both ledgers). Increase at this
+  amendment: **$2.66** (sweep $1.93, smoke $0.03, tuning $0.68, and about $0.01–0.09 of
+  another session's 50 Haiku runs on the development tenant). The $19 stop is unchanged and
+  still counts from the baseline; the remaining estimate is about $12.5, so about $15 in all.
