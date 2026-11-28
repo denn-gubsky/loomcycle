@@ -7897,9 +7897,12 @@ agents:
         // The agent whose open proposals make the backlog. A fork under
         // another name counts its own by that name only if this changes.
         self_agent: "kb/ontologist",
-        // D15: at most ten proposals per pass; a backlog of 30 open ones
+        // D15: at most ten proposals per pass, five per section, so the two
+        // sections are never ranked against each other (measured on dev, a
+        // class on 4 rows in 2 documents lost the last place under one shared
+        // cap to relation kinds of 5 statements); a backlog of 30 open ones
         // stops a propose pass.
-        max_candidates: 10,
+        max_candidates_per_section: { classes: 5, relations: 5 },
         backlog_stop: 30,
         // The most open proposals read (one get_chunk each) to count the
         // backlog, and the most listed (query_chunks' maximum).
@@ -8086,7 +8089,7 @@ agents:
       // ------------------------------------------------------------------ rank
 
       // rank folds the signals into candidates, drops what a propose pass
-      // would not file, and keeps the largest ten.
+      // would not file, and keeps the largest five of each section.
       function rank(st) {
         var all = typeCandidates(st).concat(kindCandidates(st));
         st.considered = all.length;
@@ -8104,11 +8107,13 @@ agents:
           if (a.section !== b.section) { return a.section < b.section ? -1 : 1; }
           return a.name < b.name ? -1 : (a.name > b.name ? 1 : 0);
         });
-        if (kept.length > CONFIG.max_candidates) {
-          st.dropped.cap = kept.length - CONFIG.max_candidates;
-          kept = kept.slice(0, CONFIG.max_candidates);
+        var taken = { classes: 0, relations: 0 };
+        for (var k = 0; k < kept.length; k++) {
+          var s = kept[k].section;
+          if (taken[s] >= CONFIG.max_candidates_per_section[s]) { st.dropped.cap++; continue; }
+          taken[s]++;
+          st.candidates.push(kept[k].out);
         }
-        for (var k = 0; k < kept.length; k++) { st.candidates.push(kept[k].out); }
       }
 
       // typeCandidates: one candidate per type, its populations (document,
