@@ -8,6 +8,32 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.173.0
+
+*The knowledge-base ontologist keeps the five largest candidates of each section, classes and relations, so a small class is no longer crowded out by relation kinds from other scopes. The RFC HC gate study's pre-registration gets its Amendment 0, and its runner fails a row cut by a server restart.*
+
+The v1.173 line: #3045 to #3056.
+- `@loomcycle/client` and the Python adapter move to 1.173.0 (`python-v1.173.0`) with no API change.
+- No proto change. No migration. Code-js ABI unchanged (1.4.0).
+
+### Upgrade notes
+
+- **`kb/ontologist` config (#3054).** `CONFIG.max_candidates: 10` is replaced by `max_candidates_per_section: {classes: 5, relations: 5}`. A pass still carries at most ten proposals. A section with fewer than five candidates leaves its places empty; they don't pass to the other section. A tenant fork that overrides `max_candidates` should move to the new key.
+
+### Knowledge base
+
+- `kb/ontologist`'s ranking keeps the five largest of each section (#3054). The order and the `dropped.cap` count keep their form. The bundle and embedded copies, the help text and the README's `cap` row are updated.
+
+### Bench
+
+- RFC HC (#3056): `bench/docs/kbrag/PREREG-HC.md` Amendment 0 records the release, every agent definition's content hash, both tenant-state digests, checks 1 and 2, the smoke test and the dev-tuning log (v0 kept). The harness now reads `/healthz` `uptime_seconds` after each run and fails a row whose server is younger than the row, so `--retry-failed` reruns it.
+
+### Deploy and housekeeping
+
+- The TrueNAS browser+workspace compose and the cloud compose defaults pin the 1.172.0 images (#3053).
+- `CODEOWNERS` points at `/internal/workspace/` instead of the removed Bash files, and the `Dockerfile.browser` comment points at the TrueNAS install guide (#3055).
+- Dependency bumps: recharts, react-router-dom, lucide-react and `@types/react` in the Web UI and code editor, the Actions minor/patch group, compose images and the Debian base (#3045 to #3052).
+
 ## What's in v1.172.0
 
 *The `Bash` tool, Bashbox, the gbash sandbox, `shell_credentials` and the sandbox sidecar are removed (RFC GW P15): an agent runs commands in a workspace. A server whose config still sets a retired variable or names a removed tool refuses to start, naming each line to change. A stored definition that names a removed item still runs, without it, with a notice. The `sandbox` and `dev-exec` bundles, the builder sidecar and the toolbox image are gone; `dev-workspace` and the `loomcycle-ws-worker` image replace them. `File op=render` gains four house fonts and a photo beside the title.*
