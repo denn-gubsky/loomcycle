@@ -71,7 +71,7 @@ services:
   # One-shot schema migration: runs `loomcycle migrate up`, then exits; the runtime
   # waits for it. The browser image carries the loomcycle binary, so it runs migrate too.
   loomcycle-migrate:
-    image: denngubsky/loomcycle-browser:1.171.0   # keep in lockstep with the runtime
+    image: denngubsky/loomcycle-browser:1.172.0   # keep in lockstep with the runtime
     user: "65532:65532"
     restart: "no"
     command: ["migrate", "up"]
@@ -81,7 +81,7 @@ services:
       - /mnt/tank/loomcycle/config/loomcycle.secrets.env
 
   loomcycle:
-    image: denngubsky/loomcycle-browser:1.171.0
+    image: denngubsky/loomcycle-browser:1.172.0
     user: "65532:65532"
     restart: unless-stopped
     networks: [loomnet, workers]
@@ -148,7 +148,7 @@ services:
   # hold no such right. A session reaches the network only through the runtime's
   # egress routes, through this worker's egress directory.
   workspace-worker:
-    image: denngubsky/loomcycle-ws-worker:1.171.0
+    image: denngubsky/loomcycle-ws-worker:1.172.0
     command: [--role, workspace, --id, ws1]   # keep the id across restarts: it owns the workspaces on disk
     restart: unless-stopped
     depends_on:
@@ -164,7 +164,7 @@ services:
       LOOMCYCLE_WORKSPACE_ENGINE: container
       # The session image, pulled by the host Docker; the -browser one carries
       # Chromium for Workspace op=screenshot. Keep it on the runtime's release.
-      LOOMCYCLE_WORKSPACE_CONTAINER_IMAGE: denngubsky/loomcycle-workspace-browser:1.171.0
+      LOOMCYCLE_WORKSPACE_CONTAINER_IMAGE: denngubsky/loomcycle-workspace-browser:1.172.0
       LOOMCYCLE_WORKSPACE_CONTAINER_EGRESS_DIR: /mnt/tank/loomcycle/wse
     group_add: ["DOCKER_GID"]                   # stat -c %g /var/run/docker.sock
     volumes:
@@ -211,7 +211,7 @@ services:
   # Needs `conversion: mode: remote` in the overlay. Internal network only: no
   # internet, no runtime API, no datasets; a file reaches a worker only as bytes.
   conversion-worker:
-    image: denngubsky/loomcycle-worker:1.171.0
+    image: denngubsky/loomcycle-worker:1.172.0
     restart: unless-stopped
     depends_on:
       loomcycle:
