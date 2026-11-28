@@ -22,7 +22,7 @@
 
 ---
 
-> 🌳 **Stable and in production.** loomcycle is past v1.0 (currently v1.172) — feature-complete, hardened, and distribution-ready (Homebrew, multi-arch Docker, a Claude Code plugin, TS + Python adapters, a TrueNAS app). **Validated by two months of continuous production operation at JobEmber.ai** under real user load, with multi-replica HA on Postgres. Development since v1.0 has been new primitives plus hardening — see [`REVISIONS.md`](REVISIONS.md) for recent releases and [the releases page](https://github.com/denn-gubsky/loomcycle/releases) for the full history. Apache-2.0. We welcome bug reports, security disclosures, feature contributions, downstream consumers, and forks. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
+> 🌳 **Stable and in production.** loomcycle is past v1.0 (currently v1.173) — feature-complete, hardened, and distribution-ready (Homebrew, multi-arch Docker, a Claude Code plugin, TS + Python adapters, a TrueNAS app). **Validated by two months of continuous production operation at JobEmber.ai** under real user load, with multi-replica HA on Postgres. Development since v1.0 has been new primitives plus hardening — see [`REVISIONS.md`](REVISIONS.md) for recent releases and [the releases page](https://github.com/denn-gubsky/loomcycle/releases) for the full history. Apache-2.0. We welcome bug reports, security disclosures, feature contributions, downstream consumers, and forks. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ---
 
@@ -214,7 +214,12 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.172.0) removes the `Bash` tool, Bashbox, the
+The most recent line (v1.173.0) gives the knowledge-base ontologist a
+separate cap per section, five classes and five relations, so a small
+class is no longer cut by relation kinds from other scopes
+(`max_candidates_per_section` replaces `max_candidates`).
+
+Before it, v1.172.0 removes the `Bash` tool, Bashbox, the
 gbash sandbox, `shell_credentials` and the sandbox sidecar: an agent runs
 commands in a workspace. A server whose config still names one refuses to
 start and says what to change; a stored definition that names one runs
@@ -223,7 +228,7 @@ without it. The `sandbox` and `dev-exec` bundles are gone (use
 upgrade notes in [`REVISIONS.md`](REVISIONS.md) and
 [`docs/MIGRATING-FROM-BASH.md`](docs/MIGRATING-FROM-BASH.md).
 
-Before it, v1.171.0 lets a person answer an agent's question in
+Before that, v1.171.0 lets a person answer an agent's question in
 chat by typing: an Interruption may allow an answer outside its options
 (`allow_other`), every resolve path checks an answer the same way, gRPC
 clients now get the question itself, and the chat bridges number the
