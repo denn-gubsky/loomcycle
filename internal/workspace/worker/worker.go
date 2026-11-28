@@ -23,7 +23,6 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -101,9 +100,14 @@ type Options struct {
 	Capacity int
 	// IdleStreams is the idle Op streams kept open; default 16, at most 32.
 	IdleStreams int
-	// Toolchains are reported to the core; nil detects python and node on
-	// PATH (DetectToolchains).
+	// Toolchains are reported to the core; nil probes the engine for
+	// ToolchainProbes.
 	Toolchains []string
+	// ToolchainProbes are the toolchains the engine is probed for
+	// (LOOMCYCLE_WORKSPACE_TOOLCHAINS, RFC HH §1; ParseToolchains). nil
+	// probes for DefaultToolchains, and only a declared list warns of a
+	// toolchain not found.
+	ToolchainProbes []engine.Toolchain
 	// Commands, when not empty, are the programs an exec may start with
 	// (LOOMCYCLE_WORKSPACE_COMMANDS); see engine.Host.Commands.
 	Commands []string
@@ -143,20 +147,6 @@ type Options struct {
 // attach a worker, another protocol version.
 var ErrRefused = workerlink.ErrRefused
 
-// DetectToolchains reports python and node when each is found on PATH.
-func DetectToolchains() []string {
-	var out []string
-	if _, err := exec.LookPath("python3"); err == nil {
-		out = append(out, "python")
-	} else if _, err := exec.LookPath("python"); err == nil {
-		out = append(out, "python")
-	}
-	if _, err := exec.LookPath("node"); err == nil {
-		out = append(out, "node")
-	}
-	return out
-}
-
 // Run serves the dispatchers until ctx ends, reconnecting with backoff.
 func Run(ctx context.Context, opt Options) error {
 	if opt.Token == "" {
@@ -173,6 +163,9 @@ func Run(ctx context.Context, opt Options) error {
 	}
 	if opt.Engine != workspace.EngineHost && opt.Engine != workspace.EngineContainer {
 		return fmt.Errorf("workspace worker: engine %q is not one this worker runs (want host or container)", opt.Engine)
+	}
+	if err := engine.CheckToolchains(opt.ToolchainProbes); err != nil {
+		return fmt.Errorf("workspace worker: %w", err)
 	}
 	if opt.Capacity <= 0 {
 		opt.Capacity = DefaultCapacity
@@ -300,10 +293,17 @@ func Run(ctx context.Context, opt Options) error {
 // container engine also removes the sessions a previous run of this worker
 // left.
 func newEngine(ctx context.Context, opt *Options, log *slog.Logger) (engine.Engine, error) {
+	probes, declared := opt.ToolchainProbes, opt.ToolchainProbes != nil
+	if !declared {
+		probes = DefaultToolchains()
+	}
 	if opt.Engine == workspace.EngineHost {
 		log.Warn("the host engine runs commands as this process's user, with no isolation; use it only on a trusted machine", "root", opt.Root)
 		if opt.Toolchains == nil {
-			opt.Toolchains = DetectToolchains()
+			opt.Toolchains = DetectToolchains(probes)
+			if declared {
+				warnMissing(log, probes, opt.Toolchains)
+			}
 		}
 		return &engine.Host{Commands: opt.Commands, Egress: opt.hostEgress}, nil
 	}
@@ -317,12 +317,15 @@ func newEngine(ctx context.Context, opt *Options, log *slog.Logger) (engine.Engi
 	if err != nil {
 		return nil, fmt.Errorf("workspace worker: %w", err)
 	}
-	tc, err := c.Probe(ctx)
+	tc, err := c.Probe(ctx, probes)
 	if err != nil {
 		return nil, fmt.Errorf("workspace worker: %w", err)
 	}
 	if opt.Toolchains == nil {
 		opt.Toolchains = tc
+		if declared {
+			warnMissing(log, probes, tc)
+		}
 	}
 	// A failed probe is no browser: the worker then never offers a
 	// screenshot (fail closed), and says why.
