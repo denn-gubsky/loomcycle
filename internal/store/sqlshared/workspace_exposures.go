@@ -142,6 +142,41 @@ func WorkspaceExposureClose(ctx context.Context, q Querier, tenantID, id, reason
 	return n > 0, nil
 }
 
+// WorkspaceExposureExtendLease writes the later of the stored and the asked
+// end, on a live row only, and reads the row back in the same transaction.
+func WorkspaceExposureExtendLease(ctx context.Context, db DB, tenantID, id string, until time.Time) (time.Time, error) {
+	var end time.Time
+	err := db.InTx(ctx, func(tx Querier) error {
+		at := tx.Dialect().TimeArg(until.UTC())
+		if _, err := tx.Exec(ctx, `UPDATE workspace_exposures SET lease_expires_at = ? WHERE tenant_id = ? AND id = ? AND `+exposureLive+
+			` AND (lease_expires_at IS NULL OR lease_expires_at < ?)`, at, tenantID, id, at); err != nil {
+			return fmt.Errorf("workspace exposure lease: %w", err)
+		}
+		e, err := WorkspaceExposureGet(ctx, tx, tenantID, id)
+		if err != nil {
+			return err
+		}
+		if !e.Live() || e.LeaseExpiresAt == nil {
+			return &store.ErrNotFound{Kind: "workspace_exposure", ID: id}
+		}
+		end = *e.LeaseExpiresAt
+		return nil
+	})
+	if err != nil {
+		return time.Time{}, err
+	}
+	return end, nil
+}
+
+func WorkspaceExposureClearLease(ctx context.Context, q Querier, tenantID, id string) (bool, error) {
+	n, err := q.Exec(ctx, `UPDATE workspace_exposures SET lease_expires_at = NULL WHERE tenant_id = ? AND id = ? AND `+exposureLive,
+		tenantID, id)
+	if err != nil {
+		return false, fmt.Errorf("workspace exposure lease clear: %w", err)
+	}
+	return n > 0, nil
+}
+
 func WorkspaceExposurePurgeClosed(ctx context.Context, q Querier, before time.Time) (int64, error) {
 	n, err := q.Exec(ctx, `DELETE FROM workspace_exposures WHERE closed_at < ?`, q.Dialect().TimeArg(before.UTC()))
 	if err != nil {

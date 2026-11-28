@@ -162,3 +162,66 @@ func testWorkspaceExposuresKeepClosedRows(t *testing.T, s store.Store) {
 		}
 	}
 }
+
+// RFC HI §2: the lease is the latest end any client asked for, written on a
+// live row only, cleared for every client at once, and read back by Get and
+// the lists; another tenant and a closed row are not found.
+func testWorkspaceExposureLeaseLatestExpiryWins(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	createWorkspace(t, s, mkWorkspace("ws1", "acme", "run1", "w", "wk1"))
+	for _, id := range []string{"ex1", "ex2"} {
+		if _, err := s.WorkspaceExposureCreate(ctx, mkExposure(id, "acme", "ws1", map[string]int{"ex1": 8000, "ex2": 8001}[id]), 2); err != nil {
+			t.Fatal(err)
+		}
+	}
+	base := time.Now().UTC().Truncate(time.Millisecond)
+	far, near := base.Add(2*time.Hour), base.Add(time.Hour)
+	if end, err := s.WorkspaceExposureExtendLease(ctx, "acme", "ex1", far); err != nil || !end.Equal(far) {
+		t.Fatalf("first lease = %v, %v; want %v", end, err, far)
+	}
+	if end, err := s.WorkspaceExposureExtendLease(ctx, "acme", "ex1", near); err != nil || !end.Equal(far) {
+		t.Errorf("a shorter lease = %v, %v; want the later end %v kept", end, err, far)
+	}
+	further := far.Add(time.Hour)
+	if end, err := s.WorkspaceExposureExtendLease(ctx, "acme", "ex1", further); err != nil || !end.Equal(further) {
+		t.Errorf("a longer lease = %v, %v; want %v", end, err, further)
+	}
+	if e, _ := s.WorkspaceExposureGet(ctx, "acme", "ex1"); e.LeaseExpiresAt == nil || !e.LeaseExpiresAt.Equal(further) {
+		t.Errorf("get reads lease %v, want %v", e.LeaseExpiresAt, further)
+	}
+	if l, _ := s.WorkspaceExposureListByWorkspace(ctx, "acme", "ws1"); len(l) != 2 || l[0].LeaseExpiresAt == nil || l[1].LeaseExpiresAt != nil {
+		t.Errorf("list = %+v, want ex1 leased and ex2 not", l)
+	}
+	var nf *store.ErrNotFound
+	if _, err := s.WorkspaceExposureExtendLease(ctx, "other", "ex1", further); !errors.As(err, &nf) {
+		t.Errorf("another tenant's lease = %v, want not found", err)
+	}
+	if _, err := s.WorkspaceExposureExtendLease(ctx, "acme", "nope", further); !errors.As(err, &nf) {
+		t.Errorf("an unknown exposure's lease = %v, want not found", err)
+	}
+	if ok, _ := s.WorkspaceExposureClearLease(ctx, "other", "ex1"); ok {
+		t.Error("another tenant cleared the lease")
+	}
+	if ok, err := s.WorkspaceExposureClearLease(ctx, "acme", "ex1"); !ok || err != nil {
+		t.Fatalf("clear = %v, %v", ok, err)
+	}
+	if e, _ := s.WorkspaceExposureGet(ctx, "acme", "ex1"); e.LeaseExpiresAt != nil {
+		t.Errorf("after clear the lease reads %v, want none", e.LeaseExpiresAt)
+	}
+	// After a clear a shorter end is taken again: nothing is left to win.
+	if end, err := s.WorkspaceExposureExtendLease(ctx, "acme", "ex1", near); err != nil || !end.Equal(near) {
+		t.Errorf("a lease after the clear = %v, %v; want %v", end, err, near)
+	}
+	if _, err := s.WorkspaceExposureClose(ctx, "acme", "ex1", store.WorkspaceExposureClosedIdle, base); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WorkspaceExposureExtendLease(ctx, "acme", "ex1", further); !errors.As(err, &nf) {
+		t.Errorf("a closed exposure's lease = %v, want not found", err)
+	}
+	if ok, _ := s.WorkspaceExposureClearLease(ctx, "acme", "ex1"); ok {
+		t.Error("a closed exposure's lease was cleared")
+	}
+	if e, _ := s.WorkspaceExposureGet(ctx, "acme", "ex1"); e.LeaseExpiresAt == nil || !e.LeaseExpiresAt.Equal(near) {
+		t.Errorf("the closed row's lease = %v, want it as it closed (%v)", e.LeaseExpiresAt, near)
+	}
+}
