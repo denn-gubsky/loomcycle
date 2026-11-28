@@ -851,6 +851,7 @@ func (r *resumeAttempt) buildRunOptions() {
 		OnSteer:             onSteer,
 		CloseSteerIfEmpty:   closeSteer,
 		IdleTimeout:         s.resumedIdleTimeout(run), // a restored chat waits for its operator as a live one does
+		IdleExtend:          s.resumedIdleExtend(run),  // and a leased page keeps it as it keeps a live one
 		Effort:              effort,
 		MarkStalled:         s.markStalledFn(providerID, model),
 		ObserveCall:         s.callObserver(run.ID),

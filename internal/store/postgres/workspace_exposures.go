@@ -41,3 +41,11 @@ func (s *Store) WorkspaceExposureTouch(ctx context.Context, tenantID, id string,
 func (s *Store) WorkspaceExposureListIdle(ctx context.Context, before time.Time) ([]store.WorkspaceExposure, error) {
 	return sqlshared.WorkspaceExposureListIdle(ctx, s.shared(), before)
 }
+
+func (s *Store) WorkspaceExposureExtendLease(ctx context.Context, tenantID, id string, until time.Time) (time.Time, error) {
+	return sqlshared.WorkspaceExposureExtendLease(ctx, s.shared(), tenantID, id, until)
+}
+
+func (s *Store) WorkspaceExposureClearLease(ctx context.Context, tenantID, id string) (bool, error) {
+	return sqlshared.WorkspaceExposureClearLease(ctx, s.shared(), tenantID, id)
+}

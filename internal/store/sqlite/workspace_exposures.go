@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -11,7 +12,9 @@ import (
 // The RFC GW exposure queries live in internal/store/sqlshared.
 
 func (s *Store) WorkspaceExposureCreate(ctx context.Context, row store.WorkspaceExposure, max int) (store.WorkspaceExposure, error) {
-	return sqlshared.WorkspaceExposureCreate(ctx, s.shared(), row, max)
+	return sqlshared.WorkspaceExposureCreateWith(ctx, s.shared(), row, max, func(fn func(sqlshared.Querier) error) error {
+		return s.immediateTx(ctx, func(conn *sql.Conn) error { return fn(sqlshared.SQLiteConn(conn)) })
+	})
 }
 
 func (s *Store) WorkspaceExposureGet(ctx context.Context, tenantID, id string) (store.WorkspaceExposure, error) {
@@ -40,4 +43,12 @@ func (s *Store) WorkspaceExposureTouch(ctx context.Context, tenantID, id string,
 
 func (s *Store) WorkspaceExposureListIdle(ctx context.Context, before time.Time) ([]store.WorkspaceExposure, error) {
 	return sqlshared.WorkspaceExposureListIdle(ctx, s.shared(), before)
+}
+
+func (s *Store) WorkspaceExposureExtendLease(ctx context.Context, tenantID, id string, until time.Time) (time.Time, error) {
+	return sqlshared.WorkspaceExposureExtendLease(ctx, s.shared(), tenantID, id, until)
+}
+
+func (s *Store) WorkspaceExposureClearLease(ctx context.Context, tenantID, id string) (bool, error) {
+	return sqlshared.WorkspaceExposureClearLease(ctx, s.shared(), tenantID, id)
 }

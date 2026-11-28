@@ -1215,6 +1215,15 @@ func (s *Server) resumedIdleTimeout(run store.Run) time.Duration {
 	return s.cfg().Env.InteractiveIdleTimeout
 }
 
+// resumedIdleExtend is a resumed run's IdleExtend (RFC HI D4): a top-level
+// run's, as for a live one; a sub-run, which has no idle timeout, has none.
+func (s *Server) resumedIdleExtend(run store.Run) func(context.Context) time.Time {
+	if isSubRun(run) {
+		return nil
+	}
+	return s.idleExtendFor(run.ID)
+}
+
 // isSubRun reports whether a row is a spawned child. Every sub-run row carries
 // parent_agent_id; parent_run_id came later, so either one marks it.
 func isSubRun(run store.Run) bool {
