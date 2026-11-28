@@ -35,7 +35,7 @@ then start an interactive run with `chat/medium` or `chat/local` from the `/run`
 The agents get: `Read, Write, Edit, Grep, Glob, WebSearch, WebFetch, HTTP,
 Workspace, File, Document, Memory, Path, Skill, SkillDef, Agent,
 Interruption, History` (plus `Context`, auto-added), and a workspace grant
-(`read`, `write`, `exec`, `open`; RFC GW). They run commands in a workspace
+(`read`, `write`, `exec`, `open`, `expose`; RFC GW). They run commands in a workspace
 only: `Bash` and `Bashbox` were removed in v1.172.0
 (`docs/MIGRATING-FROM-BASH.md`).
 
@@ -50,6 +50,11 @@ only: `Bash` and `Bashbox` were removed in v1.172.0
 - **`workspace.mode`** (`local` on a single trusted machine, or a worker) for the
   Workspace tool; see `docs/WORKSPACES.md`. Without it, the agents run no
   commands.
+- **`workspace.expose.enabled: true`** to let the agents show the user a page
+  a workspace server serves (`Workspace op=expose`, RFC GW §5.3). The agents
+  carry the `expose` grant, but the operator's switch is off by default, and
+  while it is off `expose` is refused. A page is model-written active content
+  put in front of the user; leave the switch off unless you want that.
 - **`chat/local` context window** is the GLOBAL `LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX`
   env (e.g. `131072` for 128K) — it is not a per-agent yaml field. To force GPU
   offload on a box where Ollama falls back to CPU, set
