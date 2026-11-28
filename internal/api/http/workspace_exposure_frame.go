@@ -400,6 +400,72 @@ func (f frameAdmission) needsLease(now time.Time) bool {
 	return !now.Before(time.UnixMilli(f.claims.Iat).Add(exposureFrameOwnLife))
 }
 
+// setFrameCORS lets any origin read a frame path's answers (the owner's
+// ruling on RFC HI P3, option a). The route's sandbox gives a framed page an
+// opaque origin, so its fetch to loomcycle's own origin is cross-origin. The
+// frame path's one credential is its address, never a cookie or a header,
+// so whoever can send the request already holds the capability, and reading
+// the answer gives them nothing more. Credentials are never allowed
+// (Access-Control-Allow-Credentials is never sent, and "*" forbids them).
+// Set on frame-path answers only: the header form and every other route
+// send no CORS header.
+func setFrameCORS(h http.Header) {
+	h.Set("Access-Control-Allow-Origin", "*")
+	h.Del("Access-Control-Allow-Credentials")
+}
+
+// isCORSPreflight reports whether r is a browser's CORS preflight.
+func isCORSPreflight(r *http.Request) bool {
+	return r.Method == http.MethodOptions && r.Header.Get("Access-Control-Request-Method") != ""
+}
+
+// framePreflightMethods are the methods a frame's preflight allows.
+var framePreflightMethods = map[string]bool{
+	http.MethodGet: true, http.MethodHead: true, http.MethodPost: true,
+	http.MethodPut: true, http.MethodPatch: true, http.MethodDelete: true,
+}
+
+// framePreflightForbidden are request headers a preflight never allows: the
+// frame path takes no credential beside its capability.
+var framePreflightForbidden = map[string]bool{"authorization": true, "proxy-authorization": true, "cookie": true}
+
+// answerFramePreflight answers a frame's CORS preflight with what it asked
+// for, within bounds: one of the ordinary methods, and the request headers
+// it named that are plain header names and no credential.
+func answerFramePreflight(w http.ResponseWriter, r *http.Request) {
+	h := w.Header()
+	setFrameCORS(h)
+	if m := r.Header.Get("Access-Control-Request-Method"); framePreflightMethods[m] {
+		h.Set("Access-Control-Allow-Methods", m)
+	}
+	var allowed []string
+	for _, v := range r.Header.Values("Access-Control-Request-Headers") {
+		for _, name := range strings.Split(v, ",") {
+			name = strings.ToLower(strings.TrimSpace(name))
+			if name != "" && headerToken(name) && !framePreflightForbidden[name] {
+				allowed = append(allowed, name)
+			}
+		}
+	}
+	if len(allowed) > 0 {
+		h.Set("Access-Control-Allow-Headers", strings.Join(allowed, ", "))
+	}
+	h.Set("Access-Control-Max-Age", "600")
+	h.Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// headerToken reports whether s is a header field name (an RFC 9110 token).
+func headerToken(s string) bool {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || strings.IndexByte("!#$%&'*+-.^_`|~", c) >= 0) {
+			return false
+		}
+	}
+	return len(s) <= 128
+}
+
 // exposureFrameCache keeps each capability's resolved credential for at most
 // its window, so a frame's many requests do not each read the credential.
 // The zero value is ready. Bounded: when full, expired entries go, and if

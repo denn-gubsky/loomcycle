@@ -22,13 +22,10 @@ import (
 // fetch to a relative API path and WebSocket to a relative path both work,
 // with no Authorization header anywhere.
 //
-// The fetch's answer is not yet readable: the route's sandbox gives the page
-// an opaque origin, so a fetch to loomcycle's origin is cross-origin, and the
-// route sends no Access-Control-Allow-Origin. The request reaches the
-// application; the browser withholds the answer from the script. Whether the
-// frame path may answer with CORS headers is the owner's ruling to make (RFC
-// HI P3 PR); until then the test asserts the request arrives and records the
-// fetch's outcome.
+// The route's sandbox gives the page an opaque origin, so its fetch to
+// loomcycle's origin is cross-origin: the frame path answers it with
+// Access-Control-Allow-Origin: * (the owner's ruling on RFC HI P3, option a),
+// and a fetch with a preflight is answered by the route itself.
 //
 // It needs a Chrome or Chromium: LOOMCYCLE_TEST_CHROME names one, else the
 // usual places are tried. Without one it is skipped (CI has none); the
@@ -45,7 +42,7 @@ func TestExposureFrame_ASandboxedIframeRunsAMultiFileApp(t *testing.T) {
 	}
 	tf, ts := frameServer(t)
 
-	type seen struct{ path, auth, referer string }
+	type seen struct{ method, path, auth, referer string }
 	var (
 		mu       sync.Mutex
 		requests []seen
@@ -56,7 +53,7 @@ func TestExposureFrame_ASandboxedIframeRunsAMultiFileApp(t *testing.T) {
 	socket := echoSocket(&wsSeen{})
 	app := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
-		requests = append(requests, seen{r.URL.RequestURI(), r.Header.Get("Authorization"), r.Header.Get("Referer")})
+		requests = append(requests, seen{r.Method, r.URL.RequestURI(), r.Header.Get("Authorization"), r.Header.Get("Referer")})
 		mu.Unlock()
 		switch r.URL.Path {
 		case "/index.html":
@@ -73,6 +70,11 @@ func TestExposureFrame_ASandboxedIframeRunsAMultiFileApp(t *testing.T) {
 			w.Header().Set("Content-Type", "text/javascript")
 			_, _ = io.WriteString(w, frameAppScript)
 		case "/api/data":
+			if r.Method == http.MethodPost {
+				b, _ := io.ReadAll(r.Body)
+				_, _ = io.WriteString(w, "posted:"+string(b))
+				return
+			}
 			_, _ = io.WriteString(w, "data-ok")
 		case "/ws":
 			socket(w, r)
@@ -118,10 +120,7 @@ func TestExposureFrame_ASandboxedIframeRunsAMultiFileApp(t *testing.T) {
 		mu.Unlock()
 		t.Fatalf("the frame's application never reported; it was asked %+v", asked)
 	}
-	if got.Get("fetch") != "ok" {
-		t.Logf("in the frame fetch = %q: the answer is withheld from the opaque origin (CORS), pending the ruling", got.Get("fetch"))
-	}
-	for _, k := range []string{"css", "img", "ws"} {
+	for _, k := range []string{"css", "img", "fetch", "post", "ws"} {
 		if got.Get(k) != "ok" {
 			t.Errorf("in the frame %s = %q, want ok (report %v)", k, got.Get(k), got)
 		}
@@ -138,6 +137,9 @@ func TestExposureFrame_ASandboxedIframeRunsAMultiFileApp(t *testing.T) {
 		}
 	}
 	for _, r := range requests {
+		if r.method == http.MethodOptions {
+			t.Errorf("the preflight reached the application: %+v", r)
+		}
 		if r.auth != "" || strings.Contains(r.path, frameCap) || strings.Contains(r.referer, frameCap) || strings.Contains(r.path, "/~f/") {
 			t.Errorf("the application received a credential or the capability: %+v", r)
 		}
@@ -154,6 +156,11 @@ const frameAppScript = `
   out.css = getComputedStyle(document.body).color === "rgb(1, 2, 3)" ? "ok" : "no";
   out.img = document.getElementById("i").naturalWidth === 1 ? "ok" : "no";
   try { out.fetch = (await (await fetch("api/data")).text()) === "data-ok" ? "ok" : "no"; } catch (e) { out.fetch = String(e); }
+  // A JSON POST is not a simple request: the browser sends a preflight first.
+  try {
+    const r = await fetch("api/data", {method: "POST", headers: {"Content-Type": "application/json", "X-App": "1"}, body: "{\"a\":1}"});
+    out.post = (await r.text()) === "posted:{\"a\":1}" ? "ok" : "no";
+  } catch (e) { out.post = String(e); }
   try {
     out.ws = await new Promise((resolve) => {
       const ws = new WebSocket(new URL("ws", location.href).href.replace(/^http/, "ws"), ["loomcycle.surface.v1"]);

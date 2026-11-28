@@ -539,3 +539,141 @@ func TestExposureFrame_MintAndFirstUseAreAuditedByJTI(t *testing.T) {
 		t.Errorf("the first use was not recorded under the jti (fresh=%v err=%v)", fresh, err)
 	}
 }
+
+// frameDo sends method to path with hdr and no credential beyond what hdr
+// carries, never following a redirect.
+func frameDo(t *testing.T, ts *httptest.Server, method, path string, hdr map[string]string) *http.Response {
+	t.Helper()
+	req, _ := http.NewRequest(method, ts.URL+path, nil)
+	for k, v := range hdr {
+		req.Header.Set(k, v)
+	}
+	c := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	resp, err := c.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	return resp
+}
+
+// The owner's ruling on RFC HI P3 (option a): a frame's page runs in an
+// opaque origin, so its fetch is cross-origin. Every answer under the frame
+// prefix, refusals included, carries Access-Control-Allow-Origin: *, and
+// none ever carries Access-Control-Allow-Credentials, whatever the
+// application sends. The header form and every other route are unchanged.
+func TestExposureFrame_AllowsAnyOriginOnFrameAnswersOnly(t *testing.T) {
+	_, ts := frameServer(t)
+	m := mustFrame(t, ts, "alice-token", testExposureID)
+	frameCap := capOf(t, m.FramePath)
+	wantCORS := func(what string, resp *http.Response, want string) {
+		t.Helper()
+		if got := resp.Header.Get("Access-Control-Allow-Origin"); got != want {
+			t.Errorf("%s (%d): Access-Control-Allow-Origin = %q, want %q", what, resp.StatusCode, got, want)
+		}
+		if v := resp.Header.Values("Access-Control-Allow-Credentials"); len(v) != 0 {
+			t.Errorf("%s: Access-Control-Allow-Credentials = %v, want none", what, v)
+		}
+	}
+	null := map[string]string{"Origin": "null"}
+	if resp := frameDo(t, ts, "GET", m.FramePath+"index.html", null); resp.StatusCode != http.StatusOK {
+		t.Fatalf("frame GET = %d", resp.StatusCode)
+	} else {
+		wantCORS("a frame answer", resp, "*")
+	}
+	// The application's own CORS headers never pass (hostile sends
+	// Access-Control-Allow-Origin: * and -Credentials: true).
+	wantCORS("a frame answer of a hostile application", frameDo(t, ts, "GET", m.FramePath+"hostile", null), "*")
+	wantCORS("a frame redirect", frameDo(t, ts, "GET", m.FramePath+"redirect", null), "*")
+	parts := strings.Split(frameCap, ".")
+	wantCORS("a refused capability", frameDo(t, ts, "GET", framePathFor(testExposureID, parts[0]+"."+parts[1]+".AAAA"), null), "*")
+
+	bearer := map[string]string{"Origin": "https://board.example", "Authorization": "Bearer alice-token"}
+	if resp := frameDo(t, ts, "GET", pagePath, bearer); resp.StatusCode != http.StatusOK {
+		t.Fatalf("header form = %d", resp.StatusCode)
+	} else {
+		wantCORS("a header-form answer", resp, "")
+	}
+	wantCORS("a header-form answer of a hostile application", frameDo(t, ts, "GET", exposurePrefix+testExposureID+"/hostile", bearer), "")
+	wantCORS("a header-form refusal", frameDo(t, ts, "GET", pagePath, null), "")
+	wantCORS("the page's state", frameDo(t, ts, "GET", exposurePrefix+testExposureID, bearer), "")
+	wantCORS("the frame mint", frameDo(t, ts, "POST", framePrefix+testExposureID, bearer), "")
+}
+
+// A preflight carries no credential, but its address carries the
+// capability: the route checks it exactly as for any frame request, and
+// then answers the preflight itself; the application never sees it.
+func TestExposureFrame_AnswersAPreflightItself(t *testing.T) {
+	tf, ts := frameServer(t)
+	m := mustFrame(t, ts, "alice-token", testExposureID)
+	frameCap := capOf(t, m.FramePath)
+	pre := map[string]string{"Origin": "null", "Access-Control-Request-Method": "POST",
+		"Access-Control-Request-Headers": "content-type, x-app"}
+	before := tf.f.seenCount()
+	resp := frameDo(t, ts, "OPTIONS", m.FramePath+"api/data", pre)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("preflight = %d, want 204", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "*" {
+		t.Errorf("preflight Access-Control-Allow-Origin = %q, want *", got)
+	}
+	if v := resp.Header.Values("Access-Control-Allow-Credentials"); len(v) != 0 {
+		t.Errorf("preflight Access-Control-Allow-Credentials = %v, want none", v)
+	}
+	if got := resp.Header.Get("Access-Control-Allow-Methods"); !strings.Contains(got, "POST") {
+		t.Errorf("preflight Access-Control-Allow-Methods = %q, want POST in it", got)
+	}
+	if got := strings.ToLower(resp.Header.Get("Access-Control-Allow-Headers")); !strings.Contains(got, "content-type") || !strings.Contains(got, "x-app") {
+		t.Errorf("preflight Access-Control-Allow-Headers = %q, want content-type and x-app", got)
+	}
+	wantNoReferrer(t, "preflight", resp.Header)
+	if tf.f.seenCount() != before {
+		t.Error("the preflight reached the application")
+	}
+	// A credential is never allowed through: the frame path refuses one.
+	resp = frameDo(t, ts, "OPTIONS", m.FramePath+"api/data", map[string]string{"Origin": "null",
+		"Access-Control-Request-Method": "GET", "Access-Control-Request-Headers": "authorization"})
+	if strings.Contains(strings.ToLower(resp.Header.Get("Access-Control-Allow-Headers")), "authorization") {
+		t.Errorf("a preflight allowed the Authorization header: %q", resp.Header.Get("Access-Control-Allow-Headers"))
+	}
+
+	refused := map[string]string{
+		"a tampered capability": framePathFor(testExposureID, frameCap+"x") + "api/data",
+		"another page's":        framePathFor(exposureB, frameCap) + "api/data",
+		"an aged one, no lease": framePathFor(testExposureID, reframe(t, tf, frameCap, func(c *ticketClaims) { c.Iat = time.Now().Add(-11 * time.Minute).UnixMilli() })) + "api/data",
+		"past its hard end": framePathFor(testExposureID, reframe(t, tf, frameCap, func(c *ticketClaims) {
+			c.Iat = time.Now().Add(-2 * time.Hour).UnixMilli()
+			c.Exp = time.Now().Add(-time.Minute).UnixMilli()
+		})) + "api/data",
+	}
+	for what, path := range refused {
+		if resp := frameDo(t, ts, "OPTIONS", path, pre); resp.StatusCode < 400 {
+			t.Errorf("a preflight with %s = %d, want a refusal", what, resp.StatusCode)
+		}
+	}
+	if _, err := tf.f.st.WorkspaceExposureClose(context.Background(), "acme", testExposureID, lifecycle.SurfaceUnexposed, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if resp := frameDo(t, ts, "OPTIONS", m.FramePath+"api/data", pre); resp.StatusCode != http.StatusNotFound {
+		t.Errorf("a preflight on a closed page = %d, want 404", resp.StatusCode)
+	}
+	if tf.f.seenCount() != before {
+		t.Error("a refused preflight reached the application")
+	}
+}
+
+// An OPTIONS that is not a preflight (no Access-Control-Request-Method) is
+// the application's, through a frame as through the header form; and the
+// header form's preflight-looking OPTIONS is the application's too.
+func TestExposureFrame_PlainOptionsReachesTheApplication(t *testing.T) {
+	tf, ts := frameServer(t)
+	m := mustFrame(t, ts, "alice-token", testExposureID)
+	before := tf.f.seenCount()
+	frameDo(t, ts, "OPTIONS", m.FramePath+"api/data", nil)
+	frameDo(t, ts, "OPTIONS", pagePath, map[string]string{"Authorization": "Bearer alice-token",
+		"Origin": "https://board.example", "Access-Control-Request-Method": "POST"})
+	if got := tf.f.seenCount() - before; got != 2 {
+		t.Errorf("the application saw %d OPTIONS requests, want 2", got)
+	}
+}

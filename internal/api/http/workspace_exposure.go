@@ -111,6 +111,7 @@ func (h *exposureHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	frameCap, _, framed := exposureFrameOf(r)
 	var frame *frameAdmission
 	if framed {
+		setFrameCORS(w.Header())
 		f, ok := frameAdmission{}, false
 		if h.frame != nil {
 			f, ok = h.frame(frameCap, r.PathValue("id"))
@@ -198,6 +199,13 @@ func (h *exposureHandler) serve(w http.ResponseWriter, r *http.Request, p auth.P
 	}
 	if frame != nil && !frame.validFor(e, time.Now()) {
 		exposureFrameExpired(w)
+		return
+	}
+	if frame != nil && isCORSPreflight(r) {
+		// Checked as every frame request is (the capability in its address,
+		// its life, the page open), then answered here: the application
+		// never sees a preflight, and cannot widen what it allows.
+		answerFramePreflight(w, r)
 		return
 	}
 	if isUpgrade(r) && !isWebSocketUpgrade(r) {
@@ -421,6 +429,9 @@ func setExposureHeaders(h http.Header) {
 func exposureHeadersFirst(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		setExposureHeaders(w.Header())
+		if _, _, framed := exposureFrameOf(r); framed {
+			setFrameCORS(w.Header())
+		}
 		next.ServeHTTP(w, r)
 	})
 }
