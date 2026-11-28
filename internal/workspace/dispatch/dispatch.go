@@ -38,6 +38,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/safego"
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/toolchainname"
 	"github.com/denn-gubsky/loomcycle/internal/workerid"
 	"github.com/denn-gubsky/loomcycle/internal/workerlink"
 	"github.com/denn-gubsky/loomcycle/internal/workspace"
@@ -567,8 +568,8 @@ func (d *Dispatcher) admit(owner string, att auth.WorkerAttach, h *workspacepb.H
 	// §2): the attach token already trusts it, and a false name only
 	// misplaces its own tenant's workspaces.
 	for _, t := range h.GetToolchains() {
-		if !workspace.ValidToolchainName(t) {
-			return nil, nil, status.Errorf(codes.InvalidArgument, "toolchain name %q is not 1 to %d of a-z 0-9 . + _ - starting with a letter", t, workspace.MaxToolchainNameLen)
+		if !toolchainname.Valid(t) {
+			return nil, nil, status.Errorf(codes.InvalidArgument, "toolchain name %q is not 1 to %d of a-z 0-9 . + _ - starting with a letter", t, toolchainname.MaxLen)
 		}
 	}
 	if b := h.GetBuildVersion(); b != d.opt.BuildVersion {
@@ -1000,29 +1001,29 @@ func (d *Dispatcher) Place(ctx context.Context, req PlaceRequest) ([]string, err
 		used, cap int
 	}
 	var matched []cand
+	// carriesAll: some eligible worker carries every toolchain asked, so
+	// the toolchains are not why nothing matched.
+	carriesAll := false
 	d.mu.Lock()
 	for _, w := range d.workers {
-		// engineServes is checked at attach too; again here so a shared
-		// host worker can never be handed a workspace, whatever let it in.
-		if !w.servesUser(req.TenantID, req.UserID) || !engineServes(w.serves, w.engine) || workspace.EngineRank(w.engine) < workspace.EngineRank(req.Engine) {
-			continue
-		}
-		// A personal worker takes only its user's root workspaces, on a
-		// root it offers; any other worker never takes one (D-P13-4).
-		if w.serves.Personal != (req.Root != "") ||
-			(req.Root != "" && !slices.Contains(w.labels, workspace.RootLabelPrefix+req.Root)) {
+		if !w.eligible(req) {
 			continue
 		}
 		ok := true
 		for _, t := range req.Toolchains {
 			ok = ok && w.tools[t]
 		}
+		carriesAll = carriesAll || ok
 		for _, l := range req.Labels {
 			ok = ok && slices.Contains(w.labels, l) && (l != workspace.GitLabel || w.protocol >= workspace.GitProtocolVersion)
 		}
 		if ok {
 			matched = append(matched, cand{id: w.id, cap: w.capacity})
 		}
+	}
+	var offered map[string][]string
+	if len(matched) == 0 && !carriesAll {
+		offered = d.offeredLocked(req)
 	}
 	d.mu.Unlock()
 	if len(matched) == 0 {
@@ -1031,6 +1032,8 @@ func (d *Dispatcher) Place(ctx context.Context, req PlaceRequest) ([]string, err
 			detail = fmt.Sprintf("no personal worker of yours is attached offering root %q", req.Root)
 		} else if req.TenantID == "" {
 			detail = "the run has no tenant, and only a local worker configured for the empty tenant (workspace.mode local, workspace.local.tenant unset, no authentication) serves one"
+		} else if !carriesAll && len(req.Toolchains) > 0 {
+			detail = toolchainDetail(req.Toolchains, offered)
 		}
 		return nil, &OpError{Class: workspace.ClassNoWorker, Detail: detail}
 	}
@@ -1061,6 +1064,80 @@ func (d *Dispatcher) Place(ctx context.Context, req PlaceRequest) ([]string, err
 		out[i] = c.id
 	}
 	return out, nil
+}
+
+// eligible reports whether w may hold a workspace req asks for, before its
+// toolchains, labels and load are looked at: it serves the tenant (and the
+// user, for a personal worker), runs an engine at least as isolating as
+// asked, and is a personal worker exactly when a root is asked for, offering
+// that root. Under Dispatcher.mu.
+func (w *worker) eligible(req PlaceRequest) bool {
+	// engineServes is checked at attach too; again here so a shared host
+	// worker can never be handed a workspace, whatever let it in.
+	if !w.servesUser(req.TenantID, req.UserID) || !engineServes(w.serves, w.engine) || workspace.EngineRank(w.engine) < workspace.EngineRank(req.Engine) {
+		return false
+	}
+	// A personal worker takes only its user's root workspaces, on a root it
+	// offers; any other worker never takes one (D-P13-4).
+	return w.serves.Personal == (req.Root != "") &&
+		(req.Root == "" || slices.Contains(w.labels, workspace.RootLabelPrefix+req.Root))
+}
+
+// toolchainDetail explains a no_worker refusal that the toolchains asked
+// caused (RFC HH §3): those no eligible worker carries, else that no one
+// worker carries them together; and in both cases what is on offer.
+func toolchainDetail(asked []string, offered map[string][]string) string {
+	var missing []string
+	for _, t := range asked {
+		if _, ok := offered[t]; !ok && !slices.Contains(missing, t) {
+			missing = append(missing, t)
+		}
+	}
+	names := make([]string, 0, len(offered))
+	for t := range offered {
+		names = append(names, t)
+	}
+	sort.Strings(names)
+	offer := "none are on offer"
+	if len(names) > 0 {
+		offer = "on offer: " + strings.Join(names, ", ")
+	}
+	if len(missing) > 0 {
+		return fmt.Sprintf("no attached workspace worker serving you carries the toolchain(s) %s (%s)", strings.Join(missing, ", "), offer)
+	}
+	return fmt.Sprintf("no one worker carries %s together (%s); ask for fewer, or for those one worker has", strings.Join(asked, ", "), offer)
+}
+
+// OfferedToolchains is what a workspace for user of tenant, on an engine at
+// least as isolating as minEngine, may ask for (RFC HH §3): each toolchain a
+// worker eligible for it carries, with the engines it is carried on, sorted.
+// No root is asked for, so no personal worker counts: it takes only root
+// workspaces, and a root names no toolchain. Names only, never which worker
+// or how many: a caller learns nothing of the fleet beyond what it may use.
+func (d *Dispatcher) OfferedToolchains(tenant, user, minEngine string) map[string][]string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.offeredLocked(PlaceRequest{TenantID: tenant, UserID: user, Engine: minEngine})
+}
+
+// offeredLocked is OfferedToolchains for req's tenant, user, engine and
+// root. Under Dispatcher.mu.
+func (d *Dispatcher) offeredLocked(req PlaceRequest) map[string][]string {
+	out := map[string][]string{}
+	for _, w := range d.workers {
+		if !w.eligible(req) {
+			continue
+		}
+		for t := range w.tools {
+			if !slices.Contains(out[t], w.engine) {
+				out[t] = append(out[t], w.engine)
+			}
+		}
+	}
+	for _, engines := range out {
+		sort.Strings(engines)
+	}
+	return out
 }
 
 // Attached reports whether a worker of this id is attached to this replica

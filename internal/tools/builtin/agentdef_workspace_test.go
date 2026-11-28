@@ -196,3 +196,35 @@ func TestAgentDefCreate_WorkspaceCeiling(t *testing.T) {
 	wantRefused(t, agentDefOp(t, tool, reader, "fork", "sdlc/r1", `{"workspace":{"ops":["exec","write"],"engine":"container"}}`),
 		"fork widening to write", "workspace.ops", `"write"`)
 }
+
+// RFC HH §4: workspace.toolchains survives the overlay and a fork that does
+// not send it, and a create changing only it is a new version (authority,
+// outside content_sha256, so the dedup must compare it).
+func TestAgentDefTool_WorkspaceToolchainsRoundTrip(t *testing.T) {
+	tool, ctx, cleanup := agentDefFixture(t)
+	defer cleanup()
+	ctx = operatorPlane(ctx)
+	plain := &config.AgentWorkspace{Ops: []string{"read"}, Open: true}
+	pinned := &config.AgentWorkspace{Ops: []string{"read"}, Open: true, Toolchains: []string{"cpp", "cmake"}}
+	for _, step := range []struct {
+		op, prompt, field string
+		want              *config.AgentWorkspace
+	}{
+		{"create", "code", `,"workspace":{"ops":["read"],"open":true}`, plain},
+		{"create", "code", `,"workspace":{"ops":["read"],"open":true,"toolchains":["cpp","cmake"]}`, pinned},
+		{"fork", "code more", ``, pinned},
+	} {
+		res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"`+step.op+`","name":"ws-tc","promote":true,"overlay":{
+			"system_prompt":"`+step.prompt+`","tools":["Read"]`+step.field+`}}`))
+		if res.IsError {
+			t.Fatalf("%s %s: %s", step.op, step.field, res.Text)
+		}
+		if got := lookupWorkspace(t, tool, "ws-tc"); !reflect.DeepEqual(got, step.want) {
+			t.Errorf("after %s %s: workspace = %+v, want %+v", step.op, step.field, got, step.want)
+		}
+	}
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"ws-bad","overlay":{"system_prompt":"code","workspace":{"open":true,"toolchains":["C++"]}}}`))
+	if !res.IsError {
+		t.Errorf("a malformed toolchain was stored: %s", res.Text)
+	}
+}

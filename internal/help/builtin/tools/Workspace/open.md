@@ -10,8 +10,17 @@ workspace unchanged.
 
 - `name` (required) — your label for it in this run: 1–64 letters, digits,
   `.`, `-` or `_`, starting with a letter or digit.
-- `toolchain` — `python` or `node`: the worker must have it. Omit for a
-  general workspace, which goes on a worker with both.
+- `toolchain` — a toolchain the worker must carry, e.g. `python`, `node`,
+  `go`, `cpp`; `toolchains` lists the ones on offer to you. Omit it and
+  `toolchains` for a general workspace, which goes on a worker with
+  `python` and `node`.
+- `toolchains` — a list of toolchains the worker must carry, all of them,
+  e.g. `["go", "cpp", "cmake"]`. Not with `toolchain`. A toolchain only
+  narrows where the workspace goes: a worker reports one only when its image
+  has it, and a workspace's session cannot install a compiler.
+  Your grant's `workspace.toolchains` (Context op=self shows them) are added
+  to every open but a root's; with neither argument they replace the
+  general workspace's `python` and `node`.
 - `egress` — the routes the workspace may reach the network through, from
   those your grant names (Context op=self shows them). Omit for all of them;
   `[]` for none. A command reaches a route at `http://egress/<route>/…`;
@@ -19,7 +28,8 @@ workspace unchanged.
   opened: opening the same name again returns it with the routes it has.
 - `template` — a template to start from, by name (`templates` lists them):
   your own first, then your tenant's. The workspace starts as a copy of its
-  files and is then yours. Not with `toolchain`: the template names its own.
+  files and is then yours. Not with `toolchain` or `toolchains`: the
+  template names its own.
 - `lifetime` — `ephemeral` (the default: gone when your run ends) or
   `durable`: kept under your user and this name after your run ends, with
   its files. A later run of yours opens it again with
@@ -32,7 +42,8 @@ workspace unchanged.
   worker offers it under. The workspace IS that folder: the user's real
   files, not a copy, and a command runs with the user's own rights there.
   Needs your grant's `workspace.roots`, and the user's personal worker
-  attached. Not with `template`, `toolchain` or `lifetime: durable`.
+  attached. Not with `template`, `toolchain`, `toolchains` or
+  `lifetime: durable`.
   `checkpoint`, `checkpoints`, `restore`, `delete_checkpoint`, `fork`,
   `save_template` and `share` are refused on it (`not_on_root`); `release`
   leaves the folder as it is. Not offered over loomcycle's MCP server.
@@ -69,7 +80,9 @@ it started at) and `default_branch`.
 - `limit` — your run (or your tenant) holds as many workspaces as allowed:
   `release` one first. For durable ones: you keep as many as allowed
   (`workspace.durable.max_per_user`); discard one first.
-- `no_worker` — no attached worker serves you with that toolchain.
+- `no_worker` — no attached worker serves you with those toolchains. The
+  detail names the ones no worker serving you carries (or says no one worker
+  carries them together) and lists those on offer.
 - `at_capacity` — every worker that could take it is full.
 - `template_not_found` — no template of that name you may use.
 - `workspace_over_quota` — the template holds more than a workspace may.
@@ -90,4 +103,14 @@ A workspace for a data script:
 
 ```json result
 {"name": "analysis", "state": "ready", "engine": "host"}
+```
+
+A workspace that can build C++ (`toolchains` lists what is on offer):
+
+```json
+{"op": "open", "name": "build", "toolchains": ["cpp", "cmake"]}
+```
+
+```json result
+{"name": "build", "state": "ready", "engine": "container"}
 ```

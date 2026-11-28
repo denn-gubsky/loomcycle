@@ -14,6 +14,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/audit"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/toolchainname"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/workspace"
 	"github.com/denn-gubsky/loomcycle/internal/workspace/dispatch"
@@ -62,7 +63,7 @@ func (w *Workspace) Name() string { return "Workspace" }
 
 func (w *Workspace) Description() string {
 	return "Open a workspace — a directory on a workspace worker, away from the runtime — and run shell commands and file operations in it. " +
-		"Pick the operation with `op`: open (`name`, optional `toolchain`, optional `egress`: the routes it may reach the network through, default all your grant names; with `repo`, an https repository URL, a git workspace: the repository checked out on its own branch, optional `branch` (default loom/<name>-<id>), `base` (a full ref or commit to start at, default the forge's default branch) and `credential` ($cred:<name>), which needs your git_remote fetch), list, status, release; exec (`command`, optional `cwd`, `timeout_s`); " +
+		"Pick the operation with `op`: open (`name`, optional `toolchain` or `toolchains`: what the worker must carry, default python and node; optional `egress`: the routes it may reach the network through, default all your grant names; with `repo`, an https repository URL, a git workspace: the repository checked out on its own branch, optional `branch` (default loom/<name>-<id>), `base` (a full ref or commit to start at, default the forge's default branch) and `credential` ($cred:<name>), which needs your git_remote fetch), list, status, release; toolchains lists the toolchains a workspace you open may ask for, each with the engines it is on; exec (`command`, optional `cwd`, `timeout_s`); " +
 		"read, write, edit, glob, grep with the same arguments as the Read, Write, Edit, Glob and Grep tools (no `volume`); " +
 		"run_cell (`code`, optional `kernel` python|node, `timeout_s`) runs code in an interpreter that keeps its variables between cells, reset_kernel starts it clean. " +
 		"view (`path`) shows you a PNG, JPEG, GIF or WebP from the workspace as a picture, e.g. a chart you drew. " +
@@ -74,7 +75,7 @@ func (w *Workspace) Description() string {
 		"A workspace another agent shared with you is named `<name>@<its agent id>` (list shows them): read, view, glob and grep on it, write and edit with read_write, and request to a port its owner exposed when shared with connect; never exec or run_cell. " +
 		"A workspace belongs to the run that opened it and is deleted when that run ends; copy out what you need to keep with read. " +
 		"Commands run on the worker's host engine as the worker's user with no isolation: it is not a sandbox, and has no network guarantees either way. " +
-		"Use this for work that needs a real shell and toolchains (python, node); use Read/Write/Edit on your volumes for files you keep. " +
+		"Use this for work that needs a real shell and toolchains (python and node, and whatever else toolchains lists); use Read/Write/Edit on your volumes for files you keep. " +
 		"Paths are relative to the workspace; `..`, absolute paths elsewhere and symlinks out of it are refused. See the `Workspace` help topic."
 }
 
@@ -82,7 +83,7 @@ func (w *Workspace) InputSchema() json.RawMessage {
 	return json.RawMessage(`{
 		"type": "object",
 		"properties": {
-			"op":               {"type": "string", "enum": ["open","release","list","status","exec","read","write","edit","glob","grep","share","unshare","run_cell","reset_kernel","view","start","stop","logs","request","await","expose","unexpose","screenshot","checkpoint","checkpoints","restore","delete_checkpoint","fork","save_template","delete_template","templates","git_fetch","git_pull","git_push","git_status","git_diff","git_log","git_commit","git_branch","git_checkout"]},
+			"op":               {"type": "string", "enum": ["open","release","list","status","toolchains","exec","read","write","edit","glob","grep","share","unshare","run_cell","reset_kernel","view","start","stop","logs","request","await","expose","unexpose","screenshot","checkpoint","checkpoints","restore","delete_checkpoint","fork","save_template","delete_template","templates","git_fetch","git_pull","git_push","git_status","git_diff","git_log","git_commit","git_branch","git_checkout"]},
 			"name":             {"type": "string", "description": "The workspace's name, your label for it within this run: 1-64 letters, digits, '.', '-', '_'. Every op but list takes it. A workspace shared with you: <name>@<owner agent id> (read, write, edit, glob, grep only)."},
 			"with":             {"type": "string", "description": "share/unshare: the agent id of the run to share with: your parent, a child, a sibling or another run of your user."},
 			"access":           {"type": "string", "enum": ["read","read_write"], "description": "share: read (read, glob, grep and copying files out) or read_write (also writing files in). Never commands."},
@@ -90,7 +91,8 @@ func (w *Workspace) InputSchema() json.RawMessage {
 			"root":             {"type": "string", "description": "open: a folder of your user's own machine, by the name their personal worker offers it under; the workspace IS that folder, the user's real files (needs workspace.roots; not with template, toolchain or lifetime durable). Checkpoints, fork, templates and shares are refused on it, and release leaves the folder."},
 			"discard":          {"type": "boolean", "description": "release: delete a durable workspace, files and all, instead of keeping it (default false)."},
 			"connect":          {"type": "boolean", "description": "share: also let the peer send requests to the ports you exposed (needs your workspace.connect grant; default false)."},
-			"toolchain":        {"type": "string", "enum": ["python","node"], "description": "open: the toolchain the worker must have. Omit for a general workspace, on a worker with both."},
+			"toolchain":        {"type": "string", "description": "open: a toolchain the worker must carry, e.g. python, node, go, cpp (op toolchains lists those on offer). Omit it and toolchains for a general workspace, on a worker with python and node."},
+			"toolchains":       {"type": "array", "items": {"type": "string"}, "description": "open: the toolchains the worker must carry, all of them, e.g. [go, cpp, cmake]; not with toolchain."},
 			"egress":           {"type": "array", "items": {"type": "string"}, "description": "open: the egress routes the workspace may send requests out through, at http://egress/<route>/…, from those your grant names. Omit for all of them; [] for none."},
 			"command":          {"type": "string", "description": "exec, start: a shell command line, run with /bin/sh -c."},
 			"cwd":              {"type": "string", "description": "exec, start: the directory to start in, relative to the workspace (default its root)."},
@@ -153,7 +155,7 @@ func (w *Workspace) InputSchema() json.RawMessage {
 // another op takes is refused, as a misspelt one is: silently dropping it
 // would do something the caller did not ask for.
 var workspaceOpArgs = map[string][]string{
-	"open":         {"name", "toolchain", "egress", "template", "lifetime", "root", "repo", "branch", "base", "credential"},
+	"open":         {"name", "toolchain", "toolchains", "egress", "template", "lifetime", "root", "repo", "branch", "base", "credential"},
 	"release":      {"name", "discard"},
 	"list":         {},
 	"status":       {"name"},
@@ -204,6 +206,8 @@ var workspaceOpArgs = map[string][]string{
 	"git_commit":   {"name", "message", "paths", "all"},
 	"git_branch":   {"name", "create", "from"},
 	"git_checkout": {"name", "branch", "rev"},
+	// RFC HH §3: the toolchains a workspace the run opens may ask for.
+	"toolchains": {},
 }
 
 // WorkspaceMCPOps are the ops the Workspace tool takes over loomcycle's MCP
@@ -238,7 +242,9 @@ var workspaceSharedOps = map[string]bool{"read": true, "glob": true, "grep": tru
 // (release: only an owner reaches a workspace to release, and an owner was
 // granted open).
 var workspaceOpGrant = map[string]string{
-	"open": "open", "release": "any", "list": config.WorkspaceOpRead, "status": config.WorkspaceOpRead,
+	"open": "open", "release": "any",
+	// What an open may ask for is open's to know (RFC HH §3).
+	"toolchains": "open", "list": config.WorkspaceOpRead, "status": config.WorkspaceOpRead,
 	"exec": config.WorkspaceOpExec, "read": config.WorkspaceOpRead, "glob": config.WorkspaceOpRead, "grep": config.WorkspaceOpRead,
 	"view":  config.WorkspaceOpRead,
 	"write": config.WorkspaceOpWrite, "edit": config.WorkspaceOpWrite,
@@ -284,6 +290,8 @@ type workspaceInput struct {
 	Op        string `json:"op"`
 	Name      string `json:"name"`
 	Toolchain string `json:"toolchain"`
+	// Toolchains is open's list, all required (RFC HH §3): nil when absent.
+	Toolchains *[]string `json:"toolchains"`
 	// Lifetime is open's: "" or ephemeral, or durable (RFC GW §4.2, P12).
 	Lifetime string `json:"lifetime"`
 	// Root is open's: a folder of the user's own machine their personal
@@ -470,6 +478,8 @@ func (w *Workspace) execute(ctx context.Context, in workspaceInput) (tools.Resul
 		return w.open(ctx, owner, pol, in), nil
 	case "list":
 		return w.list(ctx, owner), nil
+	case "toolchains":
+		return w.toolchains(owner, pol), nil
 	case "templates":
 		return w.templates(ctx, owner, in), nil
 	case "delete_template":
@@ -579,7 +589,7 @@ func decodeWorkspaceInput(input json.RawMessage) (workspaceInput, tools.Result, 
 		sort.Strings(extra)
 		return in, workspaceRefusal("invalid_argument", fmt.Sprintf("%s does not take %s (it takes %s)", in.Op, strings.Join(extra, ", "), strings.Join(append([]string{"op"}, allowed...), ", "))), false
 	}
-	if in.Op != "list" && in.Op != "templates" && in.Op != "delete_template" && in.Name == "" {
+	if in.Op != "list" && in.Op != "templates" && in.Op != "delete_template" && in.Op != "toolchains" && in.Name == "" {
 		return in, workspaceRefusal("invalid_argument", in.Op+" needs name"), false
 	}
 	return in, tools.Result{}, true
@@ -670,11 +680,15 @@ func (w *Workspace) open(ctx context.Context, o lifecycle.Owner, pol tools.Works
 	if in.Repo == "" && (in.Branch != "" || in.Base != "" || in.Credential != "") {
 		return workspaceRefusal("invalid_argument", "branch, base and credential are for a git workspace: open it with repo")
 	}
+	if in.Toolchain != "" && in.Toolchains != nil {
+		return workspaceRefusal("invalid_argument", "open takes toolchain or toolchains, never both")
+	}
+	asksToolchains := in.Toolchain != "" || in.Toolchains != nil
 	if in.Root != "" {
 		// A root is the user's folder as it is: no template, no toolchain
 		// (the lifecycle refuses durable, and every other mismatch).
-		if in.Template != "" || in.Toolchain != "" {
-			return workspaceRefusal("invalid_argument", "a root is your folder as it is: open it without template or toolchain")
+		if in.Template != "" || asksToolchains {
+			return workspaceRefusal("invalid_argument", "a root is your folder as it is: open it without template, toolchain or toolchains")
 		}
 		return w.finishOpen(ctx, o, req)
 	}
@@ -690,26 +704,108 @@ func (w *Workspace) open(ctx context.Context, o lifecycle.Owner, pol tools.Works
 		req.Git = &git
 	}
 	if in.Template != "" {
-		if in.Toolchain != "" {
-			return workspaceRefusal("invalid_argument", "a template names its own toolchains; open it without toolchain")
+		if asksToolchains {
+			return workspaceRefusal("invalid_argument", "a template names its own toolchains; open it without toolchain or toolchains")
 		}
 		t, err := w.Manager.FindTemplate(ctx, o, in.Template)
 		if err != nil {
 			return templateError(err)
 		}
+		// The grant's toolchains are required on every open (RFC HH D6):
+		// added to the template's own for placement. t is this call's copy.
+		t.Toolchains = unionToolchains(t.Toolchains, pol.Toolchains)
 		req.Template = &t
 		return w.finishOpen(ctx, o, req)
 	}
-	switch in.Toolchain {
-	case "":
-		// A general workspace (RFC GW §4.4) is placed where both are.
-		req.Toolchains = []string{"python", "node"}
-	case "python", "node":
-		req.Toolchains = []string{in.Toolchain}
-	default:
-		return workspaceRefusal("invalid_argument", fmt.Sprintf("toolchain %q: want python or node", in.Toolchain))
+	tc, refusal, ok := openToolchains(in, pol.Toolchains)
+	if !ok {
+		return refusal
 	}
+	req.Toolchains = tc
 	return w.finishOpen(ctx, o, req)
+}
+
+// generalToolchains are what a general workspace (RFC GW §4.4) needs: an
+// open that names no toolchain is placed where both are.
+var generalToolchains = []string{"python", "node"}
+
+// openToolchains is what an open's worker must carry (RFC HH §3, §4):
+// toolchain, or every name of toolchains (duplicates dropped), with the
+// grant's required ones added; or, with neither asked, the grant's alone
+// when it names any, else the general workspace's. A grant pinned to cpp and
+// cmake wants a C++ worker, not one that must also have node. Any
+// well-formed name is taken: it only narrows placement, and an unknown one
+// is refused no_worker naming it.
+func openToolchains(in workspaceInput, required []string) ([]string, tools.Result, bool) {
+	var asked []string
+	switch {
+	case in.Toolchain != "":
+		asked = []string{in.Toolchain}
+	case in.Toolchains != nil:
+		if len(*in.Toolchains) == 0 {
+			return nil, workspaceRefusal("invalid_argument", "toolchains: name at least one, or leave it out for a general workspace"), false
+		}
+		// Bounded before the dedupe below, which is quadratic.
+		if len(*in.Toolchains) > toolchainname.Max {
+			return nil, workspaceRefusal("invalid_argument", fmt.Sprintf("toolchains: at most %d", toolchainname.Max)), false
+		}
+		asked = *in.Toolchains
+	case len(required) > 0:
+		return slices.Clone(required), tools.Result{}, true
+	default:
+		return slices.Clone(generalToolchains), tools.Result{}, true
+	}
+	out := []string{}
+	for _, name := range asked {
+		if !toolchainname.Valid(name) {
+			return nil, workspaceRefusal("invalid_argument", fmt.Sprintf("toolchain %q is not a toolchain name (a lowercase letter, then up to %d lowercase letters, digits, '.', '+', '_' or '-')", name, toolchainname.MaxLen-1)), false
+		}
+		if !slices.Contains(out, name) {
+			out = append(out, name)
+		}
+	}
+	out = unionToolchains(out, required)
+	if len(out) > toolchainname.Max {
+		return nil, workspaceRefusal("invalid_argument", fmt.Sprintf("toolchains: at most %d, your grant's required ones included", toolchainname.Max)), false
+	}
+	return out, tools.Result{}, true
+}
+
+// unionToolchains is a then b's names a lacks, never aliasing either.
+func unionToolchains(a, b []string) []string {
+	out := slices.Clone(a)
+	for _, t := range b {
+		if !slices.Contains(out, t) {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// toolchains lists what a workspace the run opens may ask for (RFC HH §3):
+// the toolchains of the workers that could take it, under the run's engine
+// requirement, each with its engines. Names only, never a worker.
+func (w *Workspace) toolchains(o lifecycle.Owner, pol tools.WorkspacePolicyValue) tools.Result {
+	offer := w.Manager.OfferedToolchains(o, pol.Engine)
+	names := make([]string, 0, len(offer))
+	for name := range offer {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	out := make([]map[string]any, 0, len(names))
+	for _, name := range names {
+		out = append(out, map[string]any{"name": name, "engines": offer[name]})
+	}
+	n := len(out)
+	body := map[string]any{"toolchains": out, "general": generalToolchains}
+	if len(pol.Toolchains) > 0 {
+		// What every open adds (RFC HH §4), and so what an open naming
+		// none asks for.
+		body["required"], body["general"] = pol.Toolchains, pol.Toolchains
+	}
+	res := workspaceOK(body)
+	res.Count = &n
+	return res
 }
 
 func (w *Workspace) finishOpen(ctx context.Context, o lifecycle.Owner, req lifecycle.OpenRequest) tools.Result {

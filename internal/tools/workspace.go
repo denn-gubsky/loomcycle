@@ -40,6 +40,10 @@ type WorkspacePolicyValue struct {
 	// Engine is the least isolating engine the run accepts: "" (any),
 	// config.WorkspaceEngineHost or config.WorkspaceEngineContainer.
 	Engine string
+	// Toolchains are required on every workspace the run opens (RFC HH §4,
+	// D6). A requirement, not a grant: Grants does not count it. Never
+	// aliased with a definition's list.
+	Toolchains []string
 }
 
 // workspaceEngineRank orders the engine requirements from none to the most
@@ -64,7 +68,7 @@ func WorkspaceFor(w *config.AgentWorkspace) WorkspacePolicyValue {
 	if !w.Grants() {
 		return WorkspacePolicyValue{}
 	}
-	v := WorkspacePolicyValue{Open: w.Open, Share: w.Share, Expose: w.Expose, Connect: w.Connect, Durable: w.Durable, Templates: w.Templates, Roots: w.Roots, Engine: w.Engine, Egress: slices.Clone(w.Egress)}
+	v := WorkspacePolicyValue{Open: w.Open, Share: w.Share, Expose: w.Expose, Connect: w.Connect, Durable: w.Durable, Templates: w.Templates, Roots: w.Roots, Engine: w.Engine, Egress: slices.Clone(w.Egress), Toolchains: slices.Clone(w.Toolchains)}
 	for _, op := range w.Ops {
 		switch op {
 		case config.WorkspaceOpRead:
@@ -115,9 +119,10 @@ func (v WorkspacePolicyValue) AcceptsEngineRequirement(requirement string) bool 
 
 // NarrowWorkspace is a spawned child's policy: each operation only when both
 // its parent run and its own definition allow it, open and share only when
-// both may, the routes both list (in the order of the child's list), and the
-// stricter of the two engine requirements. A side that grants nothing leaves
-// the child nothing.
+// both may, the routes both list (in the order of the child's list), the
+// stricter of the two engine requirements, and the toolchains either
+// requires (the child's, then the parent's others: RFC HH D6). A side that
+// grants nothing leaves the child nothing.
 func NarrowWorkspace(parent, own WorkspacePolicyValue) WorkspacePolicyValue {
 	out := WorkspacePolicyValue{
 		Read:   parent.Read && own.Read,
@@ -148,6 +153,11 @@ func NarrowWorkspace(parent, own WorkspacePolicyValue) WorkspacePolicyValue {
 	if workspaceEngineRank(own.Engine) > workspaceEngineRank(parent.Engine) {
 		out.Engine = own.Engine
 	}
+	for _, t := range slices.Concat(own.Toolchains, parent.Toolchains) {
+		if !slices.Contains(out.Toolchains, t) {
+			out.Toolchains = append(out.Toolchains, t)
+		}
+	}
 	return out
 }
 
@@ -174,14 +184,15 @@ func (v WorkspacePolicyValue) Grant() *config.AgentWorkspace {
 	if !v.Grants() {
 		return nil
 	}
-	return &config.AgentWorkspace{Ops: v.Ops(), Open: v.Open, Share: v.Share, Expose: v.Expose, Connect: v.Connect, Durable: v.Durable, Templates: v.Templates, Roots: v.Roots, Egress: slices.Clone(v.Egress), Engine: v.Engine}
+	return &config.AgentWorkspace{Ops: v.Ops(), Open: v.Open, Share: v.Share, Expose: v.Expose, Connect: v.Connect, Durable: v.Durable, Templates: v.Templates, Roots: v.Roots, Egress: slices.Clone(v.Egress), Engine: v.Engine, Toolchains: slices.Clone(v.Toolchains)}
 }
 
 // Report is the policy for Context op=self. Always present: ops [] and open
 // false is the answer "no workspace access", and egress [] no routes.
 func (v WorkspacePolicyValue) Report() map[string]any {
 	egress := append([]string{}, v.Egress...)
-	return map[string]any{"ops": v.Ops(), "open": v.Open, "share": v.Share, "expose": v.Expose, "connect": v.Connect, "durable": v.Durable, "templates": v.Templates, "roots": v.Roots, "egress": egress, "engine": v.Engine}
+	return map[string]any{"ops": v.Ops(), "open": v.Open, "share": v.Share, "expose": v.Expose, "connect": v.Connect, "durable": v.Durable, "templates": v.Templates, "roots": v.Roots, "egress": egress, "engine": v.Engine,
+		"toolchains": append([]string{}, v.Toolchains...)}
 }
 
 // SpawnWorkspace is one of a spawn's `workspaces`: a workspace of the parent

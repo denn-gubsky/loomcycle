@@ -217,15 +217,17 @@ type AgentWorkspace struct {
 	Roots     bool     `yaml:"roots"`
 	Egress    []string `yaml:"egress"`
 	Engine    string   `yaml:"engine"`
+	// Toolchains: RFC HH §4; checked by config.ValidateAgentWorkspace.
+	Toolchains []string `yaml:"toolchains"`
 }
 
 func (w *AgentWorkspace) UnmarshalYAML(n *yaml.Node) error {
 	if n.Kind == yaml.MappingNode {
 		for i := 0; i+1 < len(n.Content); i += 2 {
 			switch k := n.Content[i].Value; k {
-			case "ops", "open", "share", "expose", "connect", "durable", "templates", "roots", "egress", "engine":
+			case "ops", "open", "share", "expose", "connect", "durable", "templates", "roots", "egress", "engine", "toolchains":
 			default:
-				return fmt.Errorf("workspace: unknown key %q (the block takes: connect, durable, egress, engine, expose, open, ops, roots, share, templates)", k)
+				return fmt.Errorf("workspace: unknown key %q (the block takes: connect, durable, egress, engine, expose, open, ops, roots, share, templates, toolchains)", k)
 			}
 		}
 	}

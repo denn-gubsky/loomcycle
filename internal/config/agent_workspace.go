@@ -7,6 +7,8 @@ import (
 	"reflect"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/denn-gubsky/loomcycle/internal/toolchainname"
 )
 
 // agent_workspace.go — the per-agent `workspace:` grant (RFC GW). The tool it
@@ -23,9 +25,9 @@ import (
 // Authority, not content: not part of content_sha256.
 //
 // Only the keys built so far exist (P1's, P8's share, P4's egress, P9's
-// expose, P6's templates, P12's durable and P13's roots). The key a later phase adds (connect) is refused as unknown,
-// in yaml and in JSON, so no stored grant can name something that does
-// nothing yet.
+// expose, P6's templates, P12's durable, P13's roots and RFC HH's
+// toolchains). A key a later phase adds is refused as unknown, in yaml and
+// in JSON, so no stored grant can name something that does nothing yet.
 type AgentWorkspace struct {
 	// Ops is a subset of read, write and exec.
 	Ops []string `json:"ops,omitempty" yaml:"ops,omitempty"`
@@ -64,6 +66,12 @@ type AgentWorkspace struct {
 	// Engine is the least isolating engine the agent accepts: "" (any),
 	// "host" or "container".
 	Engine string `json:"engine,omitempty" yaml:"engine,omitempty"`
+	// Toolchains are required on every workspace the agent opens (RFC HH
+	// §4, D6), added to what it asks for; with nothing asked they replace
+	// the general workspace's python and node. Not on a root, which is the
+	// user's own folder. A sub-agent is held to the union of its own and
+	// its parent's. They only narrow placement, so they grant nothing.
+	Toolchains []string `json:"toolchains,omitempty" yaml:"toolchains,omitempty"`
 }
 
 // The workspace operations an agent may be granted.
@@ -97,12 +105,16 @@ func (w *AgentWorkspace) Clone() *AgentWorkspace {
 	if w.Egress != nil {
 		out.Egress = append([]string{}, w.Egress...)
 	}
+	if w.Toolchains != nil {
+		out.Toolchains = append([]string{}, w.Toolchains...)
+	}
 	return &out
 }
 
 // ValidateAgentWorkspace refuses a workspace grant holding an unknown or
-// repeated operation, an unknown engine, or an egress entry that is not a
-// route name or is repeated. Whether a name is a route is not checked: a
+// repeated operation, an unknown engine, an egress entry that is not a
+// route name or is repeated, or a toolchain that is malformed, repeated or
+// past toolchainname.Max. Whether a name is a route is not checked: a
 // tenant's routes live in the store and come and go (workspaceEgressWarnings
 // advises on the operator's at load). One function for every place a
 // definition is authored — operator yaml, Markdown agents, the AgentDef
@@ -133,6 +145,19 @@ func ValidateAgentWorkspace(w *AgentWorkspace) error {
 			return fmt.Errorf("workspace.egress[%d]: %q is listed twice", i, name)
 		}
 		seenRoute[name] = true
+	}
+	if len(w.Toolchains) > toolchainname.Max {
+		return fmt.Errorf("workspace.toolchains: at most %d", toolchainname.Max)
+	}
+	seenTool := map[string]bool{}
+	for i, name := range w.Toolchains {
+		if !toolchainname.Valid(name) {
+			return fmt.Errorf("workspace.toolchains[%d]: %q is not a toolchain name (a lowercase letter, then up to %d lowercase letters, digits, '.', '+', '_' or '-')", i, name, toolchainname.MaxLen-1)
+		}
+		if seenTool[name] {
+			return fmt.Errorf("workspace.toolchains[%d]: %q is listed twice", i, name)
+		}
+		seenTool[name] = true
 	}
 	switch w.Engine {
 	case "", WorkspaceEngineHost, WorkspaceEngineContainer:
