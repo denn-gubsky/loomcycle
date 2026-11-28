@@ -47,7 +47,7 @@ services:
 
   postgres:
     # Any Postgres ≥ 14 works; 16 here is just a tested default.
-    image: postgres:16-alpine@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139
+    image: postgres:16-alpine@sha256:f2f98726820d0342055351c6e9d36e705f5bfffb3dd53ff556325114b08afb6d
     environment:
       POSTGRES_USER: loomcycle
       POSTGRES_PASSWORD: loomcycle
@@ -109,7 +109,7 @@ services:
   # ---- UI ---------------------------------------------------------
 
   grafana:
-    image: grafana/grafana:13.3.1@sha256:0615ec4fbd4072004b7d86b46ded63013a74b7d6eb1119273dd89e8fa25c13cf
+    image: grafana/grafana:13.3.2@sha256:81556409ba48b2b922e0adb69a2511337d8ba7578f11962eefa6149a2d815101
     environment:
       # Demo defaults — change for production.
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}

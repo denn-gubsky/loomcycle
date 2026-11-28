@@ -482,7 +482,7 @@ services:
   #    board.loomcycle.cloud → http://loomboard:8080 (the hosted loomboard).
   #    Protect /api/* on loomcycle.cloud with a Cloudflare Access (Google) policy — see INSTALL.md.
   cloudflared:
-    image: cloudflare/cloudflared:2026.11.1@sha256:e613aadbc2d9511785d2e67a86b0c8ac18dd63a3f9af0d06faf04cbfdcb35f2d
+    image: cloudflare/cloudflared:2026.11.2@sha256:55c7e3e8d89d5e8d20b75a82f3602cbf98e06db406e73e282073cfdc5a9a3af6
     restart: unless-stopped
     networks:
       loomnet: {}                   # landing, loomboard, the telegram bridge
