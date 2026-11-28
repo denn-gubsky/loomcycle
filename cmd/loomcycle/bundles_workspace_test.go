@@ -23,7 +23,7 @@ var movedBundleAgents = []struct {
 }
 
 // Each moved agent holds Workspace with the narrowest grant (D-P14-6: no
-// share, expose, templates or connect) and no removed shell tool, and its
+// share, expose, templates or connect; RFC GW D22 adds expose for chat) and no removed shell tool, and its
 // bundle loads on an install with workspaces off without an advisory naming
 // it. The runtime suite test/runtime/workspace-bundles runs the documented
 // tasks on a workspace.
@@ -51,8 +51,13 @@ func TestBundles_MovedAgentsHoldANarrowWorkspaceGrantAndNoShellTool(t *testing.T
 			if w == nil || !w.Open || !slices.Contains(w.Ops, "exec") {
 				t.Fatalf("workspace = %+v, want open with exec", w)
 			}
-			if w.Share || w.Expose || w.Templates || w.Connect {
-				t.Errorf("workspace = %+v, want no share, expose, templates or connect", w)
+			if w.Share || w.Templates || w.Connect {
+				t.Errorf("workspace = %+v, want no share, templates or connect", w)
+			}
+			// RFC GW D22: the chat bundle's agents carry expose, so a chat
+			// can answer with an interactive page; no other moved agent does.
+			if wantExpose := m.bundle == "chat"; w.Expose != wantExpose {
+				t.Errorf("workspace expose = %v, want %v", w.Expose, wantExpose)
 			}
 			// team/repo (RFC GW P14 PR 8): the orchestrator opens the git
 			// workspace and pushes its own branch.
