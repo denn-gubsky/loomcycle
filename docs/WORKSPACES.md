@@ -18,7 +18,7 @@ A **workspace** is a directory on a *workspace worker*, a process apart from the
 
 Workspaces replace the `Bash` tool, Bashbox and its host-command fallback, the builder sidecar's `mcp__sandbox__*` tools and the `shell_credentials` field, all removed in v1.172.0 (RFC GW P15). Operator config that still names one refuses the start with the line to change; a stored definition that names one runs without it and says so in a `capability_inert` event (gate `removed`). [MIGRATING-FROM-BASH.md](MIGRATING-FROM-BASH.md) maps each tool, variable and field to its replacement.
 
-The embedded bundles hold `Workspace` only. `sdlc/coder`, `sdlc/reviewer`, `team/orchestrator` and the three `chat` agents hold it with a `{ops: [read, write, exec], open: true}` grant, and run no commands where this install runs no workspaces. The `dev-workspace` bundle's `dev/exec` runs the old sandbox command envelope in a workspace.
+The embedded bundles hold `Workspace` only. `sdlc/coder`, `sdlc/reviewer` and `team/orchestrator` hold it with a `{ops: [read, write, exec], open: true}` grant, and the three `chat` agents with the same grant plus `expose: true` (RFC GW D22), which takes effect only once the operator sets `workspace.expose.enabled`. They run no commands where this install runs no workspaces. The `dev-workspace` bundle's `dev/exec` runs the old sandbox command envelope in a workspace.
 
 ## Running a remote worker
 

@@ -383,3 +383,31 @@ func TestEmbedded_NoBundleNamesARemovedItem(t *testing.T) {
 		walk(&root, "")
 	}
 }
+
+// TestBundle_ChatAgentsMayExposeAPage guards RFC GW D22: the chat bundle's
+// agents carry the workspace `expose` grant, so a chat can show its user a
+// page once the operator turns workspace.expose on. The bundle once narrowed
+// it away, and a stock chat agent was refused `not_granted` (loomboard G36).
+func TestBundle_ChatAgentsMayExposeAPage(t *testing.T) {
+	data, err := Show("chat")
+	if err != nil {
+		t.Fatalf("Show(chat): %v", err)
+	}
+	var tree struct {
+		Agents map[string]struct {
+			Workspace *struct {
+				Open   bool `yaml:"open"`
+				Expose bool `yaml:"expose"`
+			} `yaml:"workspace"`
+		} `yaml:"agents"`
+	}
+	if err := yaml.Unmarshal(data, &tree); err != nil {
+		t.Fatalf("unmarshal chat: %v", err)
+	}
+	for _, agent := range []string{"chat/medium", "chat/local", "chat/local-small"} {
+		w := tree.Agents[agent].Workspace
+		if w == nil || !w.Open || !w.Expose {
+			t.Errorf("chat %s must hold workspace open and expose (got %+v)", agent, w)
+		}
+	}
+}

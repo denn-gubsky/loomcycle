@@ -61,8 +61,10 @@ agents:
     unbounded_iterations: true              # interactive chat parks at end_turn
     tools: [Read, Write, Edit, Grep, Glob, WebSearch, WebFetch, HTTP, Workspace, File, Document, Memory, Path, Skill, SkillDef, Agent, Interruption, History]
     # Commands run in a workspace (RFC GW).
-    # The narrowest grant a chat needs: no share, expose or templates, no egress.
-    workspace: {ops: [read, write, exec], open: true}
+    # A chat may show the user a page it serves (RFC GW D22); the operator's
+    # workspace.expose.enabled still gates it (off by default). No share,
+    # templates or egress.
+    workspace: {ops: [read, write, exec], open: true, expose: true}
     memory_scopes: [user, tenant]
     # sql_scopes grants `Memory sql_query`/`sql_exec` — NOT Document, whose
     # structure writes are its own trusted SQL and which checks sql_scopes only at
@@ -184,8 +186,10 @@ agents:
     unbounded_iterations: true
     tools: [Read, Write, Edit, Grep, Glob, WebSearch, WebFetch, HTTP, Workspace, File, Document, Memory, Path, Skill, SkillDef, Agent, Interruption, History]
     # Commands run in a workspace (RFC GW).
-    # The narrowest grant a chat needs: no share, expose or templates, no egress.
-    workspace: {ops: [read, write, exec], open: true}
+    # A chat may show the user a page it serves (RFC GW D22); the operator's
+    # workspace.expose.enabled still gates it (off by default). No share,
+    # templates or egress.
+    workspace: {ops: [read, write, exec], open: true, expose: true}
     memory_scopes: [user, tenant]
     sql_scopes: [user, tenant]
     sampling:
@@ -315,8 +319,10 @@ agents:
     unbounded_iterations: true
     tools: [Read, Write, Edit, Grep, Glob, WebSearch, WebFetch, HTTP, Workspace, File, Document, Memory, Path, Skill, SkillDef, Agent, Interruption, History]
     # Commands run in a workspace (RFC GW).
-    # The narrowest grant a chat needs: no share, expose or templates, no egress.
-    workspace: {ops: [read, write, exec], open: true}
+    # A chat may show the user a page it serves (RFC GW D22); the operator's
+    # workspace.expose.enabled still gates it (off by default). No share,
+    # templates or egress.
+    workspace: {ops: [read, write, exec], open: true, expose: true}
     memory_scopes: [user, tenant]
     sql_scopes: [user, tenant]
     sampling:
