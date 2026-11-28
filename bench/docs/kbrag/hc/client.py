@@ -84,6 +84,14 @@ class Client:
         inst = self.get("/v1/config").get("instance") or {}
         return {"version": inst.get("version"), "commit": inst.get("commit")}
 
+    def uptime(self):
+        """Seconds since the server process started (GET /healthz), or None when unreadable."""
+        try:
+            u = self.get("/healthz", retries=2).get("uptime_seconds")
+        except Exception:  # a failed read proves nothing; the row keeps its own status
+            return None
+        return u if isinstance(u, (int, float)) else None
+
     def doc(self, op, **fields):
         body = dict(fields); body["op"] = op
         return self.call("POST", "/v1/_document", body, timeout=900, retry=op in READ_OPS)

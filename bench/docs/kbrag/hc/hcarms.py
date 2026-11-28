@@ -528,7 +528,15 @@ class Runner:
             raise
         except Exception as e:  # one broken run is a failed row, never a dead runner
             row["status"], row["error"] = "failed", "%s: %s" % (type(e).__name__, str(e)[:300])
-        row["wall_s"] = round(time.time() - t0, 2)
+        elapsed = time.time() - t0
+        row["wall_s"] = round(elapsed, 2)
+        # A server restart cuts every in-flight tool call ("interrupted: the runtime shut down"),
+        # and kb/answer then reports no_sections as a normal answer. A process younger than the
+        # row means it restarted during the run: the row is failed, so --retry-failed reruns it.
+        up = self.lc.uptime() if hasattr(self.lc, "uptime") else None
+        if row["status"] == "ok" and up is not None and up < elapsed:
+            row["status"], row["error"] = "failed", "server restarted during the run (uptime %ds < wall %.0fs)" % (
+                up, row["wall_s"])
         row["usage"] = usage.to_json()
         row["served"] = [list(p) for p in usage.served()]
         bad = usage.violations() or pinned_violations(row.get("tree"))
