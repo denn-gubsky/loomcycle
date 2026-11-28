@@ -66,6 +66,13 @@ func runWorkspaceWorker(dispatcher, id string, parentPID int, personal bool, roo
 		fmt.Fprintf(stderr, "loomcycle worker: %v\n", err)
 		return 2
 	}
+	// The toolchains this worker probes for (RFC HH §1); unset probes for
+	// python and node, as before.
+	toolchains, err := wsworker.ParseToolchains(os.Getenv("LOOMCYCLE_WORKSPACE_TOOLCHAINS"))
+	if err != nil {
+		fmt.Fprintf(stderr, "loomcycle worker: %v\n", err)
+		return 2
+	}
 	child, labels := workspaceConvertChild(convertMem)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -73,13 +80,14 @@ func runWorkspaceWorker(dispatcher, id string, parentPID int, personal bool, roo
 		Target: dispatcher,
 		// Trimmed as the runtime trims it: a secret file's trailing newline
 		// must not change the token.
-		Token:        strings.TrimSpace(os.Getenv("LOOMCYCLE_WORKER_TOKEN")),
-		ID:           id,
-		ParentPID:    parentPID,
-		BuildVersion: buildVersion,
-		Root:         strings.TrimSpace(os.Getenv("LOOMCYCLE_WORKSPACE_ROOT")),
-		Engine:       strings.TrimSpace(os.Getenv("LOOMCYCLE_WORKSPACE_ENGINE")),
-		Container:    container,
+		Token:           strings.TrimSpace(os.Getenv("LOOMCYCLE_WORKER_TOKEN")),
+		ID:              id,
+		ParentPID:       parentPID,
+		BuildVersion:    buildVersion,
+		Root:            strings.TrimSpace(os.Getenv("LOOMCYCLE_WORKSPACE_ROOT")),
+		Engine:          strings.TrimSpace(os.Getenv("LOOMCYCLE_WORKSPACE_ENGINE")),
+		Container:       container,
+		ToolchainProbes: toolchains,
 		// Not a boundary (engine.Host): the port takes a per-workspace
 		// secret, which this user's own processes can read.
 		HostEgress:   os.Getenv("LOOMCYCLE_WORKSPACE_HOST_EGRESS") == "1",

@@ -280,27 +280,23 @@ const execWrapper = `f=/tmp/.loom-exec-$2; echo $$ > "$f" || exit 125; /bin/sh -
 const killScript = `p=$(cat /tmp/.loom-exec-$1) && kill -9 -$p`
 
 // Probe checks that the daemon runs a session with these options (the
-// runtime is known, the image is there or can be pulled) and reports the
-// toolchains the image has (workspace.ToolchainPython, ToolchainNode).
-func (c *Container) Probe(ctx context.Context) ([]string, error) {
+// runtime is known, the image is there or can be pulled) and reports which
+// of tcs the image has (RFC HH §1), in one session under the same
+// confinement as a workspace's.
+func (c *Container) Probe(ctx context.Context, tcs []Toolchain) ([]string, error) {
+	script, err := ToolchainScript(tcs)
+	if err != nil {
+		return nil, fmt.Errorf("container engine: %w", err)
+	}
 	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
 	args := append([]string{"run", "--rm"}, c.hardening("none")...)
-	args = append(args, c.opt.Image, "/bin/sh", "-c",
-		`command -v python3 >/dev/null 2>&1 && echo python; command -v node >/dev/null 2>&1 && echo node; true`)
+	args = append(args, c.opt.Image, "/bin/sh", "-c", script)
 	out, err := c.cli(ctx, args...)
 	if err != nil {
 		return nil, fmt.Errorf("container engine: starting a session of %s: %w", c.opt.Image, err)
 	}
-	// Only the two names the probe prints are taken: the image's own output
-	// (a login banner, an entrypoint's chatter) never becomes a label.
-	tc := []string{}
-	for _, f := range strings.Fields(string(out)) {
-		if (f == "python" || f == "node") && !slices.Contains(tc, f) {
-			tc = append(tc, f)
-		}
-	}
-	return tc, nil
+	return FoundToolchains(out, tcs), nil
 }
 
 // ProbeBrowser reports whether the session image carries the browser a
