@@ -119,6 +119,7 @@ func volumesSection() schemaPlan {
 			egress         TEXT NOT NULL DEFAULT '[]',
 			root           TEXT NOT NULL DEFAULT '',
 			git            TEXT NOT NULL DEFAULT '',
+			toolchains     TEXT,
 			created_at     INTEGER NOT NULL,
 			updated_at     INTEGER NOT NULL,
 			UNIQUE (owner_run_id, name)
